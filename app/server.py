@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, File, Header, HTTPException, Response, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, File, Header, HTTPException, Request, Response, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -23,6 +25,7 @@ from .auth import (
     create_user,
     current_admin,
     current_user,
+    delete_user_account,
     public_user,
     request_session_token,
     set_session_cookie,
@@ -32,6 +35,75 @@ from .config import load_config
 from .database import dict_from_row, get_db, init_db, now_ts
 from .db_chat import db_chat, normalize_existing_assistant_messages
 from .expression_assets import active_expression_labels, expression_assets_public, update_expression_asset_setting
+from .voice import load_voice_config, voice_enabled
+from .tts_service import (
+    generate_tts_audio,
+    generate_tts_reply_audio,
+    generate_tts_single_chunk,
+    get_last_tts_error,
+    tts_health_check,
+)
+from .speech_planner import build_tts_request_params, split_reply_into_utterances
+from .live2d import load_live2d_config, live2d_enabled
+from .embodiment import (
+    apply_expression_to_live2d,
+    expression_to_live2d,
+    live2d_connection_status,
+)
+from .expression_mapper import get_expression_categories, map_expression_to_body
+from .runtime_state import get_runtime_state, presence_enabled
+from .presence_loop import (
+    detect_quiet_mode_request,
+    get_presence_summary,
+    on_idle,
+    on_quiet_mode_enter,
+    on_quiet_mode_exit,
+    on_reply_end,
+    on_reply_start,
+    on_user_message,
+)
+from .camera_perception import camera_enabled, get_camera_config, get_camera_status, iter_camera_mjpeg
+from .perception import get_perception_summary, run_perception_cycle
+from .world_state import get_recent_world_observations, get_world_state_summary
+from .screen_perception import (
+    get_screen_config,
+    get_screen_perception_status,
+    run_screen_perception_cycle,
+    screen_enabled,
+)
+from .proactive import (
+    detect_quiet_request as proactive_detect_quiet,
+    get_proactive_controller,
+    get_proactive_scheduler_status,
+    get_proactive_status,
+    proactive_enabled,
+    run_proactive_tick,
+    start_proactive_scheduler,
+    stop_proactive_scheduler,
+)
+from .video_companion import (
+    VideoCompanionError,
+    get_video_companion_status,
+    public_video_companion_config,
+    start_video_companion_session,
+    stop_video_companion_session,
+)
+from .video_bridge import (
+    build_video_session_context,
+    build_video_turn_response,
+    save_video_observation,
+    save_video_session_summary,
+    sync_video_consent,
+)
+from .user_consent import (
+    CONSENT_KEYS,
+    get_all_consents,
+    get_user_consent,
+    grant_consent,
+    revoke_consent,
+    user_has_consent,
+)
+from .user_export import export_user_data
 from .group_chat import (
     create_group_conversation,
     group_chat,
@@ -69,6 +141,16 @@ from .memory_rag import semantic_memory_recall, sync_memory_embeddings
 from .memory_policy import policy_snapshot
 from .mirror import get_user_insight, update_user_insight
 from .persona_forge import build_prompt, forge_persona
+from .privacy_policy import get_privacy_policy
+from .rate_limit import InMemoryRateLimiter, client_identifier, rate_limit_enabled
+from .error_monitor import list_error_events, record_error_event
+from .request_logging import (
+    configure_request_logging,
+    elapsed_ms,
+    log_request,
+    request_client_id,
+    request_log_enabled,
+)
 from .growth_demo import clear_growth_demo_data, seed_growth_demo_data
 from .growth_guidance import deactivate_guidance, supersede_conflicting_guidance
 from .sculptor import (
@@ -115,6 +197,93 @@ except Exception as exc:
     print("[AdaptiveRuntime] pending chat preference reconciliation skipped:", exc)
 
 app = FastAPI(title="忆界树 / Project Mnemosyne")
+rate_limiter = InMemoryRateLimiter(enabled=rate_limit_enabled())
+request_logger = configure_request_logging()
+
+
+@app.middleware("http")
+async def _request_logging_middleware(request: Request, call_next):
+    if not request_log_enabled():
+        return await call_next(request)
+    request_id = request.headers.get("x-request-id") or uuid.uuid4().hex
+    start = time.perf_counter()
+    client_id = request_client_id(request)
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        log_request(
+            request_logger,
+            request_id=request_id,
+            method=request.method,
+            path=request.url.path,
+            status_code=500,
+            duration_ms=elapsed_ms(start),
+            client_id=client_id,
+            error=exc.__class__.__name__,
+        )
+        record_error_event(
+            request_id=request_id,
+            method=request.method,
+            path=request.url.path,
+            status_code=500,
+            error_type=exc.__class__.__name__,
+            error_text=str(exc),
+            client_id=client_id,
+        )
+        raise
+    response.headers["X-Request-ID"] = request_id
+    log_request(
+        request_logger,
+        request_id=request_id,
+        method=request.method,
+        path=request.url.path,
+        status_code=response.status_code,
+        duration_ms=elapsed_ms(start),
+        client_id=client_id,
+    )
+    if response.status_code >= 500:
+        record_error_event(
+            request_id=request_id,
+            method=request.method,
+            path=request.url.path,
+            status_code=response.status_code,
+            error_type="HTTPResponse",
+            client_id=client_id,
+        )
+    return response
+
+
+@app.middleware("http")
+async def _rate_limit_middleware(request: Request, call_next):
+    result = rate_limiter.check(
+        client_id=client_identifier(request),
+        method=request.method,
+        path=request.url.path,
+    )
+    if not result.get("allowed", True):
+        retry_after = int(result.get("retry_after") or 60)
+        return JSONResponse(
+            status_code=429,
+            content={
+                "detail": "rate limit exceeded",
+                "rule": result.get("rule"),
+                "retry_after": retry_after,
+            },
+            headers={"Retry-After": str(retry_after)},
+        )
+    return await call_next(request)
+
+
+@app.on_event("startup")
+def _startup_proactive_scheduler() -> None:
+    status = start_proactive_scheduler()
+    if status.get("scheduler_enabled"):
+        print("[ProactiveScheduler]", status)
+
+
+@app.on_event("shutdown")
+def _shutdown_proactive_scheduler() -> None:
+    stop_proactive_scheduler()
 
 PERSONA_OPTIONS = {
     "atmosphere": [
@@ -161,6 +330,11 @@ class GuestConvertRequest(BaseModel):
     password: str = Field(..., min_length=8, max_length=200)
     nickname: str | None = Field(default=None, max_length=60)
     tab_session: bool = False
+
+
+class AccountDeleteRequest(BaseModel):
+    confirm_username: str = Field(..., min_length=1, max_length=40)
+    password: str | None = Field(default=None, max_length=200)
 
 
 class ProfileUpdateRequest(BaseModel):
@@ -294,6 +468,11 @@ def health():
     return {"ok": True, "database": "sqlite", "db_initialized": True}
 
 
+@app.get("/api/privacy")
+def privacy_policy():
+    return {"policy": get_privacy_policy()}
+
+
 @app.get("/api/memory/policy")
 def memory_policy(user: dict = Depends(current_user)):
     return {"policy": policy_snapshot()}
@@ -373,6 +552,22 @@ def me(user: dict = Depends(current_user)):
 @app.get("/api/profile")
 def profile(user: dict = Depends(current_user)):
     return {"profile": _get_profile(int(user["id"]))}
+
+
+@app.get("/api/account/export")
+def account_export(user: dict = Depends(current_user)):
+    return export_user_data(int(user["id"]))
+
+
+@app.post("/api/account/delete")
+def account_delete(req: AccountDeleteRequest, response: Response, user: dict = Depends(current_user)):
+    result = delete_user_account(
+        user_id=int(user["id"]),
+        confirm_username=req.confirm_username,
+        password=req.password,
+    )
+    clear_session(response)
+    return result
 
 
 @app.put("/api/profile")
@@ -470,6 +665,516 @@ async def upload_avatar(file: UploadFile = File(...), user: dict = Depends(curre
     path = user_dir / filename
     path.write_bytes(data)
     return {"url": f"/uploads/{user['id']}/{filename}"}
+
+
+@app.get("/api/voice/config")
+def voice_config(user: dict = Depends(current_user)):
+    config = load_voice_config()
+    safe = {
+        "enabled": config.get("enabled", False),
+        "tts_provider": config.get("tts_provider", "edge"),
+        "voice_id": config.get("voice_id", ""),
+        "rate": config.get("rate", 1.0),
+        "pitch": config.get("pitch", 1.0),
+        "split_long_replies": config.get("split_long_replies", True),
+        "max_chunk_length": config.get("max_chunk_length", 80),
+    }
+    return {"voice": safe}
+
+
+@app.get("/api/voice/health")
+def voice_health(user: dict = Depends(current_user)):
+    return tts_health_check()
+
+
+class VoiceTTSRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=2000)
+    voice_id: str | None = Field(default=None, max_length=80)
+    rate: float | None = None
+    pitch: float | None = None
+    expression_labels: list[str] | None = None
+
+
+class VoiceTTSReplyRequest(BaseModel):
+    reply_text: str = Field(..., min_length=1, max_length=2000)
+    expression_labels: list[str] | None = None
+
+
+def _non_empty_voice_text(text: str) -> str:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="语音文本不能为空")
+    return cleaned
+
+
+@app.post("/api/voice/tts")
+def voice_tts(req: VoiceTTSRequest, user: dict = Depends(current_user)):
+    text = _non_empty_voice_text(req.text)
+    if not voice_enabled():
+        raise HTTPException(status_code=400, detail="语音功能已在配置中关闭。如需使用请在 config.yaml 中设置 voice.enabled: true")
+    audio = generate_tts_audio(
+        text=text,
+        voice_id=req.voice_id,
+        rate=req.rate if req.rate is not None else 1.0,
+        pitch=req.pitch if req.pitch is not None else 1.0,
+    )
+    if audio is None:
+        error = get_last_tts_error() or "unknown error"
+        raise HTTPException(
+            status_code=503,
+            detail=f"语音生成失败：{error}。请确认已安装 edge-tts（pip install edge-tts）且网络可访问微软 TTS 服务。",
+        )
+    return Response(content=audio, media_type="audio/mpeg")
+
+
+@app.post("/api/voice/tts-reply")
+def voice_tts_reply(req: VoiceTTSReplyRequest, user: dict = Depends(current_user)):
+    reply_text = _non_empty_voice_text(req.reply_text)
+    if not voice_enabled():
+        raise HTTPException(status_code=400, detail="语音功能已在配置中关闭。如需使用请在 config.yaml 中设置 voice.enabled: true")
+
+    result = generate_tts_reply_audio(reply_text, req.expression_labels)
+
+    if result["audio"] is None or not result["success"]:
+        failed_count = sum(1 for c in result.get("chunks", []) if not c["audio_available"])
+        failed_errors = [str(c.get("error")) for c in result.get("chunks", []) if c.get("error")]
+        error_hint = failed_errors[0] if failed_errors else (result.get("error") or "unknown error")
+        raise HTTPException(
+            status_code=503,
+            detail=f"语音生成部分失败：{failed_count}/{len(result.get('chunks',[]))} 句未生成。原因：{error_hint}",
+        )
+
+    return Response(content=result["audio"], media_type="audio/mpeg")
+
+
+@app.post("/api/voice/tts-chunk/{chunk_index}")
+def voice_tts_chunk(chunk_index: int, req: VoiceTTSReplyRequest, user: dict = Depends(current_user)):
+    reply_text = _non_empty_voice_text(req.reply_text)
+    if not voice_enabled():
+        raise HTTPException(status_code=400, detail="语音功能已在配置中关闭。")
+
+    audio, metadata = generate_tts_single_chunk(reply_text, chunk_index, req.expression_labels)
+
+    if audio is None:
+        error = str(metadata.get("error") or "")
+        status_code = 400 if "chunk_index" in error and "out of range" in error else 503
+        raise HTTPException(
+            status_code=status_code,
+            detail={
+                "error": "chunk generation failed",
+                "metadata": metadata,
+            },
+        )
+
+    return Response(content=audio, media_type="audio/mpeg")
+
+
+@app.post("/api/voice/speech-plan")
+def voice_speech_plan(req: VoiceTTSReplyRequest, user: dict = Depends(current_user)):
+    reply_text = _non_empty_voice_text(req.reply_text)
+    utterances = split_reply_into_utterances(reply_text)
+    params = build_tts_request_params(utterances, req.expression_labels)
+    return {"utterances": utterances, "tts_params": params}
+
+
+@app.get("/api/live2d/config")
+def live2d_config(user: dict = Depends(current_user)):
+    config = load_live2d_config()
+    safe = {
+        "enabled": config.get("enabled", False),
+        "vts_plugin_name": config.get("vts_plugin_name", ""),
+        "expression_map": config.get("expression_map", {}),
+    }
+    return {"live2d": safe}
+
+
+@app.get("/api/live2d/status")
+def live2d_status(user: dict = Depends(current_user)):
+    return live2d_connection_status()
+
+
+@app.get("/api/live2d/expression-mappings")
+def live2d_expression_mappings(user: dict = Depends(current_user)):
+    if not live2d_enabled():
+        return {"mappings": [], "enabled": False}
+    categories = get_expression_categories()
+    return {"mappings": categories, "enabled": True}
+
+
+class Live2DExpressionRequest(BaseModel):
+    label: str = Field(..., min_length=1, max_length=40)
+    expression_type: str = Field(default="mood", max_length=40)
+
+
+@app.post("/api/live2d/apply-expression")
+def live2d_apply_expression(req: Live2DExpressionRequest, user: dict = Depends(current_user)):
+    if not live2d_enabled():
+        raise HTTPException(status_code=400, detail="live2d is disabled in config")
+    result = apply_expression_to_live2d(req.label, req.expression_type)
+    return result
+
+
+@app.post("/api/live2d/connect")
+def live2d_connect(user: dict = Depends(current_user)):
+    if not live2d_enabled():
+        raise HTTPException(status_code=400, detail="live2d is disabled in config")
+    from .embodiment import get_live2d_connection
+    conn = get_live2d_connection()
+    connected = conn.connect()
+    return {"connected": connected, "status": live2d_connection_status()}
+
+
+@app.post("/api/live2d/disconnect")
+def live2d_disconnect(user: dict = Depends(current_user)):
+    if not live2d_enabled():
+        raise HTTPException(status_code=400, detail="live2d is disabled in config")
+    from .embodiment import get_live2d_connection
+    conn = get_live2d_connection()
+    conn.disconnect()
+    return {"connected": False, "status": live2d_connection_status()}
+
+
+@app.get("/api/presence/state")
+def presence_state(user: dict = Depends(current_user)):
+    return get_presence_summary(int(user["id"]))
+
+
+@app.post("/api/presence/user-message")
+def presence_user_message(user: dict = Depends(current_user)):
+    if not presence_enabled():
+        return {"transition": "disabled"}
+    return on_user_message(int(user["id"]))
+
+
+@app.post("/api/presence/reply-start")
+def presence_reply_start(user: dict = Depends(current_user)):
+    if not presence_enabled():
+        return {"transition": "disabled"}
+    return on_reply_start(int(user["id"]))
+
+
+@app.post("/api/presence/reply-end")
+def presence_reply_end(user: dict = Depends(current_user)):
+    if not presence_enabled():
+        return {"transition": "disabled"}
+    return on_reply_end(int(user["id"]))
+
+
+@app.post("/api/presence/idle")
+def presence_idle(user: dict = Depends(current_user)):
+    if not presence_enabled():
+        return {"transition": "disabled"}
+    return on_idle(int(user["id"]))
+
+
+@app.post("/api/presence/quiet-mode")
+def presence_quiet_mode(user: dict = Depends(current_user)):
+    if not presence_enabled():
+        return {"transition": "disabled"}
+    return on_quiet_mode_enter(int(user["id"]))
+
+
+@app.post("/api/presence/normal-mode")
+def presence_normal_mode(user: dict = Depends(current_user)):
+    if not presence_enabled():
+        return {"transition": "disabled"}
+    return on_quiet_mode_exit(int(user["id"]))
+
+
+class PresenceQuietCheckRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=500)
+
+
+@app.post("/api/presence/check-quiet")
+def presence_check_quiet(req: PresenceQuietCheckRequest, user: dict = Depends(current_user)):
+    return {"should_enter_quiet": detect_quiet_mode_request(req.text)}
+
+
+@app.get("/api/camera/config")
+def camera_config(user: dict = Depends(current_user)):
+    return {"camera": get_camera_config()}
+
+
+@app.get("/api/camera/status")
+def camera_status(user: dict = Depends(current_user)):
+    return get_camera_status(int(user["id"]))
+
+
+@app.get("/api/camera/stream")
+def camera_stream(user: dict = Depends(current_user)):
+    user_id = int(user["id"])
+    if not camera_enabled(user_id):
+        raise HTTPException(status_code=400, detail="camera is disabled or not authorized")
+
+    status = get_camera_status(user_id)
+    if not status.get("stream", {}).get("available"):
+        error = (status.get("system") or {}).get("error") or "camera stream is not available"
+        raise HTTPException(status_code=503, detail=error)
+
+    return StreamingResponse(
+        iter_camera_mjpeg(user_id),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/api/perception/summary")
+def perception_summary(user: dict = Depends(current_user)):
+    return get_perception_summary(int(user["id"]))
+
+
+@app.post("/api/perception/cycle")
+def perception_cycle(user: dict = Depends(current_user)):
+    return run_perception_cycle(int(user["id"]))
+
+
+@app.get("/api/world-state/observations")
+def world_observations(
+    user: dict = Depends(current_user),
+    source: str | None = None,
+    observation_type: str | None = None,
+    limit: int = 20,
+):
+    return {
+        "observations": get_recent_world_observations(
+            int(user["id"]),
+            source=source,
+            observation_type=observation_type,
+            limit=limit,
+        )
+    }
+
+
+@app.get("/api/world-state/summary")
+def world_state_summary(user: dict = Depends(current_user)):
+    return get_world_state_summary(int(user["id"]))
+
+
+@app.get("/api/screen/config")
+def screen_config(user: dict = Depends(current_user)):
+    return {"screen": get_screen_config()}
+
+
+@app.get("/api/screen/status")
+def screen_status(user: dict = Depends(current_user)):
+    return get_screen_perception_status(int(user["id"]))
+
+
+@app.post("/api/screen/perception-cycle")
+def screen_perception_cycle(user: dict = Depends(current_user)):
+    return run_screen_perception_cycle(int(user["id"]))
+
+
+class VideoCompanionSessionRequest(BaseModel):
+    persona_id: int | str | None = None
+
+
+@app.get("/api/video-companion/config")
+def video_companion_config(user: dict = Depends(current_user)):
+    return {"video_companion": public_video_companion_config()}
+
+
+@app.get("/api/video-companion/status")
+def video_companion_status(user: dict = Depends(current_user)):
+    return get_video_companion_status()
+
+
+@app.post("/api/video-companion/session/start")
+def video_companion_start(req: VideoCompanionSessionRequest, user: dict = Depends(current_user)):
+    try:
+        return start_video_companion_session(req.persona_id)
+    except VideoCompanionError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/api/video-companion/session/stop")
+def video_companion_stop(user: dict = Depends(current_user)):
+    try:
+        result = stop_video_companion_session()
+    except VideoCompanionError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    stop_result = result.get("result") if isinstance(result.get("result"), dict) else {}
+    summary = stop_result.get("summary") if isinstance(stop_result, dict) else None
+    if isinstance(summary, dict):
+        consent = stop_result.get("consent") if isinstance(stop_result, dict) else None
+        if isinstance(consent, dict) and not bool(consent.get("save_summary")):
+            result["mnemosyne_save"] = {"saved": False, "reason": "save_summary_not_granted"}
+        else:
+            result["mnemosyne_save"] = save_video_session_summary(summary, fallback_user_id=int(user["id"]))
+    return result
+
+
+def _require_video_bridge_auth(authorization: str | None = Header(default=None)) -> None:
+    expected = os.environ.get("MNEMOSYNE_API_KEY", "").strip()
+    if not expected:
+        return
+    prefix = "Bearer "
+    if not authorization or not authorization.startswith(prefix):
+        raise HTTPException(status_code=401, detail="video bridge authorization required")
+    token = authorization[len(prefix):].strip()
+    if token != expected:
+        raise HTTPException(status_code=403, detail="invalid video bridge token")
+
+
+@app.get("/api/video/session-context")
+def video_session_context(persona_id: int | str | None = None, auth: None = Depends(_require_video_bridge_auth)):
+    return build_video_session_context(persona_id)
+
+
+@app.post("/api/video/session-summary")
+def video_session_summary(payload: dict[str, Any], auth: None = Depends(_require_video_bridge_auth)):
+    return save_video_session_summary(payload)
+
+
+@app.post("/api/video/observation")
+def video_observation(payload: dict[str, Any], auth: None = Depends(_require_video_bridge_auth)):
+    return save_video_observation(payload)
+
+
+@app.post("/api/video/consent")
+def video_consent(payload: dict[str, Any], auth: None = Depends(_require_video_bridge_auth)):
+    return sync_video_consent(payload)
+
+
+@app.post("/api/video/turn")
+def video_turn(payload: dict[str, Any], auth: None = Depends(_require_video_bridge_auth)):
+    return build_video_turn_response(payload)
+
+
+@app.get("/api/proactive/status")
+def proactive_status(user: dict = Depends(current_user), persona_id: int | None = None):
+    user_id = int(user["id"])
+    pid = persona_id
+    if pid is None:
+        with get_db() as db:
+            row = db.execute(
+                "SELECT id FROM personas WHERE user_id = ? AND status = 'active' ORDER BY updated_at DESC LIMIT 1",
+                (user_id,),
+            ).fetchone()
+            if row:
+                pid = int(row["id"])
+    if pid is None:
+        return {"enabled": proactive_enabled(user_id), "persona_required": True}
+    _require_active_persona_for_user(pid, user_id)
+    return get_proactive_status(user_id, pid)
+
+
+@app.get("/api/proactive/scheduler")
+def proactive_scheduler_status(user: dict = Depends(current_user)):
+    return get_proactive_scheduler_status()
+
+
+class ProactiveCheckRequest(BaseModel):
+    persona_id: int
+
+
+class ProactiveTickRequest(BaseModel):
+    persona_id: int | None = None
+    dry_run: bool = False
+
+
+def _require_active_persona_for_user(persona_id: int, user_id: int) -> None:
+    with get_db() as db:
+        row = db.execute(
+            "SELECT id FROM personas WHERE id = ? AND user_id = ? AND status = 'active'",
+            (persona_id, user_id),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="persona not found")
+
+
+@app.post("/api/proactive/can-send")
+def proactive_can_send(req: ProactiveCheckRequest, user: dict = Depends(current_user)):
+    user_id = int(user["id"])
+    if not proactive_enabled(user_id):
+        return {"allowed": False, "reason": "proactive_disabled"}
+    _require_active_persona_for_user(req.persona_id, user_id)
+    controller = get_proactive_controller(user_id, req.persona_id)
+    return controller.can_send_proactive()
+
+
+@app.post("/api/proactive/on-sent")
+def proactive_on_sent(req: ProactiveCheckRequest, user: dict = Depends(current_user)):
+    user_id = int(user["id"])
+    if not proactive_enabled(user_id):
+        raise HTTPException(status_code=400, detail="proactive is disabled")
+    _require_active_persona_for_user(req.persona_id, user_id)
+    controller = get_proactive_controller(user_id, req.persona_id)
+    try:
+        controller.on_proactive_sent()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return controller.get_status()
+
+
+class ProactiveFeedbackRequest(BaseModel):
+    persona_id: int
+    positive: bool
+
+
+@app.post("/api/proactive/feedback")
+def proactive_feedback(req: ProactiveFeedbackRequest, user: dict = Depends(current_user)):
+    user_id = int(user["id"])
+    if not proactive_enabled(user_id):
+        raise HTTPException(status_code=400, detail="proactive is disabled")
+    _require_active_persona_for_user(req.persona_id, user_id)
+    controller = get_proactive_controller(user_id, req.persona_id)
+    controller.record_user_feedback(req.positive)
+    return controller.get_status()
+
+
+class ProactiveQuietRequest(BaseModel):
+    persona_id: int
+    quiet: bool
+
+
+@app.post("/api/proactive/quiet-mode")
+def proactive_quiet_mode(req: ProactiveQuietRequest, user: dict = Depends(current_user)):
+    user_id = int(user["id"])
+    if not proactive_enabled(user_id):
+        raise HTTPException(status_code=400, detail="proactive is disabled")
+    _require_active_persona_for_user(req.persona_id, user_id)
+    controller = get_proactive_controller(user_id, req.persona_id)
+    controller.set_quiet_mode(req.quiet)
+    return controller.get_status()
+
+
+@app.post("/api/proactive/check-quiet")
+def proactive_check_quiet(req: PresenceQuietCheckRequest, user: dict = Depends(current_user)):
+    return {"should_enter_quiet": proactive_detect_quiet(req.text)}
+
+
+@app.post("/api/proactive/tick")
+def proactive_tick(req: ProactiveTickRequest, user: dict = Depends(current_user)):
+    user_id = int(user["id"])
+    if not proactive_enabled(user_id):
+        return {"enabled": False, "sent": 0, "skipped": [{"reason": "proactive_disabled"}]}
+    if req.persona_id is not None:
+        _require_active_persona_for_user(req.persona_id, user_id)
+    return run_proactive_tick(user_id=user_id, persona_id=req.persona_id, dry_run=req.dry_run)
+
+
+class ConsentUpdateRequest(BaseModel):
+    consent_key: str = Field(..., min_length=1, max_length=40)
+
+
+@app.get("/api/consents")
+def user_consents(user: dict = Depends(current_user)):
+    return {"consents": get_all_consents(int(user["id"]))}
+
+
+@app.post("/api/consents/grant")
+def consent_grant(req: ConsentUpdateRequest, user: dict = Depends(current_user)):
+    if req.consent_key not in CONSENT_KEYS:
+        raise HTTPException(status_code=400, detail=f"unknown consent key: {req.consent_key}")
+    return {"consent": grant_consent(int(user["id"]), req.consent_key)}
+
+
+@app.post("/api/consents/revoke")
+def consent_revoke(req: ConsentUpdateRequest, user: dict = Depends(current_user)):
+    if req.consent_key not in CONSENT_KEYS:
+        raise HTTPException(status_code=400, detail=f"unknown consent key: {req.consent_key}")
+    return {"consent": revoke_consent(int(user["id"]), req.consent_key)}
 
 
 @app.get("/api/memories")
@@ -852,6 +1557,11 @@ def admin_llm_calls(admin: dict = Depends(current_admin), limit: int = 30, task:
     return {"calls": [dict_from_row(row) for row in rows]}
 
 
+@app.get("/api/admin/error-events")
+def admin_error_events(admin: dict = Depends(current_admin), limit: int = 50, status_code: int | None = None):
+    return {"events": list_error_events(limit=limit, status_code=status_code)}
+
+
 @app.get("/api/admin/llm-routes")
 def admin_llm_routes(admin: dict = Depends(current_admin)):
     config = load_config()
@@ -917,7 +1627,7 @@ def admin_users(admin: dict = Depends(current_admin)):
         rows = db.execute(
             """
             SELECT users.id, users.username, users.role, users.status, users.created_at,
-                   user_profiles.nickname,
+                   users.is_guest, users.guest_expires_at, user_profiles.nickname,
                    (
                        SELECT COUNT(*)
                        FROM persona_revision_suggestions
@@ -990,6 +1700,39 @@ def admin_users(admin: dict = Depends(current_admin)):
             """
         ).fetchall()
     return {"users": [dict_from_row(row) for row in rows]}
+
+
+@app.get("/api/admin/guests")
+def admin_guests(admin: dict = Depends(current_admin), limit: int = 20):
+    ts = now_ts()
+    safe_limit = max(1, min(int(limit or 20), 100))
+    with get_db() as db:
+        active = db.execute(
+            """
+            SELECT
+                COUNT(*) AS active_guest_count,
+                COALESCE(SUM(CASE WHEN guest_expires_at > 0 AND guest_expires_at <= ? THEN 1 ELSE 0 END), 0) AS expiring_24h_count,
+                COALESCE(MIN(NULLIF(guest_expires_at, 0)), 0) AS next_expiry_at
+            FROM users
+            WHERE is_guest = 1 AND status = 'active'
+            """,
+            (ts + 86400,),
+        ).fetchone()
+        logs = db.execute(
+            """
+            SELECT id, user_id, username, guest_expires_at, deleted_at, reason
+            FROM guest_cleanup_logs
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (safe_limit,),
+        ).fetchall()
+    return {
+        "active_guest_count": int(active["active_guest_count"] or 0),
+        "expiring_24h_count": int(active["expiring_24h_count"] or 0),
+        "next_expiry_at": int(active["next_expiry_at"] or 0),
+        "cleanup_logs": [dict_from_row(row) for row in logs],
+    }
 
 
 @app.get("/api/admin/personas")
@@ -2391,6 +3134,28 @@ def restore_persona(persona_id: int, user: dict = Depends(current_user)):
             raise HTTPException(status_code=404, detail="deleted persona not found")
         persona = dict_from_row(db.execute("SELECT * FROM personas WHERE id = ?", (persona_id,)).fetchone())
     return {"persona": _public_persona(persona)}
+
+
+@app.post("/api/personas/{persona_id}/purge")
+def purge_persona(persona_id: int, req: PersonaDeleteRequest, user: dict = Depends(current_user)):
+    user_id = int(user["id"])
+    with get_db() as db:
+        row = db.execute(
+            "SELECT id, name, status FROM personas WHERE id = ? AND user_id = ?",
+            (persona_id, user_id),
+        ).fetchone()
+        persona = dict_from_row(row)
+        if not persona:
+            raise HTTPException(status_code=404, detail="persona not found")
+        if str(persona.get("status") or "") != "deleted":
+            raise HTTPException(status_code=400, detail="请先软删除人格，再执行永久删除")
+        if req.confirm_name.strip() != str(persona["name"]).strip():
+            raise HTTPException(status_code=400, detail="请输入完整的人格名字以确认永久删除")
+        db.execute(
+            "DELETE FROM personas WHERE id = ? AND user_id = ? AND status = 'deleted'",
+            (persona_id, user_id),
+        )
+    return {"ok": True, "persona_id": persona_id, "status": "purged"}
 
 
 @app.post("/api/personas")

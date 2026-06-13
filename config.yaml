@@ -69,3 +69,118 @@ memory:
   short_term_turns: 8
   extract_every: 2
   consolidate_every: 10
+
+voice:
+  enabled: false
+  tts_provider: edge
+  voice_id: zh-CN-XiaoxiaoNeural
+  rate: 1.0
+  pitch: 1.0
+  split_long_replies: true
+  max_chunk_length: 80
+  expression_style_map:
+    微笑: cheerful
+    轻笑: cheerful
+    担心: concerned
+    轻声: gentle
+    停顿: default
+    点头: default
+
+live2d:
+  enabled: false
+  # The app development server uses 8001, so configure VTube Studio's API to 8002
+  # or run the app on a different port before enabling Live2D.
+  vts_ws_url: ws://127.0.0.1:8002
+  vts_plugin_name: MnemosyneEmbodiment
+  expression_map:
+    微笑: Smile
+    轻笑: Smile
+    担心: Worried
+    轻声: Default
+    停顿: Default
+    点头: Nod
+
+presence:
+  enabled: false
+  idle_timeout_seconds: 30
+  thinking_timeout_seconds: 15
+  idle_actions:
+    - idle_breath
+    - idle_blink
+    - idle_look_around
+
+camera:
+  enabled: false
+  capture_source: 0
+  detect_presence: false
+  detect_motion: false
+  capture_interval_seconds: 5
+  stream_fps: 8
+  stream_max_width: 640
+
+screen:
+  enabled: false
+  capture_active_window_title: true
+  capture_screenshot: false
+  capture_interval_seconds: 10
+
+proactive:
+  enabled: false
+  min_interval_seconds: 300
+  cooldown_after_negative_seconds: 1800
+  max_per_hour: 3
+  quiet_mode_enabled: false
+  scheduler_enabled: false
+  scheduler_interval_seconds: 300
+
+rate_limit:
+  enabled: true
+  # In-memory fixed-window guard for local/small deployments.
+  # Move to Redis or a reverse-proxy limiter before multi-process production.
+  rules:
+    - name: auth
+      methods: [POST]
+      path_prefixes: ["/api/auth/"]
+      limit: 12
+      window_seconds: 60
+    - name: chat
+      methods: [POST]
+      path_prefixes: ["/api/chat", "/api/group-chat"]
+      limit: 45
+      window_seconds: 60
+    - name: uploads
+      methods: [POST]
+      path_prefixes: ["/api/uploads/"]
+      limit: 20
+      window_seconds: 60
+    - name: account_export
+      methods: [GET, POST]
+      path_prefixes: ["/api/account/export", "/api/account/delete"]
+      limit: 10
+      window_seconds: 600
+    - name: persona_write
+      methods: [POST, PATCH, DELETE]
+      path_prefixes: ["/api/personas"]
+      limit: 60
+      window_seconds: 60
+
+logging:
+  enabled: true
+  request_log_enabled: true
+  log_dir: logs
+  filename: app.log
+  max_bytes: 2000000
+  backup_count: 5
+
+security:
+  # Set to true when served only through HTTPS.
+  secure_cookies: false
+
+video_companion:
+  enabled: false
+  # External project path: E:\视觉\video-companion
+  # Keep this on a different port from Mnemosyne's 8001 dev server.
+  base_url: http://127.0.0.1:8782
+  ws_url: ws://127.0.0.1:8782/ws
+  project_path: "E:\\视觉\\video-companion"
+  timeout_seconds: 3

@@ -60,6 +60,7 @@ let state = {
   personaPanelOpen: false,
   threadPanelOpen: false,
   deletedPanelOpen: false,
+  privacyOpen: false,
   groupCreateOpen: false,
   groupSettingsOpen: false,
   editingConversationId: null,
@@ -68,6 +69,19 @@ let state = {
   conversationSearch: "",
   focusComposer: false,
   sending: false,
+  voiceConfig: null,
+  voicePlaying: null,
+  voiceError: null,
+  voiceErrorMessageId: null,
+  live2dStatus: null,
+  presenceStatus: null,
+  consents: [],
+  cameraStatus: null,
+  screenStatus: null,
+  proactiveStatus: null,
+  videoCompanionStatus: null,
+  privacyPolicy: null,
+  cameraPreviewActive: false,
 };
 
 function tabSessionMode() {
@@ -113,6 +127,27 @@ function acceptAuthSession(data, isolated) {
   }
 }
 
+function apiErrorMessage(detail, fallback) {
+  if (!detail) return fallback;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail.map((item) => apiErrorMessage(item, "")).filter(Boolean).join("; ") || fallback;
+  }
+  if (typeof detail === "object") {
+    if (typeof detail.error === "string") {
+      var metadata = detail.metadata && typeof detail.metadata === "object" ? detail.metadata : null;
+      var metaError = metadata && typeof metadata.error === "string" ? metadata.error : "";
+      return metaError ? detail.error + ": " + metaError : detail.error;
+    }
+    try {
+      return JSON.stringify(detail);
+    } catch {
+      return fallback;
+    }
+  }
+  return String(detail);
+}
+
 async function api(path, options = {}) {
   const isolated = tabSessionMode();
   const token = tabSessionToken();
@@ -125,7 +160,7 @@ async function api(path, options = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.detail || `HTTP ${res.status}`);
+    throw new Error(apiErrorMessage(data.detail, `HTTP ${res.status}`));
   }
   return data;
 }
@@ -145,7 +180,7 @@ async function uploadAvatarFile(file) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.detail || `HTTP ${res.status}`);
+    throw new Error(apiErrorMessage(data.detail, `HTTP ${res.status}`));
   }
   return data.url;
 }
@@ -156,6 +191,9 @@ function h(tag, attrs = {}, children = []) {
     if (key === "class") el.className = value;
     else if (key === "text") el.textContent = value;
     else if (key.startsWith("on") && typeof value === "function") el.addEventListener(key.slice(2), value);
+    else if (typeof value === "boolean") {
+      if (value) el.setAttribute(key, "");
+    }
     else if (value !== undefined && value !== null) el.setAttribute(key, value);
   }
   for (const child of Array.isArray(children) ? children : [children]) {
@@ -208,6 +246,10 @@ function renderAuth(mode) {
       h("small", { text: "同一浏览器同时测试多个账号时使用" }),
     ]),
   ]));
+  form.append(h("p", {
+    class: "auth-guest-note",
+    text: "游客体验会在本机保存临时人格、聊天、记忆和上传文件，默认 3 天后自动清除；想保留数据请在资料里转为正式账号。",
+  }));
   form.append(
     h("button", { type: "submit", text: isRegister ? text.register : text.login }),
     h("button", {
@@ -236,6 +278,12 @@ function renderAuth(mode) {
           error.textContent = err.message;
         }
       },
+    }),
+    h("button", {
+      type: "button",
+      class: "ghost",
+      text: "数据与隐私",
+      onclick: () => openPrivacyModal(() => renderAuth(mode)),
     })
   );
 
@@ -265,7 +313,7 @@ function renderAuth(mode) {
   });
 
   app.className = "auth-screen";
-  app.replaceChildren(form);
+  app.replaceChildren(form, ...(state.privacyOpen ? [renderPrivacyModal(() => renderAuth(mode))] : []));
 }
 
 async function loadMainData({ openLatest = false } = {}) {
@@ -279,6 +327,10 @@ async function loadMainData({ openLatest = false } = {}) {
     api("/api/group-conversations?status=active"),
     api("/api/group-conversations?status=archived"),
   ]);
+  await loadVoiceConfig();
+  await loadPresenceStatus();
+  await loadAwarenessStatus();
+
   state.options = options.options;
   state.expressionAssets = expressionAssets.assets || [];
   state.personas = personas.personas;
@@ -405,6 +457,7 @@ async function openPersonaPanel() {
   state.personaPanelOpen = true;
   state.editingPersona = false;
   state.loadingGrowthPersonaId = personaId;
+  await loadLive2dStatus();
   renderShell();
   try {
     const data = await api(`/api/personas/${personaId}/growth`);
@@ -539,6 +592,7 @@ function renderShell() {
   if (state.personaPanelOpen) children.push(renderPersonaModal());
   if (state.threadPanelOpen) children.push(renderThreadModal());
   if (state.deletedPanelOpen) children.push(renderDeletedPersonasModal());
+  if (state.privacyOpen) children.push(renderPrivacyModal(renderShell));
   if (state.groupCreateOpen) children.push(renderGroupCreateModal());
   app.replaceChildren(...children);
   if (restoreSearchFocus) {
@@ -652,9 +706,19 @@ function renderProfileModal() {
             h("small", { text: state.user?.is_guest ? guestExpiryText() : state.user?.username || "" }),
           ]),
         ]),
-        h("button", { type: "button", class: "ghost compact", text: "关闭", onclick: close }),
+        h("div", { class: "profile-modal-tools" }, [
+          h("button", {
+            type: "button",
+            class: "ghost compact",
+            text: "数据与隐私",
+            onclick: () => openPrivacyModal(renderShell),
+          }),
+          h("button", { type: "button", class: "ghost compact", text: "关闭", onclick: close }),
+        ]),
       ]),
+      state.user?.is_guest ? renderGuestDataNotice() : null,
       state.user?.is_guest ? renderGuestConvertBox(profile) : null,
+      renderAwarenessConsentPanel(),
       h("form", {
         class: "profile-modal-form",
         onsubmit: async (event) => {
@@ -698,6 +762,137 @@ function renderProfileModal() {
         ]),
         status,
       ]),
+      renderAccountDangerZone(),
+    ]),
+  ]);
+}
+
+function renderGuestDataNotice() {
+  return h("section", { class: "guest-data-notice" }, [
+    h("strong", { text: guestExpiryText() }),
+    h("p", { text: "游客数据包括当前人格、聊天、记忆和上传头像。到期会自动清除；转为正式账号可保留，账号删除可立即清理。" }),
+  ]);
+}
+
+function renderAccountDangerZone() {
+  const confirmUsername = h("input", {
+    name: "account_delete_confirm_username",
+    autocomplete: "username",
+    placeholder: state.user?.username || "账号名",
+  });
+  const password = h("input", {
+    name: "account_delete_password",
+    type: "password",
+    autocomplete: "current-password",
+    placeholder: "当前密码",
+  });
+  const status = h("small", { class: "save-status" });
+  const deleteButton = h("button", {
+    type: "button",
+    class: "ghost danger",
+    text: "彻底删除账号",
+    disabled: "disabled",
+    onclick: async () => {
+      status.textContent = "";
+      try {
+        await api("/api/account/delete", {
+          method: "POST",
+          body: JSON.stringify({
+            confirm_username: confirmUsername.value,
+            password: state.user?.is_guest ? null : password.value,
+          }),
+        });
+        prepareAuthMode(tabSessionMode());
+        resetClientState();
+        renderAuth("login");
+      } catch (err) {
+        status.textContent = err.message;
+      }
+    },
+  });
+  const syncButton = () => {
+    const usernameOk = confirmUsername.value.trim() === String(state.user?.username || "").trim();
+    const passwordOk = state.user?.is_guest || password.value.length > 0;
+    if (usernameOk && passwordOk) deleteButton.removeAttribute("disabled");
+    else deleteButton.setAttribute("disabled", "disabled");
+  };
+  confirmUsername.addEventListener("input", syncButton);
+  password.addEventListener("input", syncButton);
+
+  return h("details", { class: "profile-danger-zone" }, [
+    h("summary", { text: "删除账号" }),
+    h("p", { text: "彻底删除后，账号、人格、聊天、记忆和本地上传目录会被移除，无法恢复。建议先导出数据或创建本地备份。" }),
+    h("label", {}, ["输入账号名确认", confirmUsername]),
+    state.user?.is_guest ? null : h("label", {}, ["输入当前密码", password]),
+    deleteButton,
+    status,
+  ]);
+}
+
+async function loadPrivacyPolicy() {
+  if (state.privacyPolicy) return state.privacyPolicy;
+  const data = await api("/api/privacy");
+  state.privacyPolicy = data.policy;
+  return state.privacyPolicy;
+}
+
+async function openPrivacyModal(renderFn = renderShell) {
+  state.privacyOpen = true;
+  try {
+    await loadPrivacyPolicy();
+  } catch {
+    state.privacyPolicy = {
+      title: "数据与隐私",
+      summary: "暂时无法加载隐私说明，请稍后重试。",
+      data_categories: [],
+      retention: [],
+      user_controls: [],
+      external_boundaries: [],
+    };
+  }
+  renderFn();
+}
+
+function renderPrivacyModal(renderFn = renderShell) {
+  const policy = state.privacyPolicy || {
+    title: "数据与隐私",
+    summary: "正在加载...",
+    data_categories: [],
+    retention: [],
+    user_controls: [],
+    external_boundaries: [],
+  };
+  const close = () => {
+    state.privacyOpen = false;
+    renderFn();
+  };
+  const listSection = (title, items) => h("section", { class: "privacy-section" }, [
+    h("h4", { text: title }),
+    h("ul", {}, (items || []).map((item) => {
+      if (typeof item === "string") return h("li", { text: item });
+      return h("li", {}, [
+        h("strong", { text: item.name || "" }),
+        h("span", { text: item.detail || "" }),
+      ]);
+    })),
+  ]);
+
+  return h("div", { class: "profile-modal-backdrop privacy-backdrop", onclick: (event) => {
+    if (event.target.classList.contains("privacy-backdrop")) close();
+  } }, [
+    h("section", { class: "profile-modal privacy-modal" }, [
+      h("div", { class: "profile-modal-head" }, [
+        h("div", {}, [
+          h("p", { class: "eyebrow", text: `版本 ${policy.version || "-"}` }),
+          h("h3", { text: policy.title || "数据与隐私" }),
+        ]),
+        h("button", { type: "button", class: "ghost compact", text: "关闭", onclick: close }),
+      ]),
+      h("p", { class: "privacy-summary", text: policy.summary || "" }),
+      listSection("保存的数据", policy.data_categories),
+      listSection("保留与删除", policy.retention),
+      listSection("用户控制", policy.user_controls),
+      listSection("外部项目边界", policy.external_boundaries),
     ]),
   ]);
 }
@@ -1389,6 +1584,7 @@ function renderMain() {
         h("div", { class: "chat-header-copy" }, [
           h("h2", { text: state.activePersona.name }),
           renderPersonaStatusLine(state.activePersona),
+          renderPresencePill(),
           h("p", { text: state.activePersona.summary || "人格会在对话和记忆里继续生长。" }),
         ]),
         h("div", { class: "chat-header-actions" }, [
@@ -1744,23 +1940,45 @@ function renderDeletedPersonaItem(persona) {
       h("small", { text: persona.summary || persona.relationship || "资料仍被保留" }),
       status,
     ]),
-    h("button", {
-      type: "button",
-      class: "ghost compact",
-      text: "恢复",
-      onclick: async () => {
-        status.textContent = "";
-        try {
-          await api(`/api/personas/${persona.id}/restore`, { method: "POST" });
-          await loadMainData();
-          state.deletedPanelOpen = false;
-          state.view = "home";
-          renderShell();
-        } catch (err) {
-          status.textContent = err.message;
-        }
-      },
-    }),
+    h("div", { class: "deleted-persona-actions" }, [
+      h("button", {
+        type: "button",
+        class: "ghost compact",
+        text: "恢复",
+        onclick: async () => {
+          status.textContent = "";
+          try {
+            await api(`/api/personas/${persona.id}/restore`, { method: "POST" });
+            await loadMainData();
+            state.deletedPanelOpen = false;
+            state.view = "home";
+            renderShell();
+          } catch (err) {
+            status.textContent = err.message;
+          }
+        },
+      }),
+      h("button", {
+        type: "button",
+        class: "ghost compact danger",
+        text: "永久删除",
+        onclick: async () => {
+          status.textContent = "";
+          const confirmName = window.prompt(`永久删除后无法恢复。请输入「${persona.name || ""}」确认。`);
+          if (confirmName === null) return;
+          try {
+            await api(`/api/personas/${persona.id}/purge`, {
+              method: "POST",
+              body: JSON.stringify({ confirm_name: confirmName }),
+            });
+            await loadMainData();
+            renderShell();
+          } catch (err) {
+            status.textContent = err.message;
+          }
+        },
+      }),
+    ]),
   ]);
 }
 
@@ -1793,6 +2011,7 @@ function renderPersonaRail() {
       detailLine("说话方式", persona.speaking_style || "会在对话中逐步稳定"),
       detailLine("摘要", persona.summary || "还在形成中"),
       renderPersonaExpressionPreference(persona),
+      renderLive2dPanel(persona),
       renderPersonaGrowth(persona),
       h("details", { class: "persona-more-details" }, [
         h("summary", { text: "更多资料" }),
@@ -2650,6 +2869,11 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
   if (!retryUserMessageId && !clientMessageId) {
     state.messages.push({ role: "user", content, client_message_id: outgoingClientMessageId, created_at: nowSeconds() });
   }
+  if (quietModeRequestedLocally(content)) {
+    setLocalPresenceState("quiet");
+  } else {
+    setLocalPresenceState("thinking");
+  }
   renderShell();
   scrollChat();
   try {
@@ -2691,6 +2915,7 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
         });
         await markConversationRead(data.conversation_id);
       }
+      applyPresenceRuntime(data.presence);
     }
     await loadMainData();
   } catch (err) {
@@ -2705,6 +2930,7 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
         created_at: nowSeconds(),
       });
     }
+    await loadPresenceStatus();
   }
   state.sending = false;
   renderShell();
@@ -2969,9 +3195,10 @@ function renderGroupMessage(message) {
         h("button", {
           type: "button",
           class: "copy-message",
-          text: "澶嶅埗",
+          text: "复制",
           onclick: () => copyMessageText(message),
         }),
+        !isUser && !isNotice ? renderVoiceButton(message) : null,
       ]),
     ]),
     isUser ? avatar(speakerName, speakerAvatar) : null,
@@ -3054,6 +3281,7 @@ function renderMessage(message) {
           text: "复制",
           onclick: () => copyMessageText(message),
         }),
+        !isUser && !isNotice ? renderVoiceButton(message) : null,
       ]),
     ]),
     isUser ? avatar(state.profile?.nickname || "U", state.profile?.avatar_url) : null,
@@ -3072,6 +3300,615 @@ async function copyMessageText(message) {
     document.execCommand("copy");
     area.remove();
   }
+}
+
+async function loadPresenceStatus() {
+  try {
+    const data = await api("/api/presence/state");
+    state.presenceStatus = data || { enabled: false };
+  } catch {
+    state.presenceStatus = { enabled: false };
+  }
+}
+
+function presenceAvailable() {
+  return !!(state.presenceStatus && state.presenceStatus.enabled);
+}
+
+function presenceRuntime() {
+  return presenceAvailable() ? (state.presenceStatus.runtime || {}) : {};
+}
+
+function setLocalPresenceState(nextState) {
+  if (!presenceAvailable()) return;
+  const currentRuntime = presenceRuntime();
+  state.presenceStatus = {
+    ...state.presenceStatus,
+    runtime: {
+      ...currentRuntime,
+      previous_state: currentRuntime.state || "idle",
+      state: nextState,
+      quiet_mode: nextState === "quiet" ? true : !!currentRuntime.quiet_mode,
+      state_duration_seconds: 0,
+    },
+  };
+}
+
+function applyPresenceRuntime(runtime) {
+  if (!runtime || !presenceAvailable()) return;
+  state.presenceStatus = {
+    ...state.presenceStatus,
+    runtime,
+  };
+}
+
+function quietModeRequestedLocally(content) {
+  const text = String(content || "").toLowerCase().replace(/\s+/g, "");
+  return [
+    "别打扰我",
+    "安静一点",
+    "先别说话",
+    "静一静",
+    "别说话",
+    "安静",
+    "不要吵",
+    "别吵",
+    "别打扰",
+    "让我安静",
+    "不要打扰我",
+    "先不要说话",
+    "quietmode",
+    "silentmode",
+  ].some((keyword) => text.includes(keyword));
+}
+
+function presenceStatusKey() {
+  const runtime = presenceRuntime();
+  if (runtime.quiet_mode) return "quiet";
+  return runtime.state || "idle";
+}
+
+function presenceStatusText(key) {
+  return {
+    idle: "在",
+    thinking: "思考中",
+    speaking: "回应中",
+    quiet: "安静模式",
+    sleeping: "休息中",
+  }[key] || "在";
+}
+
+function renderPresencePill() {
+  if (!presenceAvailable()) return null;
+  const key = presenceStatusKey();
+  return h("div", { class: "presence-pill " + key, title: "Presence: " + key }, [
+    h("span", { class: "presence-dot" }),
+    h("span", { text: presenceStatusText(key) }),
+  ]);
+}
+
+async function loadAwarenessStatus() {
+  try {
+    const [consents, camera, screen, proactive, videoCompanion] = await Promise.all([
+      api("/api/consents"),
+      api("/api/camera/status"),
+      api("/api/screen/status"),
+      api("/api/proactive/status").catch(() => ({ enabled: false })),
+      api("/api/video-companion/status").catch(() => ({ enabled: false, connected: false })),
+    ]);
+    state.consents = consents.consents || [];
+    state.cameraStatus = camera;
+    state.screenStatus = screen;
+    state.proactiveStatus = proactive;
+    state.videoCompanionStatus = videoCompanion;
+  } catch {
+    state.consents = [];
+    state.cameraStatus = null;
+    state.screenStatus = null;
+    state.proactiveStatus = null;
+    state.videoCompanionStatus = null;
+  }
+}
+
+function consentFor(key) {
+  return (state.consents || []).find((item) => item.consent_key === key) || {
+    consent_key: key,
+    granted: false,
+    label: awarenessLabel(key),
+  };
+}
+
+function awarenessLabel(key) {
+  return {
+    camera: "摄像头感知",
+    screen: "屏幕感知",
+    proactive: "主动消息",
+  }[key] || key;
+}
+
+function awarenessState(key) {
+  const granted = !!consentFor(key).granted;
+  const status = key === "camera"
+    ? state.cameraStatus
+    : key === "screen"
+      ? state.screenStatus
+      : state.proactiveStatus;
+  const configEnabled = key === "proactive"
+    ? !!status?.enabled
+    : !!status?.config?.enabled;
+  const active = key === "proactive" ? !!status?.enabled : !!status?.active;
+
+  if (!configEnabled) return { tone: "off", text: granted ? "已授权，配置关闭" : "配置关闭" };
+  if (!granted) return { tone: "waiting", text: "等待授权" };
+  if (active) return { tone: "ok", text: "已启用" };
+  return { tone: "waiting", text: "未就绪" };
+}
+
+async function setAwarenessConsent(key, granted, statusEl) {
+  if (statusEl) statusEl.textContent = "";
+  try {
+    await api(granted ? "/api/consents/grant" : "/api/consents/revoke", {
+      method: "POST",
+      body: JSON.stringify({ consent_key: key }),
+    });
+    await loadAwarenessStatus();
+    renderShell();
+  } catch (err) {
+    if (statusEl) statusEl.textContent = err.message;
+  }
+}
+
+async function runAwarenessProbe(key, statusEl) {
+  if (statusEl) statusEl.textContent = "";
+  try {
+    const path = key === "camera" ? "/api/perception/cycle" : "/api/screen/perception-cycle";
+    const data = await api(path, { method: "POST" });
+    if (statusEl) statusEl.textContent = data.cycle === "disabled" ? "未启用" : "已检查";
+    await loadAwarenessStatus();
+  } catch (err) {
+    if (statusEl) statusEl.textContent = err.message;
+  }
+}
+
+function toggleCameraPreview(statusEl) {
+  state.cameraPreviewActive = !state.cameraPreviewActive;
+  if (statusEl) {
+    statusEl.textContent = state.cameraPreviewActive ? "本机预览已打开" : "本机预览已关闭";
+  }
+  renderShell();
+}
+
+async function runProactiveTick(statusEl) {
+  if (statusEl) statusEl.textContent = "";
+  try {
+    const data = await api("/api/proactive/tick", {
+      method: "POST",
+      body: JSON.stringify({ dry_run: false }),
+    });
+    if (data.sent > 0) {
+      if (statusEl) statusEl.textContent = "已发送 " + data.sent + " 条";
+    } else {
+      const firstSkip = (data.skipped || [])[0] || {};
+      if (statusEl) statusEl.textContent = firstSkip.reason ? "未发送：" + firstSkip.reason : "暂无可发送";
+    }
+    await loadAwarenessStatus();
+    await loadConversations();
+    renderShell();
+  } catch (err) {
+    if (statusEl) statusEl.textContent = err.message;
+  }
+}
+
+async function startVideoCompanion(statusEl) {
+  if (statusEl) statusEl.textContent = "";
+  try {
+    const personaId = state.activePersona?.id || null;
+    const data = await api("/api/video-companion/session/start", {
+      method: "POST",
+      body: JSON.stringify({ persona_id: personaId }),
+    });
+    if (statusEl) statusEl.textContent = data.started ? "视频会话已启动" : "视频会话未启动";
+    await loadAwarenessStatus();
+    renderShell();
+  } catch (err) {
+    if (statusEl) statusEl.textContent = err.message;
+  }
+}
+
+async function stopVideoCompanion(statusEl) {
+  if (statusEl) statusEl.textContent = "";
+  try {
+    const data = await api("/api/video-companion/session/stop", { method: "POST" });
+    if (statusEl) statusEl.textContent = data.stopped ? "视频会话已停止" : "视频会话未停止";
+    await loadAwarenessStatus();
+    renderShell();
+  } catch (err) {
+    if (statusEl) statusEl.textContent = err.message;
+  }
+}
+
+function videoCompanionState() {
+  const status = state.videoCompanionStatus || {};
+  if (!status.enabled) return { tone: "off", text: "外部服务配置关闭" };
+  if (status.connected) return { tone: "ok", text: "外部服务已连接" };
+  return { tone: "waiting", text: status.error ? "外部服务未连接" : "等待外部服务" };
+}
+
+function openVideoCompanionPage() {
+  const status = state.videoCompanionStatus || {};
+  const config = status.config || {};
+  const url = config.base_url || "http://127.0.0.1:8782";
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
+function renderVideoCompanionPanel() {
+  const status = state.videoCompanionStatus || {};
+  const config = status.config || {};
+  const stateInfo = videoCompanionState();
+  const sessionActive = !!status.status?.session_active;
+  const canControl = !!status.enabled && !!status.connected;
+  const statusEl = h("small", { class: "save-status" });
+
+  return h("div", { class: "video-companion-panel" }, [
+    h("div", { class: "video-companion-main" }, [
+      h("div", { class: "video-companion-title" }, [
+        h("strong", { text: "Video Companion" }),
+        h("small", { class: "awareness-status " + stateInfo.tone, text: stateInfo.text }),
+        config.base_url ? h("small", { class: "muted", text: config.base_url }) : null,
+      ]),
+      h("div", { class: "awareness-actions" }, [
+        h("button", {
+          type: "button",
+          class: "ghost compact",
+          text: "打开视频页",
+          title: config.base_url || "http://127.0.0.1:8782",
+          onclick: openVideoCompanionPage,
+        }),
+        h("button", {
+          type: "button",
+          class: "ghost compact",
+          text: sessionActive ? "会话运行中" : "启动会话",
+          disabled: !canControl || sessionActive,
+          title: canControl ? "" : "需先启动 E:\\视觉\\video-companion 外部服务，并在 config.yaml 开启 video_companion.enabled",
+          onclick: () => startVideoCompanion(statusEl),
+        }),
+        h("button", {
+          type: "button",
+          class: "ghost compact",
+          text: "停止会话",
+          disabled: !canControl || !sessionActive,
+          title: canControl ? "" : "外部服务未连接",
+          onclick: () => stopVideoCompanion(statusEl),
+        }),
+      ]),
+      statusEl,
+    ]),
+    h("small", {
+      class: "muted",
+      text: "实时摄像头、麦克风和视频理解由外部项目负责；主项目只做状态检查和会话入口。",
+    }),
+  ]);
+}
+
+function renderAwarenessConsentPanel() {
+  return h("section", { class: "awareness-card" }, [
+    h("div", { class: "section-head" }, [
+      h("strong", { text: "感知与主动性" }),
+      h("button", {
+        type: "button",
+        class: "ghost compact",
+        text: "刷新",
+        onclick: async () => {
+          await loadAwarenessStatus();
+          renderShell();
+        },
+      }),
+    ]),
+    h("div", { class: "awareness-list" }, [
+      renderAwarenessConsentRow("camera"),
+      renderAwarenessConsentRow("screen"),
+      renderAwarenessConsentRow("proactive"),
+      renderVideoCompanionPanel(),
+    ]),
+  ]);
+}
+
+function renderAwarenessConsentRow(key) {
+  const consent = consentFor(key);
+  const stateInfo = awarenessState(key);
+  const statusData = key === "camera"
+    ? state.cameraStatus
+    : key === "screen"
+      ? state.screenStatus
+      : state.proactiveStatus;
+  const configEnabled = key === "proactive"
+    ? !!statusData?.enabled
+    : !!statusData?.config?.enabled;
+  const granted = !!consent.granted;
+  const canProbe = configEnabled && granted;
+  const canPreviewCamera = key === "camera"
+    && canProbe
+    && !!statusData?.active
+    && !!statusData?.stream?.available;
+  const status = h("small", { class: "save-status" });
+  const checkbox = h("input", { type: "checkbox" });
+  checkbox.checked = granted;
+  checkbox.addEventListener("change", () => setAwarenessConsent(key, checkbox.checked, status));
+
+  const actions = [];
+  if (key === "camera" || key === "screen") {
+    actions.push(h("button", {
+      type: "button",
+      class: "ghost compact",
+      text: "检查一次",
+      disabled: !canProbe,
+      title: canProbe ? "" : "需先开启配置并授权",
+      onclick: () => runAwarenessProbe(key, status),
+    }));
+  }
+  if (key === "camera") {
+    actions.push(h("button", {
+      type: "button",
+      class: "ghost compact",
+      text: state.cameraPreviewActive ? "关闭预览" : "本机预览",
+      disabled: !canPreviewCamera && !state.cameraPreviewActive,
+      title: canPreviewCamera || state.cameraPreviewActive ? "" : "摄像头未可用，无法预览",
+      onclick: () => toggleCameraPreview(status),
+    }));
+  }
+  if (key === "proactive") {
+    actions.push(h("button", {
+      type: "button",
+      class: "ghost compact",
+      text: "检查一次",
+      disabled: !canProbe,
+      title: canProbe ? "" : "需先开启配置并授权",
+      onclick: () => runProactiveTick(status),
+    }));
+  }
+
+  const rowChildren = [
+    h("div", { class: "awareness-row-main" }, [
+      h("label", { class: "awareness-toggle" }, [
+        checkbox,
+        h("span", {}, [
+          h("strong", { text: consent.label || awarenessLabel(key) }),
+          h("small", { class: "awareness-status " + stateInfo.tone, text: stateInfo.text }),
+        ]),
+      ]),
+      h("div", { class: "awareness-actions" }, actions),
+      status,
+    ]),
+  ];
+  if (key === "camera" && state.cameraPreviewActive) {
+    rowChildren.push(renderCameraPreview());
+  }
+  return h("div", { class: "awareness-row" }, rowChildren);
+}
+
+function renderCameraPreview() {
+  const streamUrl = "/api/camera/stream?ts=" + Date.now();
+  return h("div", { class: "camera-preview" }, [
+    h("img", {
+      src: streamUrl,
+      alt: "摄像头本机预览",
+      decoding: "async",
+    }),
+    h("small", { class: "muted", text: "仅本机预览；当前不保存视频帧，也不上传到外部模型。" }),
+  ]);
+}
+
+async function loadVoiceConfig() {
+  try {
+    const data = await api("/api/voice/config");
+    state.voiceConfig = data.voice || { enabled: false };
+  } catch {
+    state.voiceConfig = { enabled: false };
+  }
+}
+
+function voiceAvailable() {
+  return !!(state.voiceConfig && state.voiceConfig.enabled);
+}
+
+async function playMessageVoice(message, buttonEl) {
+  if (state.voicePlaying) return;
+
+  const text = String(message.content || "").trim();
+  if (!text) return;
+
+  const messageId = message.id;
+  state.voicePlaying = messageId;
+  state.voiceError = null;
+  state.voiceErrorMessageId = null;
+  if (buttonEl) {
+    buttonEl.textContent = "播放中...";
+    buttonEl.disabled = true;
+  }
+
+  try {
+    const isolated = tabSessionMode();
+    const token = tabSessionToken();
+    const headers = {};
+    if (isolated && token) headers.Authorization = `Bearer ${token}`;
+
+    const res = await fetch("/api/voice/tts-reply", {
+      method: "POST",
+      credentials: isolated ? "omit" : "same-origin",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: JSON.stringify({ reply_text: text, expression_labels: (message.expressions || []).map(function(e) { return e.label || e.expression_type; }) }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(function() { return {}; });
+      throw new Error(err.detail || "语音生成失败");
+    }
+
+    const audioBlob = await res.blob();
+    if (!audioBlob || audioBlob.size === 0) {
+      throw new Error("语音数据为空");
+    }
+
+    const audioUrl = URL.createObjectURL(audioBlob);
+    try {
+      var audio = new Audio(audioUrl);
+
+      await new Promise(function(resolve, reject) {
+        audio.onended = resolve;
+        audio.onerror = function() {
+          reject(new Error("浏览器无法播放此音频"));
+        };
+        audio.play().catch(reject);
+      });
+    } finally {
+      URL.revokeObjectURL(audioUrl);
+    }
+  } catch (err) {
+    state.voiceError = err.message || "语音播放失败";
+    state.voiceErrorMessageId = messageId;
+    if (buttonEl) {
+      buttonEl.textContent = "播放失败";
+      buttonEl.classList.add("voice-error");
+    }
+  } finally {
+    if (Number(state.voicePlaying) === Number(messageId)) {
+      state.voicePlaying = null;
+    }
+    if (buttonEl) {
+      buttonEl.disabled = false;
+      if (state.voicePlaying === null && !state.voiceError) {
+        buttonEl.textContent = "播放语音";
+      }
+    }
+    renderShell();
+  }
+}
+
+function renderVoiceButton(message) {
+  if (!voiceAvailable()) return null;
+
+  var isPlaying = Number(state.voicePlaying) === Number(message.id);
+  var hasError = !isPlaying && Number(state.voiceErrorMessageId) === Number(message.id) && !!state.voiceError;
+  var label = isPlaying ? "播放中..." : "播放语音";
+
+  var btn = h("button", {
+    type: "button",
+    class: "voice-play-btn" + (hasError ? " voice-error" : ""),
+    text: label,
+    disabled: isPlaying ? "disabled" : null,
+    onclick: function(event) {
+      event.stopPropagation();
+      playMessageVoice(message, event.currentTarget);
+    },
+  });
+
+  if (hasError) {
+    btn.textContent = "播放失败";
+    btn.title = state.voiceError || "语音播放失败";
+  }
+
+  return btn;
+}
+
+async function loadLive2dStatus() {
+  try {
+    const data = await api("/api/live2d/status");
+    state.live2dStatus = data;
+  } catch {
+    state.live2dStatus = { enabled: false, connected: false };
+  }
+}
+
+function live2dAvailable() {
+  return !!(state.live2dStatus && state.live2dStatus.enabled);
+}
+
+function live2dStatusText() {
+  var s = state.live2dStatus || {};
+  if (!s.enabled) return "未启用";
+  if (!s.websockets_available && !s.connected) return "需安装 websockets 库 (pip install websockets)";
+  if (!s.connected) return "未连接 VTube Studio";
+  if (!s.authenticated) return "认证失败";
+  if (s.last_error) return "已连接（" + s.last_error + "）";
+  return "已连接";
+}
+
+function live2dStatusClass() {
+  var s = state.live2dStatus || {};
+  if (!s.enabled) return "off";
+  if (s.connected && s.authenticated && !s.last_error) return "ok";
+  return "error";
+}
+
+async function live2dConnect() {
+  var status = h("small", { class: "save-status" });
+  status.textContent = "正在连接 VTube Studio...";
+  try {
+    var data = await api("/api/live2d/connect", { method: "POST" });
+    state.live2dStatus = data.status;
+    renderShell();
+  } catch (err) {
+    state.live2dStatus = (state.live2dStatus || {});
+    state.live2dStatus.last_error = err.message;
+    state.live2dStatus.connected = false;
+    renderShell();
+  }
+}
+
+async function live2dDisconnect() {
+  try {
+    var data = await api("/api/live2d/disconnect", { method: "POST" });
+    state.live2dStatus = data.status;
+    renderShell();
+  } catch (err) {
+    state.live2dStatus = (state.live2dStatus || {});
+    state.live2dStatus.last_error = err.message;
+    renderShell();
+  }
+}
+
+async function live2dTestExpression() {
+  try {
+    await api("/api/live2d/apply-expression", {
+      method: "POST",
+      body: JSON.stringify({ label: "微笑", expression_type: "mood" }),
+    });
+  } catch (err) {
+    alert("测试失败：" + (err.message || "未知错误"));
+  }
+}
+
+function renderLive2dPanel(persona) {
+  if (!live2dAvailable()) return null;
+
+  var st = state.live2dStatus || {};
+  var connected = !!(st.connected && st.authenticated && !st.last_error);
+  var statusLabel = live2dStatusText();
+  var statusCls = live2dStatusClass();
+  var capabilityLabel = connected
+    ? "已加载热键 " + (st.available_hotkey_count || 0) + " 个，表情 " + (st.available_expression_count || 0) + " 个"
+    : "";
+
+  return h("section", { class: "persona-expression-card" }, [
+    h("div", {}, [
+      h("strong", { text: "Live2D 形象" }),
+      h("p", { text: "连接到 VTube Studio，让 TA 通过表情和动作回应你。" }),
+    ]),
+    h("div", { class: "live2d-status-row" }, [
+      h("span", { class: "live2d-status-dot " + statusCls }),
+      h("small", { text: statusLabel }),
+    ]),
+    connected ? h("small", { class: "muted", text: capabilityLabel }) : null,
+    st.last_error && !connected ? h("small", { class: "error", text: st.last_error }) : null,
+    h("div", { class: "live2d-actions" }, [
+      connected
+        ? h("button", { type: "button", class: "ghost compact", text: "断开", onclick: live2dDisconnect })
+        : h("button", { type: "button", class: "compact", text: "连接 VTube Studio", onclick: live2dConnect }),
+      connected
+        ? h("button", { type: "button", class: "compact", text: "测试表情 微笑", onclick: live2dTestExpression })
+        : null,
+    ]),
+  ]);
 }
 
 function messageSegments(message) {
@@ -3310,13 +4147,28 @@ function resetClientState() {
     personaPanelOpen: false,
     threadPanelOpen: false,
     deletedPanelOpen: false,
+    privacyOpen: false,
     groupCreateOpen: false,
+    groupSettingsOpen: false,
     editingConversationId: null,
     showArchived: false,
     showArchivedGroups: false,
     conversationSearch: "",
     focusComposer: false,
     sending: false,
+    voiceConfig: null,
+    voicePlaying: null,
+    voiceError: null,
+    voiceErrorMessageId: null,
+    live2dStatus: null,
+    presenceStatus: null,
+    consents: [],
+    cameraStatus: null,
+    screenStatus: null,
+    proactiveStatus: null,
+    videoCompanionStatus: null,
+    privacyPolicy: null,
+    cameraPreviewActive: false,
   };
 }
 
@@ -3329,6 +4181,12 @@ function scrollChat() {
 
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
+  if (state.privacyOpen) {
+    state.privacyOpen = false;
+    if (state.user) renderShell();
+    else renderAuth("login");
+    return;
+  }
   if (state.profileOpen || state.personaPanelOpen || state.threadPanelOpen || state.deletedPanelOpen || state.groupCreateOpen) {
     state.profileOpen = false;
     state.personaPanelOpen = false;

@@ -252,6 +252,43 @@ small {
   font-family: Consolas, "Cascadia Mono", monospace;
 }
 
+.guest-admin-card {
+  display: grid;
+  gap: 12px;
+}
+
+.card-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.guest-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.guest-stats span,
+.guest-cleanup-list {
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.guest-stats strong {
+  color: var(--accent);
+  font-size: 24px;
+}
+
+.guest-cleanup-list {
+  gap: 7px;
+}
+
 .review-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -627,6 +627,65 @@ def init_db() -> None:
                 created_at INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS app_error_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id TEXT NOT NULL DEFAULT '',
+                method TEXT NOT NULL DEFAULT '',
+                path TEXT NOT NULL DEFAULT '',
+                status_code INTEGER NOT NULL DEFAULT 500,
+                error_type TEXT NOT NULL DEFAULT '',
+                error_text TEXT NOT NULL DEFAULT '',
+                client_id TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS world_observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                source TEXT NOT NULL DEFAULT 'unknown',
+                observation_type TEXT NOT NULL DEFAULT 'general',
+                content TEXT NOT NULL DEFAULT '',
+                confidence REAL NOT NULL DEFAULT 0.5,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS proactive_state (
+                user_id INTEGER NOT NULL,
+                persona_id INTEGER NOT NULL,
+                last_proactive_at INTEGER NOT NULL DEFAULT 0,
+                proactive_count_this_hour INTEGER NOT NULL DEFAULT 0,
+                hour_start_at INTEGER NOT NULL DEFAULT 0,
+                quiet_mode INTEGER NOT NULL DEFAULT 0,
+                user_positive_count INTEGER NOT NULL DEFAULT 0,
+                user_negative_count INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, persona_id),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS user_consents (
+                user_id INTEGER NOT NULL,
+                consent_key TEXT NOT NULL,
+                granted INTEGER NOT NULL DEFAULT 0,
+                granted_at INTEGER NOT NULL DEFAULT 0,
+                revoked_at INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (user_id, consent_key),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS guest_cleanup_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                username TEXT NOT NULL DEFAULT '',
+                guest_expires_at INTEGER NOT NULL DEFAULT 0,
+                deleted_at INTEGER NOT NULL,
+                reason TEXT NOT NULL DEFAULT 'expired'
+            );
+
             CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
             CREATE INDEX IF NOT EXISTS idx_personas_user_id ON personas(user_id);
             CREATE INDEX IF NOT EXISTS idx_persona_growth_views_user
@@ -676,6 +735,16 @@ def init_db() -> None:
                 ON memory_eval_runs(user_id, persona_id, suite_name, created_at);
             CREATE INDEX IF NOT EXISTS idx_llm_call_logs_task
                 ON llm_call_logs(task, status, created_at);
+            CREATE INDEX IF NOT EXISTS idx_app_error_events_created
+                ON app_error_events(created_at);
+            CREATE INDEX IF NOT EXISTS idx_app_error_events_status
+                ON app_error_events(status_code, created_at);
+            CREATE INDEX IF NOT EXISTS idx_world_observations_scope
+                ON world_observations(user_id, source, observation_type, created_at);
+            CREATE INDEX IF NOT EXISTS idx_proactive_state_scope
+                ON proactive_state(user_id, persona_id);
+            CREATE INDEX IF NOT EXISTS idx_guest_cleanup_logs_deleted
+                ON guest_cleanup_logs(deleted_at);
             """
         )
         _ensure_column(db, "memory_links", "user_id", "INTEGER")

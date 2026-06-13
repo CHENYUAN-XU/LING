@@ -26,6 +26,8 @@ from .sculptor import (
     maybe_reconcile_inactive_chat_guidance_style,
 )
 from .growth_guidance import cancel_guidance_from_chat, maybe_store_chat_guidance
+from .presence_loop import detect_quiet_mode_request, on_reply_end, on_reply_start, on_user_message, presence_enabled as presence_is_enabled
+from .runtime_state import get_runtime_state
 
 
 CHAT_RENDERING_RULES = """聊天输出规则：
@@ -439,6 +441,15 @@ def db_chat(
         source_message_id=user_message_id,
     )
 
+    presence_transition = None
+    presence_quiet_triggered = False
+    if not retrying and presence_is_enabled():
+        presence_transition = _best_effort("Presence", lambda: on_user_message(user_id), {})
+        if detect_quiet_mode_request(message):
+            state = get_runtime_state(user_id)
+            state.set_quiet_mode(True)
+            presence_quiet_triggered = True
+
     stored_memories = [] if retrying else _best_effort(
         "Archivist",
         lambda: extract_and_store(
@@ -606,6 +617,9 @@ def db_chat(
     )
 
     degraded = False
+    presence_reply_state = None
+    if presence_is_enabled():
+        presence_reply_state = _best_effort("PresenceReply", lambda: on_reply_start(user_id), {})
     try:
         reply = call_llm_api(messages, task="chat")
     except LLMProviderError as exc:
@@ -668,6 +682,11 @@ def db_chat(
     else:
         conversation_summary = {"skipped": True, "reason": "memory policy summary cadence"}
 
+    presence_state = None
+    if presence_is_enabled():
+        presence_state = _best_effort("PresenceEnd", lambda: on_reply_end(user_id), {})
+        presence_state = get_runtime_state(user_id).get_snapshot()
+
     return {
         "reply": reply,
         "conversation_id": conversation["id"],
@@ -681,6 +700,7 @@ def db_chat(
         "layered_memory": layered,
         "degraded": degraded,
         "expressions": expressions,
+        "presence": presence_state,
     }
 
 

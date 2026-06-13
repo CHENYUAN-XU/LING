@@ -19,6 +19,21 @@ SYSTEM_PLAN.md
 - 第一阶段“单人格文字聊天基础”已达到功能闭环：账号/游客、人格创建与命名、资料真实生效、主界面与聊天记录、未读、失败重试、删除恢复及普通端流程验证均已落地。手机实机布局和操作手感继续作为维护项随测随修，不阻塞后续主线。
 - 第二阶段“人格成长与反馈体验”已完成功能闭环并转入观测维护：用户能自然感知与反馈人格变化，管理员可审核、追踪证据链；稀疏画像探索、明确拒绝/重新邀请提问也已有第一版约束。
 - 第三阶段“表达系统”已推进第一版轻表达闭环：回复可携带至多一个白名单结构化轻表达标签，由程序单独展示，并已限制连续出现和近期同标签重复；用户可在聊天中直接要求关闭、克制或恢复轻表达，也可在联系人资料页选择关闭/克制/正常三档；表达标签已接入轻量资源目录，资源目录会同时驱动模型协议提示和前端文本徽标展示，暂不扩张到完整贴纸或形象资源。
+- 第四至第九阶段已具备最小可验证闭环：语音播放入口、Live2D 连接入口、Presence 状态、Camera/Screen 授权与一次性检查、Proactive 授权与发送前约束均已落地；这些能力仍默认关闭，且不代表真实设备、视觉识别、OCR 或长期后台调度已经达到生产级。
+
+## 验收纠偏
+
+2026-06-13 代码审查与修复结论：4-9 阶段已从“只有脚手架”推进到最小可验证闭环，但仍不等于完整生产级体验。后续开发不得只凭单个阶段脚本通过就宣称全部完成；至少运行 `py scripts\verify_all.py`，并按涉及功能补充真实设备或浏览器验收。
+
+- 明确边界：实时视频陪伴项目已由项目作者拿到外部独立制作并完成到 `E:\视觉\video-companion`。后续即使换到其他聊天窗口继续开发本仓库，也必须默认跳过该项目，不要在主项目内继续实现视频通话、连续摄像头理解或视觉模型抽帧链路。`docs/VIDEO_COMPANION_PROJECT_PLAN.md` 保留不删，只作为外部项目计划、接口契约和接回主项目的参考。
+- 实时视频陪伴已拆为独立项目：类似豆包视频的“摄像头 + 麦克风 + 视觉理解 + 低延迟语音对话”不继续塞进主项目硬做。主项目只保留授权、人格上下文、会话摘要回写和入口位置；当前通过 `app/video_companion.py` 与 `/api/video-companion/*` 适配外部服务，默认端口为 `8782`，避免和主项目开发端口 `8001` 冲突。
+- Video Companion 接入运行手册见 `docs/VIDEO_COMPANION_INTEGRATION_RUNBOOK.md`；开发期可用 `scripts/start_integrated_video_companion.ps1` 同时拉起主项目和外部视频服务。
+- 语音：`/api/voice/tts-reply` 已能返回前端可播放音频，普通端 assistant 消息提供播放按钮、播放中状态和失败提示；仍依赖 `edge-tts` 与网络。
+- Live2D：普通端资料面板提供 VTube Studio 连接、断开和测试表情入口；后端会按 VTube Studio 插件 API 申请/缓存授权 token，并加载当前模型热键与表情能力，失败原因会明示；真实模型动作仍需本机 VTube Studio 实机联调。
+- Presence：已接入聊天发送流程和前端状态展示，支持 idle/thinking/quiet 等最小状态，运行态按当前用户隔离，安静模式不会被回复结束冲掉；仍不是完整实时陪伴引擎。
+- Camera：默认关闭，需全局配置开启且用户显式授权；状态接口按当前用户授权计算，未授权不会误报 active；有 OpenCV 可用时可做一次性取帧、Haar 人脸存在检测和本机 MJPEG 预览。普通元数据接口不返回图像字节，本机预览只在用户点开时建立连接，不等于视频通话或连续视觉理解。
+- Screen：默认关闭，需全局配置开启且用户显式授权；资料弹窗有授权/撤销和一次性检查入口；当前可采集活动窗口标题，若显式开启截图也只返回尺寸等元数据，不保存像素，不做 OCR。
+- Proactive：默认关闭，需全局配置开启且用户显式授权；具备人格归属校验、频率限制、安静模式、反馈记录、发送前风险判断、单次主动消息 tick 和可选后台调度器；调度器默认关闭，避免未经确认持续消耗模型额度。
 
 ## 后续计划清单
 
@@ -31,7 +46,7 @@ SYSTEM_PLAN.md
 - 输出净化与表达层：括号动作不直接进入聊天文本；当前支持经白名单校验的结构化轻表达标签并存入 `message_expressions`，用户明确说“以后别发表情了 / 表情少一点 / 现在可以发表情了”会写入 `expression_preferences` 的 `off` / `subtle` / `normal` 模式并从当轮生效，联系人资料页也能显式选择三档；表达标签先通过 `/api/expression-assets` 映射为文本徽标，且资源目录中的用途说明、分组、风险和强度会生成聊天 prompt 白名单，后续再由表情/动作调度决定是否映射贴纸、头像表情或动作。
 - 删除人格：第一版已实现软删除与恢复。资料编辑页底部的危险操作区要求输入人格名字确认；删除后普通端隐藏人格和相关会话，并禁止从旧会话继续读取或聊天；用户可从主界面/创建页的“已删除”面板恢复对象与保留聊天，记忆与版本历史仍保留。
 - 表情资源系统：建立表情包/动作资源库、人格专属表情映射、频率控制和管理员审查。
-- 形象、声音和实时陪伴：远期接入擅长生图的 AI，生成头像、立绘、表情或完整形象；再逐步扩展声音合成、语音聊天，甚至视频电话或实时形象驱动。这些属于后阶段，在人格成长与反馈链路稳定后再展开。
+- 形象、声音和实时陪伴：远期接入擅长生图的 AI，生成头像、立绘、表情或完整形象；声音合成、语音聊天和 Live2D 入口可在主项目保持轻量接入。实时摄像头视频陪伴另立项目推进，完成后再通过接口接回主项目。
 
 ## 当前能力
 
@@ -124,6 +139,31 @@ Windows 用户变量需要配置：
 - `data/` 包含本地 SQLite 数据库、聊天数据和上传图片，不进入版本控制。
 - `*.log`、`tools/` 下的临时隧道工具以及 `.env*` 本地密钥文件不进入版本控制。
 - `config.yaml` 只保存模型路由和环境变量名，不应写入真实 API Key。
+- 本地备份使用 SQLite backup API 生成一致性快照，并把 `data/uploads` 和 `manifest.json` 打包到 zip：
+
+```powershell
+py scripts\backup_data.py
+py scripts\backup_data.py --label before-big-change
+py scripts\backup_data.py --no-uploads
+```
+
+默认输出到 `data/backups/`。验证脚本为 `py scripts\verify_data_backup.py`，也已纳入 `py scripts\verify_all.py`。
+- 用户数据导出第一版已落地：登录用户可调用 `GET /api/account/export` 导出自己的 JSON 数据；本地维护可用：
+
+```powershell
+py scripts\export_user_data.py --user-id 1 --output data\exports\user-1.json
+```
+
+导出会排除 session token 和 password hash，并只列出该用户 `data/uploads/<user_id>` 下的上传文件清单。文件字节请配合完整本地备份 zip 保存。
+- 安全基础第一版：
+  - `rate_limit` 配置已启用本地内存固定窗口限流，覆盖登录/注册、聊天、上传、账号导出/删除和人格写操作。多进程或正式公网部署前应迁移到 Redis 或反向代理限流。
+  - `logging` 配置已启用请求日志，默认写入 `logs/app.log`，包含 request id、路径、状态码、耗时和 5xx 异常类型，不记录请求正文；5xx 还会写入 `app_error_events`，管理员可通过 `GET /api/admin/error-events` 查看最近错误。
+  - 数据与隐私说明已有第一版：`GET /api/privacy`、登录页/资料弹窗的“数据与隐私”入口和 `docs/PRIVACY_AND_DATA.md` 使用同一套边界，明确游客保留期、导出/删除能力、设备授权和独立 Video Companion 项目边界。
+  - 部署预检已有第一版：`py scripts\check_deployment.py --production` 检查 API Key 环境变量、明文密钥、限流、日志、Secure cookie、Video Companion 外部路径和主动调度风险；部署手册见 `docs/DEPLOYMENT_RUNBOOK.md`。
+  - 游客模式治理已有第一版：登录页和游客资料弹窗提示临时数据范围与 3 天清理规则；后台 `GET /api/admin/guests` 可查看活跃游客、24 小时内到期数量和清理审计日志。
+  - 已删除的人格可在“已删除”面板中永久删除；必须先软删除，再输入人格名确认。
+  - 资料面板提供账号彻底删除入口；正式账号必须输入账号名和当前密码，游客账号输入账号名即可。删除会级联账号数据并清理 `data/uploads/<user_id>`。
+  - 环境检查脚本：`py scripts\check_environment.py` 会列出 `config.yaml` 引用的 API Key 环境变量、当前缺失项，并检查配置里是否误写了疑似密钥；`--strict` 会在缺少变量时失败。
 
 ## 启动
 
@@ -478,7 +518,7 @@ py -m app.admin set-user 用户名
 - 绑定正式域名和 HTTPS。
 - 使用 Nginx / Caddy / 云平台反向代理。
 - 从 SQLite 迁移到 PostgreSQL；后续向量检索可迁移到 pgvector。
-- 补齐生产能力：日志、备份、限流、错误监控、管理员权限保护、用户隐私和数据导出/删除。
+- 补齐生产能力：本地 zip 备份、用户 JSON 数据导出、基础限流、请求日志、错误监控、隐私说明、部署预检、人格永久删除、账号删除、管理员路由保护扫描和环境配置检查已具备第一版；正式多人生产仍需 PostgreSQL/Redis 级别改造。
 
 打包方向：
 
@@ -531,10 +571,13 @@ pending -> dismissed
 ## 验证命令
 
 ```powershell
-py -m compileall app scripts
-node --check web\app.js
-node --check admin_web\admin.js
-py scripts\verify_phase1_flows.py
-py scripts\verify_phase2_growth.py
-py scripts\verify_phase3_expression.py
+py scripts\verify_all.py
 ```
+
+如果需要同时验正在运行的本地服务：
+
+```powershell
+py scripts\verify_all.py --http-smoke http://127.0.0.1:8001
+```
+
+涉及真实设备或外部服务时，还需要补人工验收：例如 Voice 的真实音频播放、Live2D 的 VTube Studio 实机动作、Camera 设备可用性、Screen 隐私边界和 Proactive 常驻调度策略/额度边界。
