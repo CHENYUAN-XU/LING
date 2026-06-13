@@ -14,9 +14,13 @@
 - 用户当然知道对象由 AI 驱动，但人格自己不能开口自称 AI、模型、机器人或程序。
 - 人格要像一个有自主性、能自然聊天的人，而不是解释自己在执行系统 prompt。
 - 记忆系统已经第一阶段收束，后续不要继续无限加记忆功能；第二阶段人格成长与反馈体验已完成功能闭环并转入观测维护，当前主线开始进入第三阶段轻表达系统。
+- 强制接力边界：实时视频陪伴项目已由项目作者拿到外部独立制作，并已放在 `E:\视觉\video-companion`。后续任何聊天窗口接手本仓库时，都必须跳过该项目，不要在主项目里继续实现视频通话、连续摄像头帧理解、视觉模型抽帧链路或视频会话状态机。`docs/VIDEO_COMPANION_PROJECT_PLAN.md` 必须保留；主项目只通过 `app/video_companion.py` 和 `/api/video-companion/*` 接外部服务。
+- 2026-06-13 审查与修复确认：语音、Live2D、presence、camera、screen、proactive 已从脚手架推进到最小可验证闭环。默认关闭、用户授权、前端入口/状态展示、失败提示与回归脚本已经补齐；Camera 有 OpenCV Haar 人脸存在检测路径和本机 MJPEG 预览，Screen 可取活动窗口标题和截图元数据但不保存像素/不做 OCR；Proactive 已有单次 tick 和可选后台调度器，可落库主动消息，但调度器默认关闭以避免未经确认持续消耗模型额度。这仍不等于完整生产级能力。类似豆包视频的实时摄像头陪伴已拆成独立项目并在 `E:\视觉\video-companion` 完成；主项目只保留接入点、授权边界、回写接口和外部服务适配器。
+- Video Companion 接入运行手册：`docs/VIDEO_COMPANION_INTEGRATION_RUNBOOK.md`。开发期启动脚本：`scripts/start_integrated_video_companion.ps1`。
+- Video Companion 桥接改动后除普通 `py scripts\verify_all.py` 外，还要跑 `py scripts\verify_all.py --video-e2e`；该脚本会临时启动主项目和外部 `E:\视觉\video-companion`，验证上下文、启动/停止和授权允许的摘要回写。
 - 多 agent 数量不预设，随着系统成熟逐步出现。不要为了做架构而硬拆 agent。
 - LLM 不固定 DeepSeek，未来要支持多供应商、多模型按任务难度、成本和重要性路由。
-- 远期会扩展到人物形象、头像/立绘/表情、声音、语音聊天，甚至视频电话或实时形象驱动，但这些属于后阶段能力，需在人格成长与反馈链路稳定后展开。
+- 远期会扩展到人物形象、头像/立绘/表情、声音、语音聊天和实时形象驱动。摄像头实时视频陪伴不在主项目内继续扩张，改由独立 Video Companion 项目完成后接回。
 - 多平台功能要平行推进：网页桌面端、手机端/PWA、后续桌面壳和原生移动端不能各做一套割裂产品。核心交互、主界面、未读状态、资料页、聊天体验和账号数据必须共享同一套后端能力与产品结构，再按设备做布局适配。
 - 未来要建立主动联系系统：人格可以在合适的时候主动给用户发信息，增强关系生命感和用户兴趣；但必须先取得用户许可，并根据长期反馈学习频率和类型，不能变成骚扰或营销推送。
 
@@ -25,13 +29,13 @@
 项目路径：
 
 ```powershell
-E:\忆界树Project_Mnemosyne
+E:\澪\project-mnemosyne
 ```
 
 推荐开发启动：
 
 ```powershell
-cd "E:\忆界树Project_Mnemosyne"
+cd "E:\澪\project-mnemosyne"
 py -m uvicorn app.server:app --host 127.0.0.1 --port 8001
 ```
 
@@ -45,12 +49,13 @@ py -m uvicorn app.server:app --host 127.0.0.1 --port 8001
 每次改完至少运行：
 
 ```powershell
-py -m compileall app scripts
-py scripts\verify_phase1_flows.py
-py scripts\verify_phase2_growth.py
-py scripts\verify_phase3_expression.py
-node --check web\app.js
-node --check admin_web\admin.js
+py scripts\verify_all.py
+```
+
+如果需要同时验正在运行的本地服务：
+
+```powershell
+py scripts\verify_all.py --http-smoke http://127.0.0.1:8001
 ```
 
 当前模型配置：
@@ -353,6 +358,14 @@ LLM 路由：
 
 ### 第四阶段及以后：多 agent、模型路由和主动联系
 
+当前仓库的后阶段能力已具备最小可验证闭环：Voice、Live2D、Presence、Camera、Screen、Proactive 均默认关闭，并已有前端入口或状态展示、用户授权边界、失败提示和回归验证。不得把“最小闭环”说成完整生产级完成。实时视频陪伴能力已经从主项目拆出：主项目不继续承担连续摄像头帧理解、语音通话状态机、视觉模型成本调度和视频会话 UI；这些工作进入独立 Video Companion 项目。
+
+- 语音已接入普通端播放流程，但仍需验证 `edge-tts`、网络和浏览器播放兼容性。
+- Live2D 已有 VTube Studio 连接入口、授权 token 缓存、当前模型热键/表情能力加载和测试表情入口，但仍需真实模型动作实机联调。
+- Presence 已接入聊天收发流程和前端状态，运行态已按当前用户隔离，但仍需更完整的实时陪伴状态机。
+- Camera / Screen 已有用户许可、隐私边界和关闭入口；Camera 具备 OpenCV Haar 人脸存在检测路径和本机 MJPEG 预览，Screen 可采集活动窗口标题和截图元数据。主项目不继续把 Camera 扩展成完整视频理解引擎；更可靠的视觉识别、视频通话和成本路由进入独立项目。
+- Proactive 已有用户许可、人格归属校验、频率限制、安静模式、反馈记录、发送前风险判断、单次主动消息 tick 和默认关闭的常驻调度器；调度器启用前仍需人工确认频率、成本和打扰边界。
+
 不要现在硬拆复杂多 agent。随着功能成熟再增加：
 
 - 聊天主体 agent。
@@ -459,7 +472,8 @@ LLM 路由：
 - 建立表情和贴纸资源库，让表达 agent 选择合适资源。
 - 接入声音合成，形成稳定的人格声线。
 - 支持语音聊天，让人格能听和说。
-- 更远期支持视频电话或实时形象驱动，但必须在聊天体验、人格稳定性和成本路由成熟后再做。
+- 实时摄像头视频陪伴已拆入独立 Video Companion 项目：先做摄像头/麦克风权限、抽帧、本地检测、视觉模型 provider、语音输入输出、多模态会话状态机，再通过 API 接回主项目的人格上下文和记忆回写。
+- 主项目仍可继续轻量接入 Live2D、头像、贴纸和声音，但不在这里硬塞完整视频电话工程。
 
 ### 多设备访问、部署和打包
 
@@ -478,8 +492,7 @@ LLM 路由：
 - 部署到 VPS / 云服务器 / PaaS，使用正式域名和 HTTPS。
 - FastAPI 后面接 Nginx / Caddy / 云平台反向代理。
 - SQLite 适合当前本地开发；正式多人使用时应迁移 PostgreSQL，后续向量检索可接 pgvector。
-- 需要补充生产级能力：环境变量管理、日志、备份、限流、错误监控、管理员权限保护、用户数据导出/删除、隐私协议。
-- 游客模式正式化前要补：更清晰的游客数据提示、到期前提醒、管理员查看游客数量和清理日志。
+- 生产基础已有第一版：`py scripts\backup_data.py` 使用 SQLite backup API 生成一致性数据库快照，并把 `data/uploads` 与 `manifest.json` 打成 zip，默认输出到 `data/backups/`；`py scripts\verify_data_backup.py` 已纳入总验证。用户数据导出已有第一版：`GET /api/account/export` 与 `py scripts\export_user_data.py --user-id ...` 可导出当前用户/指定用户的 JSON 数据，排除 session token 和 password hash，只列出该用户上传文件清单；`py scripts\verify_user_export.py` 已纳入总验证。基础限流已有第一版：`rate_limit` 配置覆盖登录/注册、聊天、上传、账号导出/删除和人格写操作；多进程/公网生产前应迁移到 Redis 或反向代理限流。请求日志和错误监控已有第一版：`logging` 配置默认写入 `logs/app.log`，记录 request id、路径、状态码、耗时和 5xx 异常类型，不记录请求正文；5xx 同步写入 `app_error_events`，可通过 `GET /api/admin/error-events` 查看。隐私说明已有第一版：`GET /api/privacy`、登录页/资料弹窗的“数据与隐私”入口和 `docs/PRIVACY_AND_DATA.md` 明确游客保留期、导出/删除能力、设备授权和独立 Video Companion 项目边界。部署预检已有第一版：`py scripts\check_deployment.py --production` 检查 API Key 环境变量、疑似明文密钥、限流、日志、`security.secure_cookies`、Video Companion 外部路径和主动调度风险；部署手册见 `docs/DEPLOYMENT_RUNBOOK.md`。游客模式治理已有第一版：普通端提示临时数据范围与 3 天清理规则，清理过期游客前写入 `guest_cleanup_logs`，后台 `GET /api/admin/guests` 可查看活跃游客、24 小时内到期数量和清理审计日志；`py scripts\verify_guest_admin.py` 已纳入总验证。彻底删除策略已有第一版：已删除人格可二次确认后永久删除；账号删除要求正式账号输入账号名和密码、游客输入账号名，并级联数据库与 `data/uploads/<user_id>`。管理员路由保护已有扫描脚本：`py scripts\verify_admin_protection.py` 当前确认 40 个 `/api/admin/*` 路由均依赖 `current_admin`。环境配置检查已有第一版：`py scripts\check_environment.py` 列出配置引用的 API Key 环境变量、缺失项和疑似误写密钥；`py scripts\verify_environment_config.py` 已纳入总验证。正式多人生产仍需 PostgreSQL/Redis 级别改造。
 
 打包方向：
 

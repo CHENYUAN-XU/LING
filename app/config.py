@@ -25,6 +25,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "extract_every": 2,
         "consolidate_every": 10,
     },
+    "security": {
+        "secure_cookies": False,
+    },
 }
 
 

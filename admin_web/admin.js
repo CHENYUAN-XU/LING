@@ -5,6 +5,7 @@ const TAB_SESSION_TOKEN_KEY = "mnemosyne:tab-session-token";
 let state = {
   user: null,
   users: [],
+  guestStatus: null,
   personas: [],
   selectedUserId: null,
   selectedPersonaId: null,
@@ -79,8 +80,12 @@ async function bootstrap() {
     const me = await api("/api/me");
     if (me.user.role !== "admin") throw new Error("当前账号不是管理员。");
     state.user = me.user;
-    const users = await api("/api/admin/users");
+    const [users, guests] = await Promise.all([
+      api("/api/admin/users"),
+      api("/api/admin/guests"),
+    ]);
     state.users = users.users;
+    state.guestStatus = guests;
     state.selectedUserId = state.users[0]?.id || me.user.id;
     await loadPersonas();
     render();
@@ -99,11 +104,13 @@ async function bootstrap() {
 
 async function loadPersonas() {
   const previousPersonaId = state.selectedPersonaId;
-  const [users, data] = await Promise.all([
+  const [users, guests, data] = await Promise.all([
     api("/api/admin/users"),
+    api("/api/admin/guests"),
     api(`/api/admin/personas?target_user_id=${state.selectedUserId}`),
   ]);
   state.users = users.users;
+  state.guestStatus = guests;
   state.personas = data.personas;
   state.selectedPersonaId = state.personas.some((persona) => Number(persona.id) === Number(previousPersonaId))
     ? previousPersonaId
@@ -197,7 +204,7 @@ function renderUserButton(user) {
     h("span", { class: "avatar", text: String(label || "U").slice(0, 1).toUpperCase() }),
     h("span", {}, [
       h("strong", { text: label }),
-      h("small", { text: `${user.role} / ${user.status}` }),
+      h("small", { text: user.is_guest ? `游客 / ${guestExpiryLabel(user.guest_expires_at)}` : `${user.role} / ${user.status}` }),
       queueText ? h("small", { class: pending ? "queue-active" : adjustment ? "queue-followup" : "queue-stale", text: queueText }) : null,
     ]),
   ]);
@@ -219,9 +226,46 @@ function renderMain() {
       ]),
     ]),
     state.error ? h("p", { class: "error", text: state.error }) : null,
+    renderGuestStatus(),
     state.growthDemo ? renderGrowthDemoNotice(state.growthDemo) : null,
     state.review ? renderReview() : renderEmpty(),
   ]);
+}
+
+function renderGuestStatus() {
+  const status = state.guestStatus;
+  if (!status) return null;
+  const logs = status.cleanup_logs || [];
+  return h("section", { class: "card guest-admin-card" }, [
+    h("div", { class: "card-head" }, [
+      h("div", {}, [
+        h("p", { class: "eyebrow", text: "Guest Mode" }),
+        h("h3", { text: "游客数据" }),
+      ]),
+      h("small", { text: status.next_expiry_at ? `下一次到期：${formatTs(status.next_expiry_at)}` : "暂无到期游客" }),
+    ]),
+    h("div", { class: "guest-stats" }, [
+      h("span", {}, [h("strong", { text: String(status.active_guest_count || 0) }), h("small", { text: "活跃游客" })]),
+      h("span", {}, [h("strong", { text: String(status.expiring_24h_count || 0) }), h("small", { text: "24 小时内到期" })]),
+    ]),
+    h("p", { class: "muted", text: "游客账号默认 3 天后自动删除账号、人格、聊天、记忆和上传目录；清理会留下下方审计记录。" }),
+    logs.length
+      ? h("div", { class: "guest-cleanup-list" }, logs.map((log) => h("small", {
+          text: `${formatTs(log.deleted_at)} 清理 ${log.username || `guest#${log.user_id}`}，原因：${log.reason || "expired"}`,
+        })))
+      : h("small", { text: "暂无游客清理记录。" }),
+  ]);
+}
+
+function guestExpiryLabel(value) {
+  const expiresAt = Number(value || 0);
+  if (!expiresAt) return "无到期时间";
+  const remaining = expiresAt - Math.floor(Date.now() / 1000);
+  if (remaining <= 0) return "已到期";
+  const days = Math.ceil(remaining / 86400);
+  if (days > 1) return `${days} 天后清除`;
+  const hours = Math.ceil(remaining / 3600);
+  return `${Math.max(1, hours)} 小时后清除`;
 }
 
 function renderGrowthDemoNotice(demo) {

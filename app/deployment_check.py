@@ -1,0 +1,106 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from .config import BASE_DIR, load_config
+from .environment_check import inspect_environment
+
+
+def deployment_report(config: dict[str, Any] | None = None, *, production: bool = False) -> dict[str, Any]:
+    cfg = config or load_config()
+    checks: list[dict[str, str]] = []
+    env = inspect_environment(cfg)
+
+    _add(
+        checks,
+        "api_keys",
+        "pass" if not env["missing"] else ("fail" if production else "warn"),
+        "all configured API key environment variables are present"
+        if not env["missing"]
+        else "missing API key environment variables: " + ", ".join(env["missing"]),
+    )
+    _add(
+        checks,
+        "secrets_in_config",
+        "pass" if not env["secrets_in_config"] else "fail",
+        "no secret-like values found in config"
+        if not env["secrets_in_config"]
+        else "secret-like values found at: " + ", ".join(item["path"] for item in env["secrets_in_config"]),
+    )
+
+    rate_limit = cfg.get("rate_limit", {}) if isinstance(cfg.get("rate_limit"), dict) else {}
+    _add(
+        checks,
+        "rate_limit",
+        "pass" if rate_limit.get("enabled", False) else ("fail" if production else "warn"),
+        "rate_limit.enabled is true" if rate_limit.get("enabled", False) else "rate_limit.enabled is false",
+    )
+
+    logging_cfg = cfg.get("logging", {}) if isinstance(cfg.get("logging"), dict) else {}
+    logging_enabled = bool(logging_cfg.get("enabled", False) and logging_cfg.get("request_log_enabled", False))
+    _add(
+        checks,
+        "request_logging",
+        "pass" if logging_enabled else ("fail" if production else "warn"),
+        "request logging is enabled" if logging_enabled else "request logging is disabled",
+    )
+
+    security = cfg.get("security", {}) if isinstance(cfg.get("security"), dict) else {}
+    secure_cookies = bool(security.get("secure_cookies", False))
+    _add(
+        checks,
+        "secure_cookies",
+        "pass" if secure_cookies or not production else "fail",
+        "secure cookies enabled"
+        if secure_cookies
+        else "secure cookies disabled; acceptable only for local HTTP development",
+    )
+
+    data_parent = (BASE_DIR / "data").parent
+    _add(
+        checks,
+        "data_directory",
+        "pass" if data_parent.exists() else "fail",
+        f"runtime data directory parent exists: {BASE_DIR / 'data'}",
+    )
+
+    video_cfg = cfg.get("video_companion", {}) if isinstance(cfg.get("video_companion"), dict) else {}
+    video_enabled = bool(video_cfg.get("enabled", False))
+    video_path = Path(str(video_cfg.get("project_path") or ""))
+    _add(
+        checks,
+        "video_companion_boundary",
+        "pass" if not video_enabled or video_path.exists() else "fail",
+        "Video Companion disabled in main config"
+        if not video_enabled
+        else f"Video Companion external path {'exists' if video_path.exists() else 'is missing'}: {video_path}",
+    )
+
+    proactive = cfg.get("proactive", {}) if isinstance(cfg.get("proactive"), dict) else {}
+    scheduler_enabled = bool(proactive.get("scheduler_enabled", False))
+    _add(
+        checks,
+        "proactive_scheduler",
+        "pass" if not scheduler_enabled else "warn",
+        "proactive scheduler disabled by default"
+        if not scheduler_enabled
+        else "proactive scheduler enabled; confirm quota and quiet-hour policy before public deployment",
+    )
+
+    failed = [check for check in checks if check["status"] == "fail"]
+    warnings = [check for check in checks if check["status"] == "warn"]
+    return {
+        "ok": not failed,
+        "production": production,
+        "checks": checks,
+        "summary": {
+            "failed": len(failed),
+            "warnings": len(warnings),
+            "passed": len([check for check in checks if check["status"] == "pass"]),
+        },
+    }
+
+
+def _add(checks: list[dict[str, str]], name: str, status: str, detail: str) -> None:
+    checks.append({"name": name, "status": status, "detail": detail})

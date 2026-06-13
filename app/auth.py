@@ -9,7 +9,7 @@ from typing import Any
 
 from fastapi import Cookie, Depends, Header, HTTPException, Response, status
 
-from .config import BASE_DIR
+from .config import BASE_DIR, load_config
 from .database import dict_from_row, get_db, now_ts
 
 
@@ -133,7 +133,7 @@ def cleanup_expired_guest_users(ts: int | None = None) -> int:
     with get_db() as db:
         rows = db.execute(
             """
-            SELECT id
+            SELECT id, username, guest_expires_at
             FROM users
             WHERE is_guest = 1
               AND guest_expires_at > 0
@@ -143,6 +143,14 @@ def cleanup_expired_guest_users(ts: int | None = None) -> int:
         ).fetchall()
         user_ids = [int(row["id"]) for row in rows]
         if user_ids:
+            for row in rows:
+                db.execute(
+                    """
+                    INSERT INTO guest_cleanup_logs (user_id, username, guest_expires_at, deleted_at, reason)
+                    VALUES (?, ?, ?, ?, 'expired')
+                    """,
+                    (int(row["id"]), str(row["username"]), int(row["guest_expires_at"] or 0), ts),
+                )
             placeholders = ",".join("?" for _ in user_ids)
             db.execute(f"DELETE FROM users WHERE id IN ({placeholders})", user_ids)
 
@@ -202,6 +210,22 @@ def convert_guest_user(
         raise HTTPException(status_code=409, detail="username already exists") from exc
 
 
+def delete_user_account(*, user_id: int, confirm_username: str, password: str | None = None) -> dict[str, Any]:
+    with get_db() as db:
+        user = dict_from_row(db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
+        if not user:
+            raise HTTPException(status_code=404, detail="user not found")
+        if str(confirm_username or "").strip() != str(user.get("username") or "").strip():
+            raise HTTPException(status_code=400, detail="请输入完整账号名以确认删除")
+        if not user.get("is_guest"):
+            if not password or not verify_password(password, str(user.get("password_hash") or "")):
+                raise HTTPException(status_code=401, detail="password confirmation failed")
+        db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+    shutil.rmtree(UPLOAD_ROOT / str(user_id), ignore_errors=True)
+    return {"ok": True, "user_id": user_id, "status": "deleted"}
+
+
 def authenticate_user(username: str, password: str) -> dict[str, Any] | None:
     cleanup_expired_guest_users()
     with get_db() as db:
@@ -234,6 +258,7 @@ def set_session_cookie(response: Response, token: str, max_age: int = SESSION_SE
         max_age=max_age,
         httponly=True,
         samesite="lax",
+        secure=secure_session_cookies(),
     )
 
 
@@ -241,7 +266,14 @@ def clear_session(response: Response, token: str | None = None) -> None:
     if token:
         with get_db() as db:
             db.execute("DELETE FROM sessions WHERE token = ?", (token,))
-    response.delete_cookie(SESSION_COOKIE)
+    response.delete_cookie(SESSION_COOKIE, httponly=True, samesite="lax", secure=secure_session_cookies())
+
+
+def secure_session_cookies() -> bool:
+    security = load_config().get("security", {})
+    if not isinstance(security, dict):
+        return False
+    return bool(security.get("secure_cookies", False))
 
 
 def _token_from_header(authorization: str | None) -> str | None:
