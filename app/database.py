@@ -121,6 +121,10 @@ def init_db() -> None:
                 psychological_fit_notes TEXT NOT NULL DEFAULT '',
                 appearance_description TEXT NOT NULL DEFAULT '',
                 desired_image TEXT NOT NULL DEFAULT '',
+                live2d_model_id TEXT NOT NULL DEFAULT '',
+                live2d_preview_url TEXT NOT NULL DEFAULT '',
+                fallback_image_url TEXT NOT NULL DEFAULT '',
+                voice_profile TEXT NOT NULL DEFAULT '',
                 growth_notes TEXT NOT NULL DEFAULT '',
                 avatar_url TEXT,
                 status TEXT NOT NULL DEFAULT 'active',
@@ -145,6 +149,10 @@ def init_db() -> None:
                 psychological_fit_notes TEXT NOT NULL DEFAULT '',
                 appearance_description TEXT NOT NULL DEFAULT '',
                 desired_image TEXT NOT NULL DEFAULT '',
+                live2d_model_id TEXT NOT NULL DEFAULT '',
+                live2d_preview_url TEXT NOT NULL DEFAULT '',
+                fallback_image_url TEXT NOT NULL DEFAULT '',
+                voice_profile TEXT NOT NULL DEFAULT '',
                 growth_notes TEXT NOT NULL DEFAULT '',
                 reason TEXT NOT NULL DEFAULT '',
                 change_type TEXT NOT NULL DEFAULT '',
@@ -797,6 +805,10 @@ def init_db() -> None:
             _ensure_column(db, table, "psychological_fit_notes", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(db, table, "appearance_description", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(db, table, "desired_image", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(db, table, "live2d_model_id", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(db, table, "live2d_preview_url", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(db, table, "fallback_image_url", "TEXT NOT NULL DEFAULT ''")
+            _ensure_column(db, table, "voice_profile", "TEXT NOT NULL DEFAULT ''")
             _ensure_column(db, table, "growth_notes", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(db, "persona_versions", "change_type", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(db, "persona_versions", "source_suggestion_id", "INTEGER")

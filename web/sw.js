@@ -1,9 +1,9 @@
-const CACHE_NAME = "ling-shell-v7";
+const CACHE_NAME = "ling-shell-v10";
 const APP_SHELL = [
   "/",
   "/index.html",
-  "/style.css?v=20260614-single-workspace-1",
-  "/app.js?v=20260614-single-workspace-1",
+  "/style.css?v=20260615-self-use-profile-1",
+  "/app.js?v=20260615-self-use-profile-1",
   "/manifest.webmanifest",
   "/icon.svg",
 ];
