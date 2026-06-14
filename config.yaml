@@ -1,5 +1,15 @@
 active_persona: ""
 
+self_use:
+  enabled: true
+  username: mio_owner
+  nickname: 澪的工作区
+  require_localhost: true
+  seed_default_persona: true
+  default_persona_name: 澪
+  # Keep model calls off until you explicitly decide LING is ready to talk to an API.
+  chat_enabled: false
+
 llm:
   provider: kimi
   model: kimi-k2.6
@@ -72,8 +82,10 @@ memory:
 
 voice:
   enabled: false
-  tts_provider: edge
-  voice_id: zh-CN-XiaoxiaoNeural
+  # Realtime speech belongs to Video Companion or a higher-quality provider.
+  # Edge TTS is kept only as a legacy adapter, not as the default route.
+  tts_provider: openai_tts
+  voice_id: alloy
   rate: 1.0
   pitch: 1.0
   split_long_replies: true
@@ -132,6 +144,12 @@ proactive:
   quiet_mode_enabled: false
   scheduler_enabled: false
   scheduler_interval_seconds: 300
+
+database:
+  # WAL improves local long-running use by allowing reads during writes.
+  # Keep single-process SQLite for personal/local deployment.
+  journal_mode: wal
+  busy_timeout_ms: 5000
 
 rate_limit:
   enabled: true

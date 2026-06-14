@@ -64,6 +64,13 @@ def deployment_report(config: dict[str, Any] | None = None, *, production: bool 
         "pass" if data_parent.exists() else "fail",
         f"runtime data directory parent exists: {BASE_DIR / 'data'}",
     )
+    for name, path in (
+        ("data_writable", BASE_DIR / "data"),
+        ("uploads_writable", BASE_DIR / "data" / "uploads"),
+        ("backups_writable", BASE_DIR / "data" / "backups"),
+    ):
+        writable, detail = _writable_directory(path)
+        _add(checks, name, "pass" if writable else "fail", detail)
 
     video_cfg = cfg.get("video_companion", {}) if isinstance(cfg.get("video_companion"), dict) else {}
     video_enabled = bool(video_cfg.get("enabled", False))
@@ -104,3 +111,14 @@ def deployment_report(config: dict[str, Any] | None = None, *, production: bool 
 
 def _add(checks: list[dict[str, str]], name: str, status: str, detail: str) -> None:
     checks.append({"name": name, "status": status, "detail": detail})
+
+
+def _writable_directory(path: Path) -> tuple[bool, str]:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".mnemosyne-write-test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        return False, f"runtime directory is not writable: {path} ({exc})"
+    return True, f"runtime directory is writable: {path}"

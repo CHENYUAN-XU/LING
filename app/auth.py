@@ -95,6 +95,60 @@ def create_user(username: str, password: str, nickname: str | None = None) -> di
         raise HTTPException(status_code=409, detail="username already exists") from exc
 
 
+def get_or_create_local_user(username: str, nickname: str | None = None) -> dict[str, Any]:
+    username = (username or "").strip() or "mio_owner"
+    if len(username) < 3:
+        username = "mio_owner"
+    display_name = (nickname or "").strip() or username
+    ts = now_ts()
+
+    try:
+        with get_db() as db:
+            existing = dict_from_row(db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone())
+            if existing:
+                db.execute(
+                    """
+                    UPDATE users
+                    SET role = 'admin', status = 'active', is_guest = 0, guest_expires_at = 0, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (ts, existing["id"]),
+                )
+                profile = db.execute("SELECT user_id FROM user_profiles WHERE user_id = ?", (existing["id"],)).fetchone()
+                if profile:
+                    db.execute(
+                        "UPDATE user_profiles SET nickname = ?, updated_at = ? WHERE user_id = ?",
+                        (display_name, ts, existing["id"]),
+                    )
+                else:
+                    db.execute(
+                        "INSERT INTO user_profiles (user_id, nickname, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                        (existing["id"], display_name, ts, ts),
+                    )
+                user = db.execute("SELECT * FROM users WHERE id = ?", (existing["id"],)).fetchone()
+                return dict_from_row(user) or {}
+
+            cursor = db.execute(
+                """
+                INSERT INTO users (username, password_hash, role, status, is_guest, guest_expires_at, created_at, updated_at)
+                VALUES (?, ?, 'admin', 'active', 0, 0, ?, ?)
+                """,
+                (username, hash_password(secrets.token_urlsafe(32)), ts, ts),
+            )
+            user_id = int(cursor.lastrowid)
+            db.execute(
+                """
+                INSERT INTO user_profiles (user_id, nickname, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (user_id, display_name, ts, ts),
+            )
+            user = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            return dict_from_row(user) or {}
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(status_code=409, detail="local user already exists") from exc
+
+
 def create_guest_user() -> dict[str, Any]:
     ts = now_ts()
     expires_at = ts + GUEST_SECONDS

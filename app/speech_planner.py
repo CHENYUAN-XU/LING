@@ -77,7 +77,7 @@ def build_tts_request_params(utterances: list[str], expression_labels: list[str]
     for i, utterance in enumerate(utterances):
         param: dict[str, Any] = {
             "text": utterance,
-            "voice_id": config.get("voice_id", "zh-CN-XiaoxiaoNeural"),
+            "voice_id": config.get("voice_id", "alloy"),
             "rate": float(config.get("rate", 1.0)),
             "pitch": float(config.get("pitch", 1.0)),
         }

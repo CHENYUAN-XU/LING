@@ -6,6 +6,8 @@
 
 忆界树是一个长期多人格 AI 陪伴平台。当前阶段重点不是固定几个预设人格，而是让用户注册后，通过“你想和什么样的人交谈？”创建初始对象。这个对象后续会被聊天、记忆、用户画像、关系状态和经过审查的人格修订逐步塑造。
 
+2026-06-14 产品方向校准：当前对外应按 `LING` 理解，不再继续把旧的 Project Mnemosyne 聊天产品形态作为扩张中心。LING 的第一界面应是一个以 Live2D/实时形象在场为主体的 AI companion：文本输入、语音播放、presence、表情/动作和 Video Companion 入口都围绕这个形象层组织。现有“人格列表、聊天气泡、聊天记录、群聊成员”等结构只作为账号、记忆、调试、历史记录和兼容能力保留，后续不得继续提高它们的产品权重。静态头像只允许作为 `live2d_preview_url` / `fallback_image_url` 缺省时的 preview 或 fallback，不要继续扩张头像系统。
+
 核心方向：
 
 - 用户不是填设定表，而是在聊天中逐渐得到更合适的陪伴对象。
@@ -21,7 +23,9 @@
 - 多 agent 数量不预设，随着系统成熟逐步出现。不要为了做架构而硬拆 agent。
 - LLM 不固定 DeepSeek，未来要支持多供应商、多模型按任务难度、成本和重要性路由。
 - 远期会扩展到人物形象、头像/立绘/表情、声音、语音聊天和实时形象驱动。摄像头实时视频陪伴不在主项目内继续扩张，改由独立 Video Companion 项目完成后接回。
+- LING 形象字段方向：后续数据库/接口扩展优先考虑 `live2d_model_id`、`live2d_preview_url`、`fallback_image_url`、`voice_profile`、expression/action mapping；旧 `avatar_url` 继续兼容但不作为核心产品方向。
 - 多平台功能要平行推进：网页桌面端、手机端/PWA、后续桌面壳和原生移动端不能各做一套割裂产品。核心交互、主界面、未读状态、资料页、聊天体验和账号数据必须共享同一套后端能力与产品结构，再按设备做布局适配。
+- PWA 第一版已落地：普通端有 manifest、service worker 和 SVG 图标；service worker 只缓存应用 shell，跳过 `/api`、`/uploads`、`/admin`，避免缓存用户数据或管理台内容。验证脚本 `py scripts\verify_pwa_assets.py` 已纳入总验证。
 - 未来要建立主动联系系统：人格可以在合适的时候主动给用户发信息，增强关系生命感和用户兴趣；但必须先取得用户许可，并根据长期反馈学习频率和类型，不能变成骚扰或营销推送。
 
 ## 当前运行方式
@@ -120,7 +124,7 @@ DEEPSEEK_API_KEY
 - 空会话提供少量开场短句按钮，点击后只填入输入框，不自动发送。
 - 人格资料不常驻，点击头像或“资料”才弹出。
 - 人格资料编辑已从空壳改为有效改动：名字、摘要、关系定位、说话方式、外貌参考、期望形象会写回数据库，重建人格 prompt，并写入人格版本历史。
-- 用户和人格头像支持本地图片上传，图片保存到 `data/uploads` 并通过 `/uploads/...` 访问；URL 只作为可选图片链接方式。
+- 用户和人格头像支持本地图片上传，图片保存到 `data/uploads` 并通过 `/uploads/...` 访问；URL 只作为可选图片链接方式。头像上传后端限制 jpg/png/webp/gif、5MB 以内，并校验文件头；手填图片链接只允许 `/uploads/...`、`http://...` 或 `https://...`；`py scripts\verify_avatar_upload.py` 和 `py scripts\verify_avatar_url.py` 已纳入总验证。
 - 聊天运行时会额外注入当前人格资料作为强约束，确保用户编辑过的名字、摘要、关系定位、说话方式等立即反馈给聊天 AI。
 - 聊天上下文末尾已增加 Final persona lock，用当前人格名、关系定位、说话方式压住旧历史消息、旧摘要或旧记忆里的自称。
 - 如果人格改名，聊天上下文会根据人格版本历史把旧 assistant 自称和旧上下文里的旧名改写为当前名，避免历史消息把模型重新带回旧名字；数据库原始聊天记录不被篡改。
@@ -336,7 +340,7 @@ LLM 路由：
 - 普通端可对最近一次已确认变化做一次轻量回传，选择“这样更合适”或“还想调整”；选择后者时可附一段具体说明。记录绑定具体 `sculptor_review` 版本，管理端可查看历史反馈与用户说明；具体调整文字会立即加入该版本对应的当前回应指导并在用户侧显示已处理，不再等待管理员逐条审批，也不会覆盖资料页主动偏好。
 - 普通端可直接提交一段相处偏好，聊天中明确表达的回应要求也自动进入同一指导历史。请求作为本人可回看的 `persona_growth_requests` 保存并写入高优先级 `persona_feedback` 记忆，同时在聊天上下文中即时注入；`request_origin` 区分 `direct_entry`、`growth_feedback` 和 `chat_feedback`，`source_reviewed_version` / `source_message_id` 关联来源，`deactivation_actor` 与 `deactivation_reason` 保存用户停止、聊天停止或自动替代原因。兼容指导可同时生效；确定性识别出的反向要求会归档旧记忆并显示为被新指导替代，聊天中的明确停止会显示为已停止，组合条目则只将未取消内容续为新的当前指导。旧版本产生的 `profile_request` 待审候选会在数据库初始化时标记为由自动适配接管，不再形成管理员积压。
 - 新识别的体验问题归入第二阶段持续打磨：用户画像只有极少线索时，多层记忆注入会放大某个偏好，使人格反复围绕同一件事展开而不是继续认识用户。实际聊天上下文靠近回复的位置现已增加探索策略，要求单条喜好仅在相关时使用、不得成为无关对话的固定话题；明确的兴趣偏好改口遵循最近一次表达，例如“喜欢原神 -> 现在不喜欢了 -> 现在又喜欢了”会同步更新 `Mirror`、旧版记忆与分层记忆，旧方向不再作为当前上下文注入；明确的话题边界与喜欢可同时存在，例如“喜欢原神，但别主动提原神”不会被喜欢信号冲掉，而“原神可以聊了 / 以后可以主动聊原神了”会自动归档旧边界并保留已解决审计，仍有效的“不喜欢原神”避开约束不会被误删；禁用称呼也支持用户直接改口撤销，“现在可以叫我宝宝了”只移除旧禁称而不误设默认称呼，“你可以叫我主人 / 以后叫我小禾”则作为明确首选称呼设置，同时释放同名禁称、归档旧首选称呼的 legacy 记忆并将替代证据标为已解决，避免新旧叫法同时进入聊天；分层记忆替代审计已改为写入提交后执行，避免明确改称呼时出现 SQLite 写锁。`user_insights.discovery_dimensions_json` 会累计用户已经明确透露的兴趣、日常节奏、价值/在意之事、安慰方式、边界、计划期待和相处期待覆盖，管理台画像可查看概览，回复策略在自然适合提问时优先尚不清楚的方向而不是反复挖掘已有点，但不得把覆盖缺口变成问卷；`user_insights.curiosity_feedback_json` 只在用户明确拒绝或邀请探索提问时记录态度，拒绝后暂停主动个人提问，直到用户明确重新邀请，管理台可看到当前谨慎/开放状态及累计次数；若最近几轮 assistant 回复已使用某个喜好、而用户本轮没有主动提及，则本轮明确压制再次硬带回该话题。因为用户知道这是 AI，提问可比现实陌生人更直接，但仍必须一次克制、允许跳过、拒绝后不追问，也不得由单条信息推断整体人格或关系需求。
-- 用户资料并非未送入主聊天：对真实茵陈聊天追踪的检查确认，`nickname`、`gender`、`birthday` 等字段在用户问到之前就已经进入 profile prompt。失败点不是资料断链，而是主聊天缺少一种通用规则：用户要求查资料、询问已知事实或给出可由资料与日期解释的线索时，应使用相关字段直接回答，而不是继续猜测。第二阶段现已加入该按需核对规则及中性本地日期环境；查询资料时只答被问字段或解开当前线索所需的一个事实，不顺手追加未询问的记忆、兴趣或纪念日，也不把字段拿来反复表演熟悉感。管理台追踪可查看当轮规则；日期第一版使用运行服务器时区，后续面向异地用户时需增加用户时区字段或客户端时区同步。
+- 用户资料并非未送入主聊天：对真实茵陈聊天追踪的检查确认，`nickname`、`gender`、`birthday` 等字段在用户问到之前就已经进入 profile prompt。失败点不是资料断链，而是主聊天缺少一种通用规则：用户要求查资料、询问已知事实或给出可由资料与日期解释的线索时，应使用相关字段直接回答，而不是继续猜测。第二阶段现已加入该按需核对规则及中性本地日期环境；查询资料时只答被问字段或解开当前线索所需的一个事实，不顺手追加未询问的记忆、兴趣或纪念日，也不把字段拿来反复表演熟悉感。资料页会保存用户时区，聊天资料使用策略按该时区计算 `current_local_date`；未设置时才回退到服务器本地时区。管理台追踪可查看当轮规则。
 - 为避免继续拿真实聊天碰运气验收，管理台新增独立资料使用评测：`profile_context_v1` 不消耗聊天模型额度，检查昵称/签名注入、按需核对触发和普通聊天的克制状态；`profile_live_answer_v1` 可选调用真实聊天模型，以昵称和签名为中性样本验证资料回答，并检查不会顺手扯入兴趣或避雷话题。生日只保留为曾暴露问题的真实例子，不作为评测中心或主动话题。
 - 因早期缺乏真实成长数据，管理台新增专用演示沙盒：载入时创建可登录的独立样本账号以及完整的审核/反馈/主动偏好请求/候选链路，清除时级联删除样本；它只解决验收可见性，不替代真实交互验证。
 
@@ -492,13 +496,13 @@ LLM 路由：
 - 部署到 VPS / 云服务器 / PaaS，使用正式域名和 HTTPS。
 - FastAPI 后面接 Nginx / Caddy / 云平台反向代理。
 - SQLite 适合当前本地开发；正式多人使用时应迁移 PostgreSQL，后续向量检索可接 pgvector。
-- 生产基础已有第一版：`py scripts\backup_data.py` 使用 SQLite backup API 生成一致性数据库快照，并把 `data/uploads` 与 `manifest.json` 打成 zip，默认输出到 `data/backups/`；`py scripts\verify_data_backup.py` 已纳入总验证。用户数据导出已有第一版：`GET /api/account/export` 与 `py scripts\export_user_data.py --user-id ...` 可导出当前用户/指定用户的 JSON 数据，排除 session token 和 password hash，只列出该用户上传文件清单；`py scripts\verify_user_export.py` 已纳入总验证。基础限流已有第一版：`rate_limit` 配置覆盖登录/注册、聊天、上传、账号导出/删除和人格写操作；多进程/公网生产前应迁移到 Redis 或反向代理限流。请求日志和错误监控已有第一版：`logging` 配置默认写入 `logs/app.log`，记录 request id、路径、状态码、耗时和 5xx 异常类型，不记录请求正文；5xx 同步写入 `app_error_events`，可通过 `GET /api/admin/error-events` 查看。隐私说明已有第一版：`GET /api/privacy`、登录页/资料弹窗的“数据与隐私”入口和 `docs/PRIVACY_AND_DATA.md` 明确游客保留期、导出/删除能力、设备授权和独立 Video Companion 项目边界。部署预检已有第一版：`py scripts\check_deployment.py --production` 检查 API Key 环境变量、疑似明文密钥、限流、日志、`security.secure_cookies`、Video Companion 外部路径和主动调度风险；部署手册见 `docs/DEPLOYMENT_RUNBOOK.md`。游客模式治理已有第一版：普通端提示临时数据范围与 3 天清理规则，清理过期游客前写入 `guest_cleanup_logs`，后台 `GET /api/admin/guests` 可查看活跃游客、24 小时内到期数量和清理审计日志；`py scripts\verify_guest_admin.py` 已纳入总验证。彻底删除策略已有第一版：已删除人格可二次确认后永久删除；账号删除要求正式账号输入账号名和密码、游客输入账号名，并级联数据库与 `data/uploads/<user_id>`。管理员路由保护已有扫描脚本：`py scripts\verify_admin_protection.py` 当前确认 40 个 `/api/admin/*` 路由均依赖 `current_admin`。环境配置检查已有第一版：`py scripts\check_environment.py` 列出配置引用的 API Key 环境变量、缺失项和疑似误写密钥；`py scripts\verify_environment_config.py` 已纳入总验证。正式多人生产仍需 PostgreSQL/Redis 级别改造。
+- 生产基础已有第一版：`py scripts\backup_data.py` 使用 SQLite backup API 生成一致性数据库快照，并把 `data/uploads` 与 `manifest.json` 打成 zip，默认输出到 `data/backups/`；`py scripts\restore_data_backup.py ... --inspect-only` 可检查备份，`py scripts\restore_data_backup.py ... --restore-dir <empty-dir>` 只恢复到新的空目录，避免覆盖当前 `data/app.db`；`py scripts\verify_data_backup.py` 和 `py scripts\verify_backup_restore.py` 已纳入总验证。SQLite 本机长期使用已加固：默认 WAL、`busy_timeout_ms`、外键约束和 `/api/health` 运行状态；`py scripts\verify_sqlite_runtime.py` 已纳入总验证。用户数据导出已有第一版：`GET /api/account/export` 与 `py scripts\export_user_data.py --user-id ...` 可导出当前用户/指定用户的 JSON 数据，排除 session token 和 password hash，只列出该用户上传文件清单；`py scripts\verify_user_export.py` 已纳入总验证。基础限流已有第一版：`rate_limit` 配置覆盖登录/注册、聊天、上传、账号导出/删除和人格写操作；多进程/公网生产前应迁移到 Redis 或反向代理限流。请求日志和错误监控已有第一版：`logging` 配置默认写入 `logs/app.log`，记录 request id、路径、状态码、耗时和 5xx 异常类型，不记录请求正文；5xx 同步写入 `app_error_events`，可通过 `GET /api/admin/error-events` 查看。隐私说明已有第一版：`GET /api/privacy`、登录页/资料弹窗的“数据与隐私”入口和 `docs/PRIVACY_AND_DATA.md` 明确游客保留期、导出/删除能力、设备授权和独立 Video Companion 项目边界。部署预检已有第一版：`py scripts\check_deployment.py --production` 检查 API Key 环境变量、疑似明文密钥、限流、日志、`security.secure_cookies`、运行数据/上传/备份目录写入权限、Video Companion 外部路径和主动调度风险；部署手册见 `docs/DEPLOYMENT_RUNBOOK.md`。游客模式治理已有第一版：普通端提示临时数据范围与 3 天清理规则，清理过期游客前写入 `guest_cleanup_logs`，后台 `GET /api/admin/guests` 可查看活跃游客、24 小时内到期数量和清理审计日志；`py scripts\verify_guest_admin.py` 已纳入总验证。彻底删除策略已有第一版：已删除人格可二次确认后永久删除；账号删除要求正式账号输入账号名和密码、游客输入账号名，并级联数据库与 `data/uploads/<user_id>`。管理员路由保护已有扫描脚本：`py scripts\verify_admin_protection.py` 当前确认 40 个 `/api/admin/*` 路由均依赖 `current_admin`。环境配置检查已有第一版：`py scripts\check_environment.py` 列出配置引用的 API Key 环境变量、缺失项和疑似误写密钥；`py scripts\verify_environment_config.py` 已纳入总验证。正式多人生产仍需 PostgreSQL/MySQL 与 Redis 级别改造。
 
 打包方向：
 
 - 短期优先网页，不急着打包桌面端。
 - 如果需要桌面应用，可以考虑 Tauri 或 Electron，把现有网页作为前端壳，后端仍可走远程服务器。
-- 如果需要手机端，先把网页做成 PWA 或响应式移动端；成熟后再考虑 React Native / Flutter。
+- 如果需要手机端，先继续打磨当前 PWA / 响应式移动端；成熟后再考虑 React Native / Flutter。
 - 打包程序本身不能解决远程多设备同步；两省之间访问同一账号和同一人格，核心仍然是公网后端和统一数据库。
 - 不建议现在把本地 SQLite + 本地后端直接打包给普通用户，因为更新、数据同步、账号体系和模型密钥管理都会变复杂。
 

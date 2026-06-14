@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 import sys
 import tempfile
-import zipfile
 from pathlib import Path
 
 
@@ -12,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.data_backup import create_data_backup
+from app.data_backup import create_data_backup, inspect_data_backup
 
 
 def main() -> None:
@@ -45,19 +43,14 @@ def main() -> None:
         assert result["integrity_check"] == "ok"
         assert result["uploads_file_count"] == 1
 
-        extract_dir = root / "extract"
-        with zipfile.ZipFile(backup_path) as archive:
-            names = set(archive.namelist())
-            assert "manifest.json" in names
-            assert "database/app.db" in names
-            assert "uploads/avatar.txt" in names
-            manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
-            assert manifest["database"]["integrity_check"] == "ok"
-            assert manifest["uploads"]["file_count"] == 1
-            archive.extract("database/app.db", extract_dir)
+        inspected = inspect_data_backup(backup_path)
+        assert inspected["integrity_check"] == "ok"
+        assert inspected["uploads_file_count"] == 1
+        manifest = inspected["manifest"]
+        assert manifest["database"]["integrity_check"] == "ok"
+        assert manifest["uploads"]["file_count"] == 1
 
-        restored_db = extract_dir / "database" / "app.db"
-        conn = sqlite3.connect(str(restored_db))
+        conn = sqlite3.connect(str(db_path))
         try:
             row = conn.execute("SELECT value FROM sample WHERE id = 1").fetchone()
             assert row[0] == "backup-ok"

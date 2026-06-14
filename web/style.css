@@ -1107,7 +1107,7 @@ small {
 
 .chat-panel {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(168px, 30vh) minmax(0, 1fr) auto;
   min-width: 0;
   min-height: 0;
   height: 100%;
@@ -1298,6 +1298,106 @@ small {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.companion-stage {
+  display: grid;
+  grid-template-columns: minmax(140px, 240px) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 20px;
+  min-height: 0;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--line);
+  background:
+    linear-gradient(135deg, rgba(83, 109, 150, 0.08), rgba(74, 158, 92, 0.05)),
+    #ffffff;
+  overflow: hidden;
+}
+
+.companion-visual {
+  width: min(220px, 100%);
+  height: 100%;
+  min-height: 128px;
+  max-height: 240px;
+  justify-self: center;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid rgba(83, 109, 150, 0.18);
+  border-radius: 8px;
+  background:
+    radial-gradient(circle at 50% 18%, rgba(255, 255, 255, 0.92), rgba(242, 244, 247, 0.88)),
+    var(--panel-2);
+  color: var(--accent-strong);
+  font-size: clamp(44px, 8vw, 88px);
+  font-weight: 800;
+}
+
+.companion-visual img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.companion-stage-copy {
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.companion-stage-copy h2 {
+  margin: 0;
+  font-size: 30px;
+}
+
+.companion-stage-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.live2d-stage-pill,
+.companion-mode-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 26px;
+  max-width: 100%;
+  padding: 3px 9px;
+  border: 1px solid rgba(23, 28, 37, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.live2d-stage-pill.ok {
+  border-color: rgba(74, 158, 92, 0.28);
+  background: rgba(74, 158, 92, 0.08);
+  color: #2f6d3c;
+}
+
+.live2d-stage-pill.error {
+  border-color: rgba(198, 76, 85, 0.24);
+  background: rgba(198, 76, 85, 0.07);
+  color: #8f3640;
+}
+
+.live2d-stage-pill span:last-child,
+.companion-mode-pill {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.companion-stage-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: end;
+  gap: 8px;
 }
 
 .chat-log {
@@ -2605,6 +2705,10 @@ small {
     min-height: 0;
   }
 
+  .chat-panel {
+    grid-template-rows: auto minmax(156px, 26vh) minmax(0, 1fr) auto;
+  }
+
   .chat-header {
     grid-template-columns: auto 40px minmax(0, 1fr) auto;
     gap: 8px;
@@ -2660,6 +2764,28 @@ small {
     min-height: 34px;
     padding: 0 9px;
     font-size: 13px;
+  }
+
+  .companion-stage {
+    grid-template-columns: 96px minmax(0, 1fr);
+    gap: 12px;
+    padding: 12px;
+  }
+
+  .companion-visual {
+    width: 96px;
+    min-height: 112px;
+    max-height: 150px;
+    font-size: 42px;
+  }
+
+  .companion-stage-copy h2 {
+    font-size: 20px;
+  }
+
+  .companion-stage-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
   }
 
   .wizard {

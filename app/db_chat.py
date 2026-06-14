@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .archivist import extract_and_store, recall_memories
 from .conversation_memory import conversation_summary_prompt, refresh_conversation_summary
@@ -532,7 +533,7 @@ def db_chat(
     expression_policy = _recent_expression_policy(user_id, persona_id, int(conversation["id"]))
     expression_policy_context = _expression_policy_prompt(expression_policy)
     active_preference_context = _active_preference_prompt(user_id, persona_id)
-    profile_usage_context = _profile_usage_prompt(message)
+    profile_usage_context = _profile_usage_prompt(message, profile=profile)
     runtime_persona_context = _persona_runtime_prompt(persona)
     profile_context = _safe_context(profile_context)
     insight_context = _safe_context(insight_context)
@@ -1363,6 +1364,7 @@ def _profile_prompt(profile: dict) -> str:
         f"- nickname: {profile.get('nickname') or ''}\n"
         f"- gender: {profile.get('gender') or ''}\n"
         f"- birthday: {profile.get('birthday') or ''}\n"
+        f"- timezone: {profile.get('timezone') or ''}\n"
         f"- signature: {profile.get('signature') or ''}\n"
         f"- bio: {profile.get('bio') or ''}\n"
         f"- preferences: {json.dumps(preferences_obj, ensure_ascii=False)}\n"
@@ -1370,8 +1372,8 @@ def _profile_prompt(profile: dict) -> str:
     )
 
 
-def _profile_usage_prompt(user_text: str, *, current_time: datetime | None = None) -> str:
-    now = current_time or datetime.now().astimezone()
+def _profile_usage_prompt(user_text: str, *, profile: dict | None = None, current_time: datetime | None = None) -> str:
+    now = _profile_local_time(profile or {}, current_time=current_time)
     lookup_cues = (
         "你看我信息", "看我信息", "看看我信息", "看我资料", "查资料",
         "个人资料", "个人信息", "我的资料", "我的信息",
@@ -1383,7 +1385,7 @@ def _profile_usage_prompt(user_text: str, *, current_time: datetime | None = Non
     lines = [
         "Saved user profile usage policy:",
         f"- current_local_date: {now.date().isoformat()}",
-        f"- local_timezone: {now.tzname() or 'local server timezone'}",
+        f"- local_timezone: {_profile_timezone_label(profile or {}, now)}",
         "- Saved profile fields above are reliable user-provided background facts, not themes to mention proactively.",
         "- Do not volunteer a saved fact, occasion, preference, or personal detail merely to perform familiarity or intimacy.",
         "- When the current question asks what you know about the user, asks you to check their information, or offers a clue resolvable from profile fields and the date, use the relevant fact to answer directly and briefly.",
@@ -1394,6 +1396,24 @@ def _profile_usage_prompt(user_text: str, *, current_time: datetime | None = Non
     else:
         lines.append("- This turn does not explicitly invite profile lookup. Keep saved profile facts in the background unless strictly required to answer.")
     return "\n".join(lines)
+
+
+def _profile_local_time(profile: dict, *, current_time: datetime | None = None) -> datetime:
+    now = current_time or datetime.now().astimezone()
+    timezone_name = str(profile.get("timezone") or "").strip()
+    if not timezone_name:
+        return now
+    try:
+        return now.astimezone(ZoneInfo(timezone_name))
+    except ZoneInfoNotFoundError:
+        return now
+
+
+def _profile_timezone_label(profile: dict, now: datetime) -> str:
+    timezone_name = str(profile.get("timezone") or "").strip()
+    if timezone_name:
+        return timezone_name
+    return now.tzname() or "local server timezone"
 
 
 def _memory_prompt(memories: list[dict]) -> str:

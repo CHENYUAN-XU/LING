@@ -32,10 +32,15 @@ def generate_tts_audio(text: str, voice_id: str | None = None, rate: float = 1.0
         return None
 
     config = load_voice_config()
-    provider = config.get("tts_provider", "edge")
+    provider = str(config.get("tts_provider", "openai_tts") or "openai_tts").strip().lower()
 
     if provider == "edge":
         return _edge_tts_text(text, voice_id, rate, pitch, style)
+    if provider in {"openai_tts", "elevenlabs"}:
+        _set_tts_error(
+            f"{provider} is configured, but realtime speech is owned by Video Companion or a dedicated provider adapter"
+        )
+        return None
     _set_tts_error(f"unsupported TTS provider: {provider}")
     return None
 
@@ -246,8 +251,8 @@ def tts_health_check() -> dict:
     config = load_voice_config()
     result = {
         "enabled": voice_enabled(),
-        "provider": config.get("tts_provider", "edge"),
-        "voice_id": config.get("voice_id", "zh-CN-XiaoxiaoNeural"),
+        "provider": config.get("tts_provider", "openai_tts"),
+        "voice_id": config.get("voice_id", "alloy"),
         "available": False,
         "error": None,
     }
@@ -257,7 +262,8 @@ def tts_health_check() -> dict:
         result["error"] = "voice is disabled in config"
         return result
 
-    if config.get("tts_provider", "edge") == "edge":
+    provider = str(config.get("tts_provider", "openai_tts") or "openai_tts").strip().lower()
+    if provider == "edge":
         try:
             import edge_tts
             result["available"] = True
@@ -273,5 +279,11 @@ def tts_health_check() -> dict:
                     result["error"] = "edge-tts not installed. Run: pip install edge-tts"
             except Exception as exc:
                 result["error"] = str(exc)
+    elif provider in {"openai_tts", "elevenlabs"}:
+        result["error"] = (
+            f"{provider} is not implemented in the main project; use Video Companion speech configuration"
+        )
+    else:
+        result["error"] = f"unsupported TTS provider: {provider}"
 
     return result

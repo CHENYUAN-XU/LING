@@ -204,6 +204,37 @@ def call_llm_api(messages: List[Message], task: str = "default") -> str:
     return response
 
 
+def llm_runtime_status(task: str = "chat") -> dict[str, Any]:
+    llm_config = _llm_config_for_task(task)
+    provider = str(llm_config.get("provider", "ollama")).lower()
+    model = str(llm_config.get("model") or "")
+    api_key_env = str(llm_config.get("api_key_env") or _default_api_key_env(provider) or "")
+    requires_api_key = provider != "ollama" and bool(api_key_env)
+    configured = True
+    missing: list[str] = []
+    if requires_api_key and not _get_env(api_key_env):
+        configured = False
+        missing.append(api_key_env)
+    return {
+        "task": task,
+        "provider": provider,
+        "model": model,
+        "api_key_env": api_key_env,
+        "requires_api_key": requires_api_key,
+        "configured": configured,
+        "missing": missing,
+    }
+
+
+def _default_api_key_env(provider: str) -> str:
+    return {
+        "openai": "OPENAI_API_KEY",
+        "deepseek": "DEEPSEEK_API_KEY",
+        "kimi": "MOONSHOT_API_KEY",
+        "moonshot": "MOONSHOT_API_KEY",
+    }.get(provider, "")
+
+
 def _llm_config_for_task(task: str) -> dict[str, Any]:
     config = load_config()
     base = dict(config.get("llm", {}) or {})

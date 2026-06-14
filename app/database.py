@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from .config import BASE_DIR
+from .config import BASE_DIR, load_config
 
 
 DB_PATH = BASE_DIR / "data" / "app.db"
@@ -27,7 +27,7 @@ def get_db() -> Iterator[sqlite3.Connection]:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
+    configure_connection(conn)
     try:
         yield conn
         conn.commit()
@@ -36,6 +36,35 @@ def get_db() -> Iterator[sqlite3.Connection]:
         raise
     finally:
         conn.close()
+
+
+def configure_connection(conn: sqlite3.Connection) -> None:
+    cfg = load_config().get("database", {})
+    if not isinstance(cfg, dict):
+        cfg = {}
+    busy_timeout_ms = int(cfg.get("busy_timeout_ms") or 5000)
+    journal_mode = str(cfg.get("journal_mode") or "wal").strip().lower()
+
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute(f"PRAGMA busy_timeout = {max(0, busy_timeout_ms)}")
+    if journal_mode in {"wal", "delete", "truncate", "persist", "memory", "off"}:
+        try:
+            conn.execute(f"PRAGMA journal_mode = {journal_mode.upper()}")
+        except sqlite3.DatabaseError:
+            pass
+
+
+def sqlite_runtime_status() -> dict:
+    with get_db() as db:
+        foreign_keys = int(db.execute("PRAGMA foreign_keys").fetchone()[0])
+        busy_timeout = int(db.execute("PRAGMA busy_timeout").fetchone()[0])
+        journal_mode = str(db.execute("PRAGMA journal_mode").fetchone()[0])
+    return {
+        "path": str(DB_PATH),
+        "journal_mode": journal_mode,
+        "busy_timeout_ms": busy_timeout,
+        "foreign_keys": bool(foreign_keys),
+    }
 
 
 def init_db() -> None:
@@ -60,6 +89,7 @@ def init_db() -> None:
                 avatar_url TEXT,
                 gender TEXT NOT NULL DEFAULT '',
                 birthday TEXT,
+                timezone TEXT NOT NULL DEFAULT '',
                 signature TEXT,
                 bio TEXT,
                 preferences_json TEXT NOT NULL DEFAULT '{}',
@@ -818,6 +848,7 @@ def init_db() -> None:
         _ensure_column(db, "users", "role", "TEXT NOT NULL DEFAULT 'user'")
         _ensure_column(db, "users", "is_guest", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(db, "users", "guest_expires_at", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(db, "user_profiles", "timezone", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(db, "user_profiles", "gender", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(db, "user_insights", "inferred_profile_json", "TEXT NOT NULL DEFAULT '{}'")
         _ensure_column(db, "user_insights", "topic_model_json", "TEXT NOT NULL DEFAULT '{}'")

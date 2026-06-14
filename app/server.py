@@ -6,6 +6,8 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, File, Header, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -26,13 +28,14 @@ from .auth import (
     current_admin,
     current_user,
     delete_user_account,
+    get_or_create_local_user,
     public_user,
     request_session_token,
     set_session_cookie,
 )
 from .archivist import recall_memories
 from .config import load_config
-from .database import dict_from_row, get_db, init_db, now_ts
+from .database import dict_from_row, get_db, init_db, now_ts, sqlite_runtime_status
 from .db_chat import db_chat, normalize_existing_assistant_messages
 from .expression_assets import active_expression_labels, expression_assets_public, update_expression_asset_setting
 from .voice import load_voice_config, voice_enabled
@@ -121,7 +124,7 @@ from .layered_memory import (
     refresh_memory_summaries,
     store_layered_memories,
 )
-from .llm_client import LLMProviderError
+from .llm_client import LLMProviderError, llm_runtime_status
 from .memory_review import context_traces, get_memory_item, memory_review, update_memory_item
 from .memory_judge import update_judgement_status
 from .memory_conflicts import update_conflict_status
@@ -167,6 +170,13 @@ WEB_DIR = BASE_DIR / "web"
 ADMIN_WEB_DIR = BASE_DIR / "admin_web"
 UPLOAD_DIR = BASE_DIR / "data" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+AVATAR_MAX_BYTES = 5 * 1024 * 1024
+AVATAR_CONTENT_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
 
 init_db()
 try:
@@ -342,6 +352,7 @@ class ProfileUpdateRequest(BaseModel):
     avatar_url: str | None = Field(default=None, max_length=500)
     gender: str | None = Field(default=None, max_length=20)
     birthday: str | None = Field(default=None, max_length=20)
+    timezone: str | None = Field(default=None, max_length=80)
     signature: str | None = Field(default=None, max_length=200)
     bio: str | None = Field(default=None, max_length=1000)
     preferences: dict[str, Any] | None = None
@@ -465,7 +476,12 @@ class MemoryEvalRequest(BaseModel):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "database": "sqlite", "db_initialized": True}
+    return {"ok": True, "database": "sqlite", "db_initialized": True, "sqlite": sqlite_runtime_status()}
+
+
+@app.get("/api/llm/status")
+def llm_status(user: dict = Depends(current_user), task: str = "chat"):
+    return {"llm": llm_runtime_status(task)}
 
 
 @app.get("/api/privacy")
@@ -495,11 +511,239 @@ def _start_authenticated_session(
 ) -> dict[str, Any]:
     token = create_session(int(user["id"]), max_age=max_age)
     payload = {"user": public_user(user), "profile": _get_profile(int(user["id"]))}
+    payload["self_use"] = _self_use_public(user)
     if tab_session:
         payload["tab_session_token"] = token
     else:
         set_session_cookie(response, token, max_age=max_age)
     return payload
+
+
+def _self_use_config() -> dict[str, Any]:
+    config = load_config().get("self_use", {}) or {}
+    return config if isinstance(config, dict) else {}
+
+
+def _self_use_public(user: dict[str, Any]) -> dict[str, Any]:
+    config = _self_use_config()
+    enabled = bool(config.get("enabled", False)) and str(user.get("username") or "") == str(config.get("username") or "mio_owner")
+    return {"enabled": enabled, "chat_enabled": bool(config.get("chat_enabled", False)) if enabled else True}
+
+
+def _is_local_request(request: Request) -> bool:
+    host = request.client.host if request.client else ""
+    if host in {"127.0.0.1", "::1", "localhost"}:
+        return True
+    return host.startswith("127.")
+
+
+def _default_self_use_persona(name: str) -> dict[str, Any]:
+    persona = {
+        "name": scrub_identity_text(name.strip() or "澪"),
+        "summary": "基础设定待填写。",
+        "traits": [],
+        "relationship": "未设定",
+        "speaking_style": "",
+        "appearance_description": "",
+        "desired_image": "",
+        "psychological_fit_notes": "",
+        "psychological_profile": {
+            "primary_needs": [],
+            "comfort_strategy": [],
+            "avoid_patterns": [],
+            "growth_direction": [],
+        },
+        "growth_notes": "",
+        "boundaries": [],
+        "memory_profile": {},
+    }
+    persona["prompt"] = build_prompt(persona)
+    return persona
+
+
+def _should_reset_legacy_self_use_persona(db, persona: dict[str, Any]) -> bool:
+    if str(persona.get("name") or "") != "澪":
+        return False
+    if str(persona.get("summary") or "") != "一个以 Live2D 形象在场的长期陪伴体，安静、机敏、低压迫，重视真实相处中的节奏和边界。":
+        return False
+    version = db.execute(
+        """
+        SELECT change_type
+        FROM persona_versions
+        WHERE persona_id = ?
+        ORDER BY version DESC, id DESC
+        LIMIT 1
+        """,
+        (persona["id"],),
+    ).fetchone()
+    return bool(version and str(version["change_type"] or "") == "self_use_default")
+
+
+def _reset_self_use_persona_to_blank(db, persona: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    ts = now_ts()
+    blank = _default_self_use_persona(str(config.get("default_persona_name") or persona.get("name") or "澪"))
+    next_version = int(persona.get("version") or 1) + 1
+    db.execute(
+        """
+        UPDATE personas
+        SET name = ?, summary = ?, prompt = ?, traits_json = ?, relationship = ?,
+            speaking_style = ?, boundaries_json = ?, memory_profile_json = ?,
+            psychological_profile_json = ?, psychological_fit_notes = ?,
+            appearance_description = ?, desired_image = ?, growth_notes = ?,
+            version = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            blank["name"],
+            blank["summary"],
+            blank["prompt"],
+            json.dumps(blank["traits"], ensure_ascii=False),
+            blank["relationship"],
+            blank["speaking_style"],
+            json.dumps(blank["boundaries"], ensure_ascii=False),
+            json.dumps(blank.get("memory_profile", {}), ensure_ascii=False),
+            json.dumps(blank.get("psychological_profile", {}), ensure_ascii=False),
+            blank.get("psychological_fit_notes", ""),
+            blank.get("appearance_description", ""),
+            blank.get("desired_image", ""),
+            blank.get("growth_notes", ""),
+            next_version,
+            ts,
+            persona["id"],
+        ),
+    )
+    db.execute(
+        """
+        INSERT INTO persona_versions (
+            persona_id, version, name, summary, prompt, traits_json,
+            relationship, speaking_style, boundaries_json,
+            psychological_profile_json, psychological_fit_notes,
+            appearance_description, desired_image, growth_notes,
+            reason, change_type, change_notes_json, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            persona["id"],
+            next_version,
+            blank["name"],
+            blank["summary"],
+            blank["prompt"],
+            json.dumps(blank["traits"], ensure_ascii=False),
+            blank["relationship"],
+            blank["speaking_style"],
+            json.dumps(blank["boundaries"], ensure_ascii=False),
+            json.dumps(blank.get("psychological_profile", {}), ensure_ascii=False),
+            blank.get("psychological_fit_notes", ""),
+            blank.get("appearance_description", ""),
+            blank.get("desired_image", ""),
+            blank.get("growth_notes", ""),
+            "clear generated self-use defaults",
+            "self_use_default_reset",
+            json.dumps(["清空系统预置的澪基础设定，等待用户自行填写"], ensure_ascii=False),
+            ts,
+        ),
+    )
+    row = db.execute("SELECT * FROM personas WHERE id = ?", (persona["id"],)).fetchone()
+    return dict_from_row(row) or {}
+
+
+def _ensure_self_use_default_persona(user_id: int, config: dict[str, Any]) -> dict[str, Any] | None:
+    if not bool(config.get("seed_default_persona", True)):
+        return None
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT * FROM personas WHERE user_id = ? AND status = 'active' ORDER BY id ASC LIMIT 1",
+            (user_id,),
+        ).fetchone()
+        if existing:
+            existing_persona = dict_from_row(existing) or {}
+            if _should_reset_legacy_self_use_persona(db, existing_persona):
+                return _reset_self_use_persona_to_blank(db, existing_persona, config)
+            return existing_persona
+
+        ts = now_ts()
+        persona = _default_self_use_persona(str(config.get("default_persona_name") or "澪"))
+        cursor = db.execute(
+            """
+            INSERT INTO personas (
+                user_id, name, summary, prompt, traits_json, relationship,
+                speaking_style, boundaries_json, memory_profile_json,
+                psychological_profile_json, psychological_fit_notes,
+                appearance_description, desired_image, growth_notes,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                persona["name"],
+                persona["summary"],
+                persona["prompt"],
+                json.dumps(persona["traits"], ensure_ascii=False),
+                persona["relationship"],
+                persona["speaking_style"],
+                json.dumps(persona["boundaries"], ensure_ascii=False),
+                json.dumps(persona.get("memory_profile", {}), ensure_ascii=False),
+                json.dumps(persona.get("psychological_profile", {}), ensure_ascii=False),
+                persona.get("psychological_fit_notes", ""),
+                persona.get("appearance_description", ""),
+                persona.get("desired_image", ""),
+                persona.get("growth_notes", ""),
+                ts,
+                ts,
+            ),
+        )
+        persona_id = int(cursor.lastrowid)
+        db.execute(
+            """
+            INSERT INTO persona_versions (
+                persona_id, version, name, summary, prompt, traits_json,
+                relationship, speaking_style, boundaries_json,
+                psychological_profile_json, psychological_fit_notes,
+                appearance_description, desired_image, growth_notes,
+                reason, change_type, change_notes_json, created_at
+            )
+            VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                persona_id,
+                persona["name"],
+                persona["summary"],
+                persona["prompt"],
+                json.dumps(persona["traits"], ensure_ascii=False),
+                persona["relationship"],
+                persona["speaking_style"],
+                json.dumps(persona["boundaries"], ensure_ascii=False),
+                json.dumps(persona.get("psychological_profile", {}), ensure_ascii=False),
+                persona.get("psychological_fit_notes", ""),
+                persona.get("appearance_description", ""),
+                persona.get("desired_image", ""),
+                persona.get("growth_notes", ""),
+                "self-use default companion",
+                "self_use_default",
+                json.dumps(["自用模式默认创建澪陪伴体"], ensure_ascii=False),
+                ts,
+            ),
+        )
+        row = db.execute("SELECT * FROM personas WHERE id = ?", (persona_id,)).fetchone()
+        return dict_from_row(row)
+
+
+@app.post("/api/auth/local")
+def local_login(request: Request, response: Response):
+    config = _self_use_config()
+    if not config.get("enabled", False):
+        raise HTTPException(status_code=404, detail="local self-use mode is not enabled")
+    if bool(config.get("require_localhost", True)) and not _is_local_request(request):
+        raise HTTPException(status_code=403, detail="local self-use mode only accepts localhost requests")
+
+    user = get_or_create_local_user(
+        username=str(config.get("username") or "mio_owner"),
+        nickname=str(config.get("nickname") or "澪的工作区"),
+    )
+    _ensure_self_use_default_persona(int(user["id"]), config)
+    return _start_authenticated_session(response, user)
 
 
 @app.post("/api/auth/register")
@@ -546,7 +790,7 @@ def logout(
 
 @app.get("/api/me")
 def me(user: dict = Depends(current_user)):
-    return {"user": public_user(user), "profile": _get_profile(int(user["id"]))}
+    return {"user": public_user(user), "profile": _get_profile(int(user["id"])), "self_use": _self_use_public(user)}
 
 
 @app.get("/api/profile")
@@ -575,21 +819,24 @@ def update_profile(req: ProfileUpdateRequest, user: dict = Depends(current_user)
     user_id = int(user["id"])
     current = _get_profile(user_id)
     preferences = req.preferences if req.preferences is not None else current.get("preferences", {})
+    timezone_name = _clean_timezone(req.timezone) if req.timezone is not None else current.get("timezone", "")
+    avatar_url = _clean_avatar_url(req.avatar_url) if req.avatar_url is not None else current.get("avatar_url")
     ts = now_ts()
 
     with get_db() as db:
         db.execute(
             """
             UPDATE user_profiles
-            SET nickname = ?, avatar_url = ?, gender = ?, birthday = ?, signature = ?, bio = ?,
+            SET nickname = ?, avatar_url = ?, gender = ?, birthday = ?, timezone = ?, signature = ?, bio = ?,
                 preferences_json = ?, updated_at = ?
             WHERE user_id = ?
             """,
             (
                 req.nickname if req.nickname is not None else current.get("nickname"),
-                req.avatar_url if req.avatar_url is not None else current.get("avatar_url"),
+                avatar_url,
                 req.gender if req.gender is not None else current.get("gender"),
                 req.birthday if req.birthday is not None else current.get("birthday"),
+                timezone_name,
                 req.signature if req.signature is not None else current.get("signature"),
                 req.bio if req.bio is not None else current.get("bio"),
                 json.dumps(preferences, ensure_ascii=False),
@@ -599,6 +846,31 @@ def update_profile(req: ProfileUpdateRequest, user: dict = Depends(current_user)
         )
 
     return {"profile": _get_profile(user_id)}
+
+
+def _clean_timezone(value: str | None) -> str:
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        return ""
+    try:
+        ZoneInfo(cleaned)
+    except ZoneInfoNotFoundError as exc:
+        raise HTTPException(status_code=400, detail="invalid timezone") from exc
+    return cleaned
+
+
+def _clean_avatar_url(value: str | None) -> str:
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        return ""
+    if any(ch.isspace() for ch in cleaned):
+        raise HTTPException(status_code=400, detail="invalid avatar url")
+    if cleaned.startswith("/uploads/"):
+        return cleaned
+    parsed = urlparse(cleaned)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        return cleaned
+    raise HTTPException(status_code=400, detail="invalid avatar url")
 
 
 @app.get("/api/persona-options")
@@ -643,28 +915,35 @@ def admin_update_expression_asset(
 @app.post("/api/uploads/avatar")
 async def upload_avatar(file: UploadFile = File(...), user: dict = Depends(current_user)):
     content_type = (file.content_type or "").lower()
-    allowed = {
-        "image/jpeg": ".jpg",
-        "image/png": ".png",
-        "image/webp": ".webp",
-        "image/gif": ".gif",
-    }
-    if content_type not in allowed:
+    if content_type not in AVATAR_CONTENT_TYPES:
         raise HTTPException(status_code=400, detail="only jpg, png, webp or gif images are allowed")
 
     data = await file.read()
-    max_size = 5 * 1024 * 1024
     if not data:
         raise HTTPException(status_code=400, detail="empty file")
-    if len(data) > max_size:
+    if len(data) > AVATAR_MAX_BYTES:
         raise HTTPException(status_code=400, detail="image must be smaller than 5MB")
+    if not _avatar_header_matches(content_type, data):
+        raise HTTPException(status_code=400, detail="image content does not match its declared type")
 
     user_dir = UPLOAD_DIR / str(user["id"])
     user_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"{uuid.uuid4().hex}{allowed[content_type]}"
+    filename = f"{uuid.uuid4().hex}{AVATAR_CONTENT_TYPES[content_type]}"
     path = user_dir / filename
     path.write_bytes(data)
     return {"url": f"/uploads/{user['id']}/{filename}"}
+
+
+def _avatar_header_matches(content_type: str, data: bytes) -> bool:
+    if content_type == "image/jpeg":
+        return data.startswith(b"\xff\xd8\xff")
+    if content_type == "image/png":
+        return data.startswith(b"\x89PNG\r\n\x1a\n")
+    if content_type == "image/webp":
+        return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP"
+    if content_type == "image/gif":
+        return data.startswith((b"GIF87a", b"GIF89a"))
+    return False
 
 
 @app.get("/api/voice/config")
@@ -672,7 +951,7 @@ def voice_config(user: dict = Depends(current_user)):
     config = load_voice_config()
     safe = {
         "enabled": config.get("enabled", False),
-        "tts_provider": config.get("tts_provider", "edge"),
+        "tts_provider": config.get("tts_provider", "openai_tts"),
         "voice_id": config.get("voice_id", ""),
         "rate": config.get("rate", 1.0),
         "pitch": config.get("pitch", 1.0),
@@ -2943,7 +3222,7 @@ def update_persona(persona_id: int, req: PersonaUpdateRequest, user: dict = Depe
     speaking_style = scrub_identity_text(req.speaking_style.strip()) if req.speaking_style is not None else current.get("speaking_style", "")
     appearance = scrub_identity_text(req.appearance_description) if req.appearance_description is not None else current.get("appearance_description", "")
     desired = scrub_identity_text(req.desired_image) if req.desired_image is not None else current.get("desired_image", "")
-    avatar_url = req.avatar_url if req.avatar_url is not None else current.get("avatar_url")
+    avatar_url = _clean_avatar_url(req.avatar_url) if req.avatar_url is not None else current.get("avatar_url")
     content_changed = (
         name != current.get("name", "")
         or summary != current.get("summary", "")
@@ -3160,6 +3439,11 @@ def purge_persona(persona_id: int, req: PersonaDeleteRequest, user: dict = Depen
 
 @app.post("/api/personas")
 def create_persona(req: PersonaCreateRequest, user: dict = Depends(current_user)):
+    if _self_use_public(user).get("enabled"):
+        raise HTTPException(
+            status_code=403,
+            detail="LING self-use mode is bound to one companion. Persona generation is disabled.",
+        )
     user_id = int(user["id"])
     preferred_name = scrub_identity_text(str(req.preferred_name or "").strip())
     with get_db() as db:
@@ -3535,6 +3819,9 @@ def group_chat_endpoint(req: GroupChatRequest, user: dict = Depends(current_user
 
 @app.post("/api/chat")
 def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: dict = Depends(current_user)):
+    self_use = _self_use_public(user)
+    if self_use.get("enabled") and not self_use.get("chat_enabled"):
+        raise HTTPException(status_code=403, detail="LING chat is not enabled yet. Set self_use.chat_enabled: true after API setup.")
     try:
         result = db_chat(
             user_id=int(user["id"]),

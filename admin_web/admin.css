@@ -330,13 +330,15 @@ small {
 }
 
 .llm-call-list,
-.llm-route-list {
+.llm-route-list,
+.error-event-list {
   display: grid;
   gap: 8px;
 }
 
 .llm-call,
-.llm-route {
+.llm-route,
+.error-event {
   display: grid;
   gap: 6px;
   padding: 10px;
@@ -353,17 +355,24 @@ small {
   border-color: rgba(242, 160, 160, 0.7);
 }
 
+.error-event {
+  border-color: rgba(242, 160, 160, 0.55);
+}
+
 .llm-call p,
-.llm-route p {
+.llm-route p,
+.error-event p {
   margin: 0;
 }
 
-.llm-route small {
+.llm-route small,
+.error-event small {
   color: var(--muted);
   overflow-wrap: anywhere;
 }
 
-.llm-call pre {
+.llm-call pre,
+.error-event pre {
   max-height: 120px;
   margin: 0;
   padding: 8px;

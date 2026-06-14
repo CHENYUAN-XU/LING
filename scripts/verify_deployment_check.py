@@ -25,6 +25,8 @@ def main() -> None:
     good_report = deployment_report(good_config, production=True)
     assert good_report["ok"] is True
     assert good_report["summary"]["failed"] == 0
+    passed_names = {check["name"] for check in good_report["checks"] if check["status"] == "pass"}
+    assert {"data_writable", "uploads_writable", "backups_writable"} <= passed_names
 
     bad_config = {
         "llm": {"api_key_env": "MNEMOSYNE_MISSING_DEPLOY_KEY"},

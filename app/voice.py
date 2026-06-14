@@ -7,8 +7,8 @@ from .config import load_config
 
 DEFAULT_VOICE_CONFIG: dict[str, Any] = {
     "enabled": False,
-    "tts_provider": "edge",
-    "voice_id": "zh-CN-XiaoxiaoNeural",
+    "tts_provider": "openai_tts",
+    "voice_id": "alloy",
     "rate": 1.0,
     "pitch": 1.0,
     "split_long_replies": True,
