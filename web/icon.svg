@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Project Mnemosyne">
+  <rect width="512" height="512" rx="96" fill="#f5f6f8"/>
+  <path d="M256 86c-63 0-114 51-114 114 0 42 22 78 55 98-28 17-47 48-47 83h42c0-35 29-64 64-64s64 29 64 64h42c0-35-19-66-47-83 33-20 55-56 55-98 0-63-51-114-114-114Zm0 42c40 0 72 32 72 72s-32 72-72 72-72-32-72-72 32-72 72-72Z" fill="#304a72"/>
+  <path d="M126 388c38 31 83 46 130 46s92-15 130-46" fill="none" stroke="#98671c" stroke-width="28" stroke-linecap="round"/>
+  <circle cx="218" cy="204" r="16" fill="#536d96"/>
+  <circle cx="294" cy="204" r="16" fill="#536d96"/>
+</svg>

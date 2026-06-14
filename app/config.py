@@ -25,8 +25,30 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "extract_every": 2,
         "consolidate_every": 10,
     },
+    "database": {
+        "journal_mode": "wal",
+        "busy_timeout_ms": 5000,
+    },
     "security": {
         "secure_cookies": False,
+    },
+    "self_use": {
+        "enabled": False,
+        "username": "mio_owner",
+        "nickname": "澪的工作区",
+        "require_localhost": True,
+        "seed_default_persona": True,
+        "default_persona_name": "澪",
+        "chat_enabled": False,
+    },
+    "voice": {
+        "enabled": False,
+        "tts_provider": "openai_tts",
+        "voice_id": "alloy",
+        "rate": 1.0,
+        "pitch": 1.0,
+        "split_long_replies": True,
+        "max_chunk_length": 80,
     },
 }
 

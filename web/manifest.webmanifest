@@ -1,0 +1,19 @@
+{
+  "name": "LING",
+  "short_name": "LING",
+  "description": "A live AI companion workspace for memory, voice, Live2D presence, and consented embodiment features.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f5f6f8",
+  "theme_color": "#f5f6f8",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

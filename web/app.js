@@ -3,8 +3,8 @@ const TAB_SESSION_MODE_KEY = "mnemosyne:tab-session-mode";
 const TAB_SESSION_TOKEN_KEY = "mnemosyne:tab-session-token";
 
 const text = {
-  appName: "忆界树",
-  appSubtitle: "Project Mnemosyne",
+  appName: "LING",
+  appSubtitle: "Live companion",
   login: "登录",
   register: "注册",
   logout: "退出",
@@ -16,13 +16,13 @@ const text = {
   save: "保存",
   send: "发送",
   waiting: "生成中",
-  createPersona: "创建人格",
-  wizardTitle: "你想和什么样的人交谈？",
+  createPersona: "创建陪伴体",
+  wizardTitle: "你希望 TA 以什么样的方式在你身边？",
   optionalDescription: "自由描述",
   directGenerate: "直接生成",
   messagePlaceholder: "说点什么",
   profile: "资料",
-  chats: "聊天",
+  chats: "陪伴体",
   adminConsole: "管理台",
   newChat: "新对话",
   backToChat: "返回聊天",
@@ -35,9 +35,20 @@ const starterPrompts = [
   "我不确定具体人设，只希望 TA 能慢慢适应我的情绪节奏。",
 ];
 
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  if (!["http:", "https:"].includes(window.location.protocol)) return;
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch((err) => {
+      console.warn("[PWA] service worker registration failed", err);
+    });
+  });
+}
+
 let state = {
   user: null,
   profile: null,
+  selfUse: null,
   options: null,
   expressionAssets: [],
   personas: [],
@@ -80,6 +91,7 @@ let state = {
   screenStatus: null,
   proactiveStatus: null,
   videoCompanionStatus: null,
+  llmStatus: null,
   privacyPolicy: null,
   cameraPreviewActive: false,
 };
@@ -205,15 +217,30 @@ function h(tag, attrs = {}, children = []) {
 
 async function bootstrap() {
   try {
-    const me = await api("/api/me");
-    state.user = me.user;
-    state.profile = me.profile;
-    await loadMainData({ openLatest: true });
-    renderShell();
-    scrollChat();
+    await bootstrapAuthenticated();
   } catch {
-    renderAuth("login");
+    try {
+      const local = await api("/api/auth/local", { method: "POST" });
+      await enterAuthenticatedSession(local, false);
+    } catch {
+      renderAuth("login");
+    }
   }
+}
+
+async function bootstrapAuthenticated() {
+  const me = await api("/api/me");
+  await enterAuthenticatedSession(me, false);
+}
+
+async function enterAuthenticatedSession(data, isolated) {
+  acceptAuthSession(data, isolated);
+  state.user = data.user;
+  state.profile = data.profile;
+  state.selfUse = data.self_use || { enabled: false };
+  await loadMainData({ openLatest: true });
+  renderShell();
+  scrollChat();
 }
 
 function renderAuth(mode) {
@@ -222,7 +249,7 @@ function renderAuth(mode) {
   const isolatedLogin = h("input", { type: "checkbox" });
   isolatedLogin.checked = tabSessionMode();
   form.append(
-    h("p", { class: "eyebrow", text: "Project Mnemosyne" }),
+    h("p", { class: "eyebrow", text: text.appSubtitle }),
     h("h1", { text: isRegister ? text.register : text.login }),
     h("label", {}, [text.username, h("input", { name: "username", required: "required", autocomplete: "username" })]),
     h("label", {}, [
@@ -330,6 +357,7 @@ async function loadMainData({ openLatest = false } = {}) {
   await loadVoiceConfig();
   await loadPresenceStatus();
   await loadAwarenessStatus();
+  await loadLLMStatus();
 
   state.options = options.options;
   state.expressionAssets = expressionAssets.assets || [];
@@ -362,13 +390,15 @@ async function loadMainData({ openLatest = false } = {}) {
   }
   state.view = state.activePersona || state.activeGroupConversation ? state.view : "forge";
   if (openLatest && state.personas.length) {
-    state.view = "home";
-    state.activeConversationId = null;
-    state.messages = [];
-    return;
+    state.view = state.activePersona ? "chat" : "home";
   }
   if (openLatest && state.activePersona) {
     await openInitialConversation();
+  }
+  if (selfUseMode()) {
+    state.view = state.activePersona ? "chat" : "home";
+    state.activeGroupConversationId = null;
+    state.activeGroupConversation = null;
   }
 }
 
@@ -383,6 +413,14 @@ async function loadGroupMessages(groupConversationId) {
 }
 
 function returnToHome() {
+  if (selfUseMode() && state.activePersona) {
+    state.view = "chat";
+    state.threadPanelOpen = false;
+    state.personaPanelOpen = false;
+    state.groupSettingsOpen = false;
+    renderShell();
+    return;
+  }
   state.view = "home";
   state.activePersona = null;
   state.activeConversationId = null;
@@ -607,22 +645,26 @@ function renderShell() {
 }
 
 function renderSidebar() {
+  if (selfUseMode()) return renderSelfUseSidebar();
+
   return h("aside", { class: "sidebar" }, [
     renderBrand(),
     h("section", { class: "sidebar-section chat-section" }, [
       h("div", { class: "section-head" }, [
         h("strong", { text: text.chats }),
-        h("button", {
-          type: "button",
-          class: "icon-btn",
-          title: text.createPersona,
-          "aria-label": text.createPersona,
-          text: "+",
-          onclick: () => {
-            state.view = "forge";
-            renderShell();
-          },
-        }),
+        !selfUseMode()
+          ? h("button", {
+              type: "button",
+              class: "icon-btn",
+              title: text.createPersona,
+              "aria-label": text.createPersona,
+              text: "+",
+              onclick: () => {
+                state.view = "forge";
+                renderShell();
+              },
+            })
+          : null,
       ]),
       renderConversationSearch(),
       renderChatList(),
@@ -638,8 +680,52 @@ function renderSidebar() {
           },
         })
       : null,
-    h("button", { type: "button", class: "ghost full", text: "切换账号（仅本页）", onclick: switchAccountInThisTab }),
-    h("button", { type: "button", class: "ghost full", text: text.logout, onclick: logout }),
+    !selfUseMode()
+      ? h("button", { type: "button", class: "ghost full", text: "切换账号（仅本页）", onclick: switchAccountInThisTab })
+      : null,
+    !selfUseMode()
+      ? h("button", { type: "button", class: "ghost full", text: text.logout, onclick: logout })
+      : null,
+  ]);
+}
+
+function selfUseMode() {
+  return !!state.selfUse?.enabled;
+}
+
+function renderSelfUseSidebar() {
+  const persona = state.activePersona || state.personas?.[0] || null;
+  return h("aside", { class: "sidebar self-use-sidebar" }, [
+    renderBrand(),
+    h("section", { class: "sidebar-section chat-section" }, [
+      h("div", { class: "section-head" }, [
+        h("strong", { text: "澪" }),
+      ]),
+      persona
+        ? h("button", {
+            type: "button",
+            class: `item ${state.activePersona?.id === persona.id ? "active" : ""}`,
+            onclick: () => openPersonaItem(persona),
+          }, [
+            avatar(persona.name || "澪", persona.avatar_url),
+            h("span", {}, [
+              h("strong", { text: persona.name || "澪" }),
+              h("small", { text: persona.summary || "基础设定待填写。" }),
+            ]),
+          ])
+        : h("p", { class: "empty", text: "澪还在初始化。" }),
+    ]),
+    renderUserEntry(),
+    isAdmin()
+      ? h("button", {
+          type: "button",
+          class: "ghost full",
+          text: text.adminConsole,
+          onclick: () => {
+            window.location.href = "/admin";
+          },
+        })
+      : null,
   ]);
 }
 
@@ -672,6 +758,12 @@ function renderProfileModal() {
   const year = selectControl(["", ...yearOptions()], birthday.year, ["年", ...yearOptions()]);
   const month = selectControl(["", ...rangeOptions(1, 12)], birthday.month, ["月", ...rangeOptions(1, 12).map((item) => `${item}月`)]);
   const day = selectControl(["", ...rangeOptions(1, 31)], birthday.day, ["日", ...rangeOptions(1, 31).map((item) => `${item}日`)]);
+  const timezone = h("input", {
+    name: "timezone",
+    value: profile.timezone || browserTimezone(),
+    placeholder: "例如 Asia/Shanghai",
+    autocomplete: "off",
+  });
   const signature = h("input", { name: "signature", value: profile.signature || "" });
   const bio = h("textarea", { name: "bio", rows: "4", maxlength: "1000", placeholder: "简单写一点关于你自己的信息" }, profile.bio || "");
   const status = h("small", { class: "save-status" });
@@ -737,6 +829,7 @@ function renderProfileModal() {
                 avatar_url: avatarValue,
                 gender: gender.value,
                 birthday: buildBirthday(year.value, month.value, day.value),
+                timezone: timezone.value,
                 signature: signature.value,
                 bio: bio.value,
               }),
@@ -754,6 +847,7 @@ function renderProfileModal() {
         h("label", {}, ["图片链接（可选）", avatarUrl]),
         h("label", {}, ["性别", gender]),
         h("label", {}, ["生日", h("div", { class: "birthday-selects" }, [year, month, day])]),
+        h("label", {}, ["时区", timezone]),
         h("label", {}, [text.signature, signature]),
         h("label", {}, ["简介", bio]),
         h("div", { class: "actions modal-actions" }, [
@@ -765,6 +859,14 @@ function renderProfileModal() {
       renderAccountDangerZone(),
     ]),
   ]);
+}
+
+function browserTimezone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+  } catch {
+    return "";
+  }
 }
 
 function renderGuestDataNotice() {
@@ -965,7 +1067,7 @@ function renderConversationSearch() {
   const input = h("input", {
     class: "conversation-search",
     type: "search",
-    placeholder: "搜索聊天",
+    placeholder: "搜索陪伴体或记录",
     value: state.conversationSearch,
   });
   input.addEventListener("input", () => {
@@ -993,7 +1095,7 @@ function renderConversationSearch() {
 function renderChatList() {
   const list = h("div", { class: "list chat-list" });
   if (!state.personas.length) {
-    list.append(h("p", { class: "empty", text: "还没有聊天对象。点右上角 + 创建一个。" }));
+    list.append(h("p", { class: "empty", text: "还没有陪伴体。点右上角 + 创建一个。" }));
     return list;
   }
 
@@ -1003,7 +1105,7 @@ function renderChatList() {
   for (const entry of groupEntries) list.append(renderSidebarGroupItem(entry));
   for (const entry of entries) list.append(renderSidebarPersonaItem(entry));
   if (!entries.length && !groupEntries.length) {
-    list.append(h("p", { class: "empty", text: "没有匹配的聊天。" }));
+    list.append(h("p", { class: "empty", text: "没有匹配的陪伴体或记录。" }));
   }
 
   return list;
@@ -1109,7 +1211,7 @@ function renderSidebarGroupItem(entry) {
       h("span", {}, [
         h("span", { class: "conversation-title-row" }, [
           h("strong", {}, [
-            entry.pinned ? h("span", { class: "pin-mark", text: "缃《" }) : null,
+            entry.pinned ? h("span", { class: "pin-mark", text: "置顶" }) : null,
             groupConversationTitle(group),
           ]),
           h("small", { text: formatListTime(entry.updatedAt) }),
@@ -1284,8 +1386,8 @@ function renderHome() {
   return h("section", { class: "home-screen" }, [
     h("header", { class: "home-head" }, [
       h("div", {}, [
-        h("p", { class: "eyebrow", text: state.user?.is_guest ? "游客体验" : "Mnemosyne" }),
-        h("h2", { text: "聊天" }),
+        h("p", { class: "eyebrow", text: state.user?.is_guest ? "游客体验" : "LING" }),
+        h("h2", { text: "陪伴体" }),
         state.user?.is_guest ? h("small", { text: guestExpiryText() }) : null,
       ]),
       h("div", { class: "home-actions" }, [
@@ -1308,16 +1410,18 @@ function renderHome() {
             renderShell();
           },
         }),
-        h("button", {
-          type: "button",
-          class: "ghost compact",
-          text: "新群聊",
-          disabled: state.personas.length < 2 ? "disabled" : null,
-          onclick: () => {
-            state.groupCreateOpen = true;
-            renderShell();
-          },
-        }),
+        !selfUseMode()
+          ? h("button", {
+              type: "button",
+              class: "ghost compact",
+              text: "群聊实验",
+              disabled: state.personas.length < 2 ? "disabled" : null,
+              onclick: () => {
+                state.groupCreateOpen = true;
+                renderShell();
+              },
+            })
+          : null,
         state.deletedPersonas.length
           ? h("button", {
               type: "button",
@@ -1329,17 +1433,19 @@ function renderHome() {
               },
             })
           : null,
-        h("button", {
-          type: "button",
-          class: "icon-btn",
-          title: text.createPersona,
-          "aria-label": text.createPersona,
-          text: "+",
-          onclick: () => {
-            state.view = "forge";
-            renderShell();
-          },
-        }),
+        !selfUseMode()
+          ? h("button", {
+              type: "button",
+              class: "icon-btn",
+              title: text.createPersona,
+              "aria-label": text.createPersona,
+              text: "+",
+              onclick: () => {
+                state.view = "forge";
+                renderShell();
+              },
+            })
+          : null,
       ]),
     ]),
     h("section", {
@@ -1363,18 +1469,20 @@ function renderHome() {
         h("strong", { text: state.profile?.nickname || state.user?.username || "" }),
         h("small", { text: state.user?.is_guest ? guestExpiryText() : state.profile?.signature || "查看和编辑资料" }),
       ]),
-      h("button", {
-        type: "button",
-        class: "ghost compact",
-        text: "退出",
-        onclick: (event) => {
-          event.stopPropagation();
-          logout();
-        },
-      }),
+      !selfUseMode()
+        ? h("button", {
+            type: "button",
+            class: "ghost compact",
+            text: "退出",
+            onclick: (event) => {
+              event.stopPropagation();
+              logout();
+            },
+          })
+        : null,
     ]),
     h("div", { class: "home-search" }, [renderConversationSearch()]),
-    groupEntries.length
+    !selfUseMode() && groupEntries.length
       ? h("section", { class: "home-group-section" }, [
           h("div", { class: "section-head" }, [
             h("strong", { text: "群聊" }),
@@ -1387,7 +1495,7 @@ function renderHome() {
     h("div", { class: "home-persona-list" }, [
       ...entries.map(renderHomePersonaCard),
       !entries.length
-        ? h("p", { class: "empty", text: query ? "没有匹配的聊天。" : "还没有聊天对象，点右上角 + 创建一个。" })
+        ? h("p", { class: "empty", text: query ? "没有匹配的陪伴体。" : "还没有陪伴体，点右上角 + 创建一个。" })
         : null,
     ]),
   ]);
@@ -1412,7 +1520,7 @@ function renderHomeGroupCard(entry) {
     h("span", { class: "home-card-copy" }, [
       h("span", { class: "home-card-title" }, [
         h("strong", {}, [
-          entry.pinned ? h("span", { class: "pin-mark", text: "缃《" }) : null,
+          entry.pinned ? h("span", { class: "pin-mark", text: "置顶" }) : null,
           groupConversationTitle(group),
         ]),
         h("small", { text: formatListTime(entry.updatedAt) }),
@@ -1554,11 +1662,17 @@ function guestExpiryText() {
 }
 
 function renderMain() {
+  if (selfUseMode() && state.view === "forge" && state.activePersona) {
+    state.view = "chat";
+  }
   if (state.view === "home") {
     return renderHome();
   }
 
   if (state.view === "forge" || !state.activePersona) {
+    if (selfUseMode()) {
+      return renderSelfUseMissingCompanion();
+    }
     if (state.view === "group" && state.activeGroupConversation) {
       return renderGroupChat();
     }
@@ -1568,12 +1682,14 @@ function renderMain() {
   return h("section", { class: "workspace" }, [
     h("section", { class: "chat-panel" }, [
       h("header", { class: "chat-header" }, [
-        h("button", {
-          type: "button",
-          class: "ghost compact home-back-btn",
-          text: isMobileShell() ? "返回" : "返回主界面",
-          onclick: returnToHome,
-        }),
+        !selfUseMode()
+          ? h("button", {
+              type: "button",
+              class: "ghost compact home-back-btn",
+              text: isMobileShell() ? "返回" : "返回主界面",
+              onclick: returnToHome,
+            })
+          : null,
         h("button", {
           type: "button",
           class: "avatar-button",
@@ -1608,10 +1724,86 @@ function renderMain() {
           }),
         ]),
       ]),
+      renderCompanionStage(state.activePersona),
       h("div", { id: "chat-log", class: "chat-log" }, state.messages.length ? renderMessageList(state.messages) : [renderChatEmpty()]),
       renderComposer(),
     ]),
   ]);
+}
+
+function renderSelfUseMissingCompanion() {
+  return h("section", { class: "workspace" }, [
+    h("section", { class: "chat-panel empty-companion-panel" }, [
+      h("div", { class: "chat-empty" }, [
+        h("p", { class: "eyebrow", text: "LING" }),
+        h("h2", { text: "澪还在初始化" }),
+        h("p", { text: "本地自用模式应该自动准备澪，而不是进入创建人格流程。请刷新一次，或检查 /api/auth/local。" }),
+      ]),
+    ]),
+  ]);
+}
+
+function personaVisualUrl(persona) {
+  return String(
+    persona?.live2d_preview_url
+    || persona?.fallback_image_url
+    || persona?.avatar_url
+    || ""
+  ).trim();
+}
+
+function renderCompanionStage(persona) {
+  const imageUrl = personaVisualUrl(persona);
+  const live2dEnabled = live2dAvailable();
+  const live2dConnected = live2dEnabled
+    && !!(state.live2dStatus?.connected && state.live2dStatus?.authenticated && !state.live2dStatus?.last_error);
+  const statusClass = live2dStatusClass();
+  return h("section", { class: `companion-stage ${imageUrl ? "has-image" : "no-image"}` }, [
+    h("div", { class: "companion-visual" }, [
+      imageUrl
+        ? h("img", { src: imageUrl, alt: persona?.name || "LING companion" })
+        : h("span", { text: avatarText(persona?.name || "LING") }),
+    ]),
+    h("div", { class: "companion-stage-copy" }, [
+      h("p", { class: "eyebrow", text: "LING" }),
+      h("h2", { text: persona?.name || "澪" }),
+      renderPersonaStatusLine(persona || {}),
+      h("div", { class: "companion-stage-pills" }, [
+        h("span", { class: `live2d-stage-pill ${statusClass}` }, [
+          h("span", { class: `live2d-status-dot ${statusClass}` }),
+          h("span", { text: live2dEnabled ? live2dStatusText() : "Live2D 待接入" }),
+        ]),
+        h("span", { class: `companion-mode-pill ${llmConfigured() ? "ok" : "off"}`, text: llmStatusText() }),
+        voiceAvailable() ? h("span", { class: "companion-mode-pill", text: "语音" }) : null,
+        presenceAvailable() ? h("span", { class: "companion-mode-pill", text: presenceStatusText(presenceStatusKey()) }) : null,
+      ]),
+    ]),
+    live2dEnabled ? h("div", { class: "companion-stage-actions" }, [
+      live2dConnected
+        ? h("button", { type: "button", class: "ghost compact", text: "断开", onclick: live2dDisconnect })
+        : h("button", { type: "button", class: "compact", text: "连接 Live2D", onclick: live2dConnect }),
+      live2dConnected
+        ? h("button", { type: "button", class: "ghost compact", text: "微笑", onclick: live2dTestExpression })
+        : null,
+    ]) : null,
+  ]);
+}
+
+function llmConfigured() {
+  if (selfUseMode() && !state.selfUse?.chat_enabled) return false;
+  return !!state.llmStatus?.configured;
+}
+
+function chatInputBlocked() {
+  return selfUseMode() && !llmConfigured();
+}
+
+function llmStatusText() {
+  if (selfUseMode() && !state.selfUse?.chat_enabled) return "模型未启用";
+  const status = state.llmStatus || {};
+  if (status.configured) return status.model ? `模型已连接 ${status.model}` : "模型已连接";
+  const missing = Array.isArray(status.missing) && status.missing.length ? status.missing[0] : "API key";
+  return `模型未连接：${missing}`;
 }
 
 function renderGroupChat() {
@@ -2773,8 +2965,18 @@ function forgeGroups() {
 }
 
 function renderComposer() {
-  const input = h("textarea", { rows: "1", maxlength: "8000", placeholder: text.messagePlaceholder });
-  const button = h("button", { type: "submit", text: state.sending ? "等待" : text.send, disabled: state.sending ? "disabled" : null });
+  const llmBlocked = chatInputBlocked();
+  const input = h("textarea", {
+    rows: "1",
+    maxlength: "8000",
+    placeholder: llmBlocked ? llmStatusText() : text.messagePlaceholder,
+    disabled: llmBlocked ? "disabled" : null,
+  });
+  const button = h("button", {
+    type: "submit",
+    text: llmBlocked ? "未连接" : state.sending ? "等待" : text.send,
+    disabled: state.sending || llmBlocked ? "disabled" : null,
+  });
   const form = h("form", { class: "composer" }, [input, button]);
   input.value = loadDraft();
   requestAnimationFrame(() => {
@@ -2788,7 +2990,7 @@ function renderComposer() {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const content = input.value.trim();
-    if (!content || state.sending) return;
+    if (!content || state.sending || llmBlocked) return;
     if (state.view === "group" && !state.activeGroupConversationId) return;
     if (state.view !== "group" && !state.activePersona) return;
     input.value = "";
@@ -3013,12 +3215,13 @@ async function markGroupConversationRead(groupConversationId) {
 
 function renderChatEmpty() {
   const persona = state.activePersona || {};
+  const llmBlocked = chatInputBlocked();
   return h("div", { class: "chat-empty" }, [
-    avatar(persona.name || "忆", persona.avatar_url),
-    h("h3", { text: persona.name || "新的对话对象" }),
+    avatar(persona.name || "澪", persona.avatar_url),
+    h("h3", { text: persona.name || "澪" }),
     renderPersonaStatusLine(persona, "center"),
-    h("p", { text: persona.summary || "从一句自然的话开始。你们的相处方式会在交谈里慢慢清晰起来。" }),
-    h("div", { class: "chat-empty-actions" }, [
+    h("p", { text: llmBlocked ? "模型还没有启用。先保留澪的空白设定，等你接好 API 后再开始对话。" : persona.summary || "从一句自然的话开始。" }),
+    llmBlocked ? null : h("div", { class: "chat-empty-actions" }, [
       chatStarterButton("今天有点累。"),
       chatStarterButton("想随便聊聊。"),
       chatStarterButton("陪我想一件事。"),
@@ -3069,8 +3272,8 @@ function groupConversationPreview(group) {
 
 function renderPersonaStatusLine(persona, align = "") {
   const storedRelation = cleanMetaText(persona?.relationship);
-  const relation = !storedRelation || storedRelation === "关系未定" ? "刚刚认识" : storedRelation;
-  const style = cleanMetaText(persona?.speaking_style) || "正在适应你的聊天节奏";
+  const relation = !storedRelation || storedRelation === "关系未定" ? "未设定" : storedRelation;
+  const style = cleanMetaText(persona?.speaking_style) || "未填写";
   const version = persona?.version ? `v${persona.version}` : "v1";
   return h("div", { class: `persona-status-line ${align}`.trim() }, [
     h("span", { class: "status-pill relation", text: relation }),
@@ -3707,6 +3910,15 @@ async function loadVoiceConfig() {
   }
 }
 
+async function loadLLMStatus() {
+  try {
+    const data = await api("/api/llm/status?task=chat");
+    state.llmStatus = data.llm || { configured: false };
+  } catch {
+    state.llmStatus = { configured: false, missing: [] };
+  }
+}
+
 function voiceAvailable() {
   return !!(state.voiceConfig && state.voiceConfig.enabled);
 }
@@ -4107,9 +4319,9 @@ function groupHint(key) {
 async function logout() {
   const isolated = tabSessionMode();
   await api("/api/auth/logout", { method: "POST" }).catch(() => {});
-  prepareAuthMode(isolated);
   resetClientState();
-  renderAuth("login");
+  prepareAuthMode(false);
+  bootstrap();
 }
 
 async function switchAccountInThisTab() {
@@ -4125,6 +4337,7 @@ function resetClientState() {
   state = {
     user: null,
     profile: null,
+    selfUse: null,
     options: null,
     expressionAssets: [],
     personas: [],
@@ -4167,6 +4380,7 @@ function resetClientState() {
     screenStatus: null,
     proactiveStatus: null,
     videoCompanionStatus: null,
+    llmStatus: null,
     privacyPolicy: null,
     cameraPreviewActive: false,
   };
@@ -4204,4 +4418,5 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+registerServiceWorker();
 bootstrap();

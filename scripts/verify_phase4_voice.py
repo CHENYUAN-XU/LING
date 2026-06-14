@@ -34,8 +34,8 @@ def verify_voice_config() -> None:
 
     assert voice_mod.voice_enabled() is False
     config = voice_mod.load_voice_config()
-    assert config["tts_provider"] == "edge"
-    assert config["voice_id"] == "zh-CN-XiaoxiaoNeural"
+    assert config["tts_provider"] == "openai_tts"
+    assert config["voice_id"] == "alloy"
     assert config["split_long_replies"] is True
     assert config["max_chunk_length"] == 80
     assert isinstance(config["expression_style_map"], dict)
@@ -60,7 +60,7 @@ def verify_speech_planner() -> None:
     params = sp.build_tts_request_params(["你好"], ["微笑"])
     assert len(params) == 1
     assert params[0]["text"] == "你好"
-    assert params[0]["voice_id"] == "zh-CN-XiaoxiaoNeural"
+    assert params[0]["voice_id"] == "alloy"
     assert params[0]["style"] == "cheerful"
 
     params_no_style = sp.build_tts_request_params(["你好"], ["未知标签"])
@@ -85,26 +85,23 @@ def verify_tts_service_disabled() -> None:
 def verify_tts_failure_metadata_and_cleanup() -> None:
     import app.tts_service as tts_svc
 
-    original_run = tts_svc.subprocess.run
-    original_tempdir = tts_svc.tempfile.tempdir
+    original_enabled = tts_svc.voice_enabled
+    original_config = tts_svc.load_voice_config
     try:
-        class FailedRun:
-            returncode = 1
-            stderr = "network unavailable"
-
-        def fake_run(*args, **kwargs):
-            return FailedRun()
-
-        tts_svc.subprocess.run = fake_run
-        with tempfile.TemporaryDirectory() as tmp:
-            tts_svc.tempfile.tempdir = tmp
-            audio = tts_svc._edge_tts_subprocess("测试", "zh-CN-XiaoxiaoNeural")
-            assert audio is None
-            assert "network unavailable" in (tts_svc.get_last_tts_error() or "")
-            assert list(Path(tmp).glob("*.mp3")) == []
+        tts_svc.voice_enabled = lambda: True
+        tts_svc.load_voice_config = lambda: {
+            "enabled": True,
+            "tts_provider": "openai_tts",
+            "voice_id": "alloy",
+            "rate": 1.0,
+            "pitch": 1.0,
+        }
+        audio = tts_svc.generate_tts_audio("测试")
+        assert audio is None
+        assert "Video Companion" in (tts_svc.get_last_tts_error() or "")
     finally:
-        tts_svc.subprocess.run = original_run
-        tts_svc.tempfile.tempdir = original_tempdir
+        tts_svc.voice_enabled = original_enabled
+        tts_svc.load_voice_config = original_config
 
     original_enabled = tts_svc.voice_enabled
     original_generate = tts_svc.generate_tts_audio

@@ -1046,9 +1046,17 @@ def verify_sparse_profile_discovery_policy(mirror, chat, user_id: int) -> None:
         current_time=datetime(2026, 5, 25, 13, 0, tzinfo=timezone.utc),
     )
     assert "current_local_date: 2026-05-25" in requested_profile
+    assert "local_timezone: UTC" in requested_profile
     assert "This turn invites checking the saved user profile" in requested_profile
     assert "Do not add unrequested memories" in requested_profile
     assert "Today is the user's birthday" not in requested_profile
+    user_timezone_profile = chat._profile_usage_prompt(
+        "今天是几号？",
+        profile={"timezone": "Asia/Tokyo"},
+        current_time=datetime(2026, 5, 25, 16, 0, tzinfo=timezone.utc),
+    )
+    assert "current_local_date: 2026-05-26" in user_timezone_profile
+    assert "local_timezone: Asia/Tokyo" in user_timezone_profile
     ordinary_turn = chat._profile_usage_prompt(
         "今天有点累。",
         current_time=datetime(2026, 5, 26, 13, 0, tzinfo=timezone.utc),

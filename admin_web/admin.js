@@ -19,6 +19,7 @@ let state = {
   evalRuns: [],
   llmCalls: [],
   llmRoutes: null,
+  errorEvents: [],
   growthDemo: null,
   runningEval: false,
   generatingRevision: false,
@@ -130,7 +131,7 @@ async function loadReview() {
     state.llmRoutes = null;
     return;
   }
-  const [data, traceData, expressionData, assetData, revisionData, growthData, versionData, evalData, llmData, routeData] = await Promise.all([
+  const [data, traceData, expressionData, assetData, revisionData, growthData, versionData, evalData, llmData, routeData, errorData] = await Promise.all([
     api(`/api/admin/memory/review?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&include_history=true`),
     api(`/api/admin/chat-context-traces?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&limit=6`),
     api(`/api/admin/expression-usage?target_user_id=${state.selectedUserId}&persona_id=${state.selectedPersonaId}&limit=12&usage_limit=80`),
@@ -141,6 +142,7 @@ async function loadReview() {
     api("/api/admin/evaluations/memory/runs?limit=5"),
     api("/api/admin/llm-calls?limit=20"),
     api("/api/admin/llm-routes"),
+    api("/api/admin/error-events?limit=20"),
   ]);
   state.review = data.review;
   state.traces = traceData.traces;
@@ -152,6 +154,7 @@ async function loadReview() {
   state.evalRuns = evalData.runs;
   state.llmCalls = llmData.calls;
   state.llmRoutes = routeData;
+  state.errorEvents = errorData.events || [];
 }
 
 function render() {
@@ -1047,6 +1050,7 @@ function renderReview() {
     card("人格成长", renderGrowthPanel(), "wide"),
     card("状态变量", renderStateList(review.state || [])),
     card("模型调用记录", renderLlmCalls(), "wide"),
+    card("服务错误", renderErrorEvents(), "wide"),
     card("模型路由", renderLlmRoutes(), "wide"),
     card("记忆评测", renderEvalPanel(), "wide"),
     card("用户画像", renderInsight(review.insight || {})),
@@ -1059,6 +1063,22 @@ function renderReview() {
     card("当前事实", renderMemoryList(review.facts || []), "wide"),
     card("当前关系", renderMemoryList(review.relations || []), "wide"),
   ]);
+}
+
+function renderErrorEvents() {
+  const events = state.errorEvents || [];
+  if (!events.length) return h("p", { class: "muted", text: "暂无 5xx 错误记录。" });
+  return h("div", { class: "error-event-list" }, events.map((item) => h("article", {
+    class: `error-event status-${item.status_code || 500}`,
+  }, [
+    h("div", { class: "memory-title" }, [
+      h("strong", { text: `${item.method || "GET"} ${item.path || ""}` }),
+      h("small", { text: `#${item.id} / ${item.status_code || 500} / ${formatTs(item.created_at)}` }),
+    ]),
+    h("small", { text: `request ${item.request_id || "-"} / client ${item.client_id || "-"}` }),
+    item.error_type ? h("p", { text: item.error_type }) : null,
+    item.error_text ? h("pre", { text: item.error_text }) : null,
+  ])));
 }
 
 function renderLlmCalls() {
