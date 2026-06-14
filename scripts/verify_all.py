@@ -52,6 +52,7 @@ def main() -> None:
         "scripts\\verify_phase8_screen.py",
         "scripts\\verify_phase9_proactive.py",
         "scripts\\verify_llm_status.py",
+        "scripts\\verify_embodiment_fields.py",
         "scripts\\verify_video_companion_adapter.py",
         "scripts\\verify_data_backup.py",
         "scripts\\verify_backup_restore.py",

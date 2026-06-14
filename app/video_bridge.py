@@ -5,6 +5,7 @@ from typing import Any
 
 from .conversation_memory import list_conversation_summaries
 from .database import dict_from_row, get_db, now_ts
+from .embodiment_profile import persona_embodiment_profile
 from .layered_memory import recall_layered_memory, summary_prompt
 from .user_consent import user_has_consent
 from .world_state import store_world_observation
@@ -34,6 +35,7 @@ def build_video_session_context(persona_id: int | str | None) -> dict[str, Any]:
             "summary": persona.get("summary") or "",
             "appearance_description": persona.get("appearance_description") or "",
             "desired_image": persona.get("desired_image") or "",
+            "embodiment": persona_embodiment_profile(persona),
             "version": int(persona.get("version") or 1),
             "memory_summary": memory_summary,
             "layered_memory": layered,

@@ -1701,7 +1701,7 @@ function renderMain() {
           h("h2", { text: state.activePersona.name }),
           renderPersonaStatusLine(state.activePersona),
           renderPresencePill(),
-          h("p", { text: state.activePersona.summary || "人格会在对话和记忆里继续生长。" }),
+          h("p", { text: state.activePersona.summary || (selfUseMode() ? "基础设定待填写。" : "陪伴体会在对话和记忆里继续生长。") }),
         ]),
         h("div", { class: "chat-header-actions" }, [
           h("button", {
@@ -1743,17 +1743,30 @@ function renderSelfUseMissingCompanion() {
   ]);
 }
 
+function personaEmbodimentProfile(persona) {
+  const live2dPreviewUrl = String(persona?.live2d_preview_url || "").trim();
+  const fallbackImageUrl = String(persona?.fallback_image_url || "").trim();
+  const avatarUrl = String(persona?.avatar_url || "").trim();
+  const visual = [
+    ["live2d_preview_url", live2dPreviewUrl],
+    ["fallback_image_url", fallbackImageUrl],
+    ["avatar_url", avatarUrl],
+  ].find(([, value]) => value);
+  return {
+    live2dModelId: String(persona?.live2d_model_id || "").trim(),
+    voiceProfile: String(persona?.voice_profile || "").trim(),
+    visualUrl: visual ? visual[1] : "",
+    visualSource: visual ? visual[0] : "none",
+  };
+}
+
 function personaVisualUrl(persona) {
-  return String(
-    persona?.live2d_preview_url
-    || persona?.fallback_image_url
-    || persona?.avatar_url
-    || ""
-  ).trim();
+  return personaEmbodimentProfile(persona).visualUrl;
 }
 
 function renderCompanionStage(persona) {
-  const imageUrl = personaVisualUrl(persona);
+  const embodiment = personaEmbodimentProfile(persona);
+  const imageUrl = embodiment.visualUrl;
   const live2dEnabled = live2dAvailable();
   const live2dConnected = live2dEnabled
     && !!(state.live2dStatus?.connected && state.live2dStatus?.authenticated && !state.live2dStatus?.last_error);
@@ -1771,10 +1784,17 @@ function renderCompanionStage(persona) {
       h("div", { class: "companion-stage-pills" }, [
         h("span", { class: `live2d-stage-pill ${statusClass}` }, [
           h("span", { class: `live2d-status-dot ${statusClass}` }),
-          h("span", { text: live2dEnabled ? live2dStatusText() : "Live2D 待接入" }),
+          h("span", { text: live2dEnabled ? live2dStatusText(embodiment) : "Live2D 待接入" }),
         ]),
+        h("span", {
+          class: `companion-mode-pill ${embodiment.live2dModelId ? "ok" : "off"}`,
+          text: embodiment.live2dModelId ? `模型 ${embodiment.live2dModelId}` : "模型未绑定",
+        }),
         h("span", { class: `companion-mode-pill ${llmConfigured() ? "ok" : "off"}`, text: llmStatusText() }),
-        voiceAvailable() ? h("span", { class: "companion-mode-pill", text: "语音" }) : null,
+        h("span", {
+          class: `companion-mode-pill ${embodiment.voiceProfile ? "ok" : "off"}`,
+          text: embodiment.voiceProfile ? `声音 ${embodiment.voiceProfile}` : "声音未绑定",
+        }),
         presenceAvailable() ? h("span", { class: "companion-mode-pill", text: presenceStatusText(presenceStatusKey()) }) : null,
       ]),
     ]),
@@ -2197,7 +2217,7 @@ function renderPersonaRail() {
         avatar(persona.name || "忆", persona.avatar_url),
         h("div", {}, [
           h("h3", { text: persona.name || "未命名" }),
-          h("small", { text: persona.relationship || "关系尚未明确" }),
+          h("small", { text: persona.relationship || "未设定" }),
         ]),
       ]), 
       detailLine("说话方式", persona.speaking_style || "会在对话中逐步稳定"),
@@ -2207,7 +2227,11 @@ function renderPersonaRail() {
       renderPersonaGrowth(persona),
       h("details", { class: "persona-more-details" }, [
         h("summary", { text: "更多资料" }),
-        detailLine("人格版本", `v${persona.version || 1}`),
+        detailLine("资料版本", `v${persona.version || 1}`),
+        detailLine("Live2D 模型", persona.live2d_model_id || "未接入"),
+        detailLine("Live2D 预览图", persona.live2d_preview_url || "未设置"),
+        detailLine("Fallback 图像", persona.fallback_image_url || persona.avatar_url || "未设置"),
+        detailLine("声音档案", persona.voice_profile || "未设置"),
         detailLine("外貌参考", persona.appearance_description || "暂未确定"),
         detailLine("期望形象", persona.desired_image || "暂未确定"),
         detailLine("心理适配", persona.psychological_fit_notes || "先从稳定倾听开始，再根据长期对话校准。"),
@@ -2578,7 +2602,31 @@ function renderPersonaEditForm(persona) {
     placeholder: "短句、少说教、会吐槽、温柔一点...",
   }, persona.speaking_style || "");
   const avatarFile = h("input", { name: "avatar_file", type: "file", accept: "image/png,image/jpeg,image/webp,image/gif" });
-  const avatarUrl = h("input", { name: "avatar_url", value: persona.avatar_url || "", placeholder: "可选：粘贴图片链接" });
+  const avatarUrl = h("input", { name: "avatar_url", value: persona.avatar_url || "", placeholder: "兼容旧头像：/uploads/... 或 https://..." });
+  const live2dModelId = h("input", {
+    name: "live2d_model_id",
+    value: persona.live2d_model_id || "",
+    maxlength: "120",
+    placeholder: "例如 mio-main 或 VTube Studio 模型名",
+  });
+  const live2dPreviewUrl = h("input", {
+    name: "live2d_preview_url",
+    value: persona.live2d_preview_url || "",
+    maxlength: "500",
+    placeholder: "Live2D 未连接时显示的预览图 URL",
+  });
+  const fallbackImageUrl = h("input", {
+    name: "fallback_image_url",
+    value: persona.fallback_image_url || "",
+    maxlength: "500",
+    placeholder: "Live2D 和预览图都不可用时的 fallback 图",
+  });
+  const voiceProfile = h("input", {
+    name: "voice_profile",
+    value: persona.voice_profile || "",
+    maxlength: "200",
+    placeholder: "例如 mio-soft-v1；留空表示未设置",
+  });
   const appearance = h("textarea", {
     name: "appearance_description",
     rows: "4",
@@ -2602,7 +2650,7 @@ function renderPersonaEditForm(persona) {
   const deleteButton = h("button", {
     type: "button",
     class: "danger-button",
-    text: "删除人格",
+    text: selfUseMode() ? "删除已禁用" : "删除陪伴体",
     disabled: "disabled",
     onclick: async () => {
       deleteStatus.textContent = "";
@@ -2638,7 +2686,7 @@ function renderPersonaEditForm(persona) {
 
   return h("section", { class: "rail-section" }, [
     h("div", { class: "section-head" }, [
-      h("p", { class: "eyebrow", text: "Persona" }),
+      h("p", { class: "eyebrow", text: selfUseMode() ? "澪的资料" : "陪伴体资料" }),
       h("button", {
         type: "button",
         class: "ghost compact",
@@ -2670,6 +2718,10 @@ function renderPersonaEditForm(persona) {
               avatar_url: avatarValue,
               appearance_description: appearance.value,
               desired_image: desired.value,
+              live2d_model_id: live2dModelId.value,
+              live2d_preview_url: live2dPreviewUrl.value,
+              fallback_image_url: fallbackImageUrl.value,
+              voice_profile: voiceProfile.value,
             }),
           });
           state.activePersona = data.persona;
@@ -2699,10 +2751,14 @@ function renderPersonaEditForm(persona) {
       h("label", {}, ["关系定位", relationship]),
       h("label", {}, ["说话方式", speakingStyle]),
       h("label", {}, ["摘要", summary]),
-      h("label", {}, ["头像图片", avatarFile]),
-      h("label", {}, ["图片链接（可选）", avatarUrl]),
       h("details", { class: "persona-edit-more" }, [
         h("summary", { text: "形象与更多资料" }),
+        h("label", {}, ["Live2D 模型 ID", live2dModelId]),
+        h("label", {}, ["Live2D 预览图", live2dPreviewUrl]),
+        h("label", {}, ["Fallback 图像", fallbackImageUrl]),
+        h("label", {}, ["声音档案", voiceProfile]),
+        h("label", {}, ["兼容头像上传", avatarFile]),
+        h("label", {}, ["兼容头像链接", avatarUrl]),
         h("label", {}, ["外貌参考", appearance]),
         h("label", {}, ["期望形象", desired]),
       ]),
@@ -2719,10 +2775,10 @@ function renderPersonaEditForm(persona) {
         }),
       ]),
       status,
-      h("details", { class: "persona-danger-zone" }, [
-        h("summary", { text: "删除这个人格" }),
+      selfUseMode() ? null : h("details", { class: "persona-danger-zone" }, [
+        h("summary", { text: "删除这个陪伴体" }),
         h("p", { text: "删除后，TA 和相关聊天会从你的主界面隐藏。记忆与版本历史暂时保留，以便后续支持恢复或数据处理。" }),
-        h("label", {}, ["输入人格名字确认", deleteConfirm]),
+        h("label", {}, ["输入名字确认", deleteConfirm]),
         deleteButton,
         deleteStatus,
       ]),
@@ -4035,9 +4091,10 @@ function live2dAvailable() {
   return !!(state.live2dStatus && state.live2dStatus.enabled);
 }
 
-function live2dStatusText() {
+function live2dStatusText(embodiment = null) {
   var s = state.live2dStatus || {};
   if (!s.enabled) return "未启用";
+  if (embodiment && !embodiment.live2dModelId) return "模型未绑定";
   if (!s.websockets_available && !s.connected) return "需安装 websockets 库 (pip install websockets)";
   if (!s.connected) return "未连接 VTube Studio";
   if (!s.authenticated) return "认证失败";

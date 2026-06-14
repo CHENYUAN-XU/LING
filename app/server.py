@@ -147,6 +147,7 @@ from .persona_forge import build_prompt, forge_persona
 from .privacy_policy import get_privacy_policy
 from .rate_limit import InMemoryRateLimiter, client_identifier, rate_limit_enabled
 from .error_monitor import list_error_events, record_error_event
+from .embodiment_profile import persona_embodiment_profile
 from .request_logging import (
     configure_request_logging,
     elapsed_ms,
@@ -372,6 +373,10 @@ class PersonaUpdateRequest(BaseModel):
     avatar_url: str | None = Field(default=None, max_length=500)
     appearance_description: str | None = Field(default=None, max_length=2000)
     desired_image: str | None = Field(default=None, max_length=2000)
+    live2d_model_id: str | None = Field(default=None, max_length=120)
+    live2d_preview_url: str | None = Field(default=None, max_length=500)
+    fallback_image_url: str | None = Field(default=None, max_length=500)
+    voice_profile: str | None = Field(default=None, max_length=200)
 
 
 class ExpressionPreferenceUpdateRequest(BaseModel):
@@ -530,6 +535,27 @@ def _self_use_public(user: dict[str, Any]) -> dict[str, Any]:
     return {"enabled": enabled, "chat_enabled": bool(config.get("chat_enabled", False)) if enabled else True}
 
 
+def _self_use_group_disabled(user: dict[str, Any]) -> bool:
+    return bool(_self_use_public(user).get("enabled"))
+
+
+def _self_use_bound_persona_id(user: dict[str, Any]) -> int | None:
+    if not _self_use_public(user).get("enabled"):
+        return None
+    with get_db() as db:
+        row = db.execute(
+            "SELECT id FROM personas WHERE user_id = ? AND status = 'active' ORDER BY id ASC LIMIT 1",
+            (int(user["id"]),),
+        ).fetchone()
+    return int(row["id"]) if row else None
+
+
+def _require_self_use_bound_persona(user: dict[str, Any], persona_id: int) -> None:
+    bound_id = _self_use_bound_persona_id(user)
+    if bound_id is not None and int(persona_id) != bound_id:
+        raise HTTPException(status_code=404, detail="companion not found in LING self-use mode")
+
+
 def _is_local_request(request: Request) -> bool:
     host = request.client.host if request.client else ""
     if host in {"127.0.0.1", "::1", "localhost"}:
@@ -546,6 +572,10 @@ def _default_self_use_persona(name: str) -> dict[str, Any]:
         "speaking_style": "",
         "appearance_description": "",
         "desired_image": "",
+        "live2d_model_id": "",
+        "live2d_preview_url": "",
+        "fallback_image_url": "",
+        "voice_profile": "",
         "psychological_fit_notes": "",
         "psychological_profile": {
             "primary_needs": [],
@@ -589,7 +619,8 @@ def _reset_self_use_persona_to_blank(db, persona: dict[str, Any], config: dict[s
         SET name = ?, summary = ?, prompt = ?, traits_json = ?, relationship = ?,
             speaking_style = ?, boundaries_json = ?, memory_profile_json = ?,
             psychological_profile_json = ?, psychological_fit_notes = ?,
-            appearance_description = ?, desired_image = ?, growth_notes = ?,
+            appearance_description = ?, desired_image = ?, live2d_model_id = ?,
+            live2d_preview_url = ?, fallback_image_url = ?, voice_profile = ?, growth_notes = ?,
             version = ?, updated_at = ?
         WHERE id = ?
         """,
@@ -606,6 +637,10 @@ def _reset_self_use_persona_to_blank(db, persona: dict[str, Any], config: dict[s
             blank.get("psychological_fit_notes", ""),
             blank.get("appearance_description", ""),
             blank.get("desired_image", ""),
+            blank.get("live2d_model_id", ""),
+            blank.get("live2d_preview_url", ""),
+            blank.get("fallback_image_url", ""),
+            blank.get("voice_profile", ""),
             blank.get("growth_notes", ""),
             next_version,
             ts,
@@ -618,10 +653,11 @@ def _reset_self_use_persona_to_blank(db, persona: dict[str, Any], config: dict[s
             persona_id, version, name, summary, prompt, traits_json,
             relationship, speaking_style, boundaries_json,
             psychological_profile_json, psychological_fit_notes,
-            appearance_description, desired_image, growth_notes,
+            appearance_description, desired_image, live2d_model_id,
+            live2d_preview_url, fallback_image_url, voice_profile, growth_notes,
             reason, change_type, change_notes_json, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             persona["id"],
@@ -637,6 +673,10 @@ def _reset_self_use_persona_to_blank(db, persona: dict[str, Any], config: dict[s
             blank.get("psychological_fit_notes", ""),
             blank.get("appearance_description", ""),
             blank.get("desired_image", ""),
+            blank.get("live2d_model_id", ""),
+            blank.get("live2d_preview_url", ""),
+            blank.get("fallback_image_url", ""),
+            blank.get("voice_profile", ""),
             blank.get("growth_notes", ""),
             "clear generated self-use defaults",
             "self_use_default_reset",
@@ -670,10 +710,11 @@ def _ensure_self_use_default_persona(user_id: int, config: dict[str, Any]) -> di
                 user_id, name, summary, prompt, traits_json, relationship,
                 speaking_style, boundaries_json, memory_profile_json,
                 psychological_profile_json, psychological_fit_notes,
-                appearance_description, desired_image, growth_notes,
+                appearance_description, desired_image, live2d_model_id,
+                live2d_preview_url, fallback_image_url, voice_profile, growth_notes,
                 created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -689,6 +730,10 @@ def _ensure_self_use_default_persona(user_id: int, config: dict[str, Any]) -> di
                 persona.get("psychological_fit_notes", ""),
                 persona.get("appearance_description", ""),
                 persona.get("desired_image", ""),
+                persona.get("live2d_model_id", ""),
+                persona.get("live2d_preview_url", ""),
+                persona.get("fallback_image_url", ""),
+                persona.get("voice_profile", ""),
                 persona.get("growth_notes", ""),
                 ts,
                 ts,
@@ -701,13 +746,15 @@ def _ensure_self_use_default_persona(user_id: int, config: dict[str, Any]) -> di
                 persona_id, version, name, summary, prompt, traits_json,
                 relationship, speaking_style, boundaries_json,
                 psychological_profile_json, psychological_fit_notes,
-                appearance_description, desired_image, growth_notes,
+                appearance_description, desired_image, live2d_model_id,
+                live2d_preview_url, fallback_image_url, voice_profile, growth_notes,
                 reason, change_type, change_notes_json, created_at
             )
-            VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 persona_id,
+                1,
                 persona["name"],
                 persona["summary"],
                 persona["prompt"],
@@ -719,6 +766,10 @@ def _ensure_self_use_default_persona(user_id: int, config: dict[str, Any]) -> di
                 persona.get("psychological_fit_notes", ""),
                 persona.get("appearance_description", ""),
                 persona.get("desired_image", ""),
+                persona.get("live2d_model_id", ""),
+                persona.get("live2d_preview_url", ""),
+                persona.get("fallback_image_url", ""),
+                persona.get("voice_profile", ""),
                 persona.get("growth_notes", ""),
                 "self-use default companion",
                 "self_use_default",
@@ -871,6 +922,13 @@ def _clean_avatar_url(value: str | None) -> str:
     if parsed.scheme in {"http", "https"} and parsed.netloc:
         return cleaned
     raise HTTPException(status_code=400, detail="invalid avatar url")
+
+
+def _clean_visual_asset_url(value: str | None, field_name: str) -> str:
+    try:
+        return _clean_avatar_url(value)
+    except HTTPException as exc:
+        raise HTTPException(status_code=exc.status_code, detail=f"invalid {field_name}") from exc
 
 
 @app.get("/api/persona-options")
@@ -2021,7 +2079,8 @@ def admin_personas(admin: dict = Depends(current_admin), target_user_id: int | N
         rows = db.execute(
             """
             SELECT id, user_id, name, summary, relationship, speaking_style,
-                   appearance_description, desired_image, psychological_fit_notes,
+                   appearance_description, desired_image, live2d_model_id,
+                   live2d_preview_url, fallback_image_url, voice_profile, psychological_fit_notes,
                    psychological_profile_json, growth_notes, avatar_url,
                    version, status, created_at, updated_at,
                    (
@@ -2476,11 +2535,14 @@ def insights(user: dict = Depends(current_user)):
 
 @app.get("/api/personas")
 def personas(user: dict = Depends(current_user)):
+    bound_persona_id = _self_use_bound_persona_id(user)
     with get_db() as db:
         rows = db.execute(
             """
             SELECT personas.id, personas.name, personas.summary, personas.relationship,
                    personas.speaking_style, personas.appearance_description, personas.desired_image,
+                   personas.live2d_model_id, personas.live2d_preview_url,
+                   personas.fallback_image_url, personas.voice_profile,
                    personas.psychological_fit_notes, personas.psychological_profile_json,
                    personas.growth_notes, personas.avatar_url, personas.version,
                    personas.created_at, personas.updated_at,
@@ -2539,16 +2601,21 @@ def personas(user: dict = Depends(current_user)):
             """,
             (user["id"],),
         ).fetchall()
+    if bound_persona_id is not None:
+        rows = [row for row in rows if int(row["id"]) == bound_persona_id]
     return {"personas": [_persona_list_item(dict_from_row(row) or {}) for row in rows]}
 
 
 @app.get("/api/personas/deleted")
 def deleted_personas(user: dict = Depends(current_user)):
+    if _self_use_public(user).get("enabled"):
+        return {"personas": []}
     with get_db() as db:
         rows = db.execute(
             """
             SELECT id, name, summary, relationship, speaking_style,
-                   appearance_description, desired_image, psychological_fit_notes,
+                   appearance_description, desired_image, live2d_model_id,
+                   live2d_preview_url, fallback_image_url, voice_profile, psychological_fit_notes,
                    psychological_profile_json, growth_notes, avatar_url,
                    version, created_at, updated_at
             FROM personas
@@ -2562,6 +2629,7 @@ def deleted_personas(user: dict = Depends(current_user)):
 
 @app.get("/api/personas/{persona_id}")
 def persona_detail(persona_id: int, user: dict = Depends(current_user)):
+    _require_self_use_bound_persona(user, persona_id)
     with get_db() as db:
         row = db.execute(
             "SELECT * FROM personas WHERE id = ? AND user_id = ? AND status = 'active'",
@@ -2574,8 +2642,23 @@ def persona_detail(persona_id: int, user: dict = Depends(current_user)):
     return {"persona": persona}
 
 
+@app.get("/api/personas/{persona_id}/embodiment")
+def persona_embodiment(persona_id: int, user: dict = Depends(current_user)):
+    _require_self_use_bound_persona(user, persona_id)
+    with get_db() as db:
+        row = db.execute(
+            "SELECT * FROM personas WHERE id = ? AND user_id = ? AND status = 'active'",
+            (persona_id, int(user["id"])),
+        ).fetchone()
+    persona = _public_persona(dict_from_row(row))
+    if not persona:
+        raise HTTPException(status_code=404, detail="persona not found")
+    return {"persona_id": persona_id, "embodiment": persona_embodiment_profile(persona)}
+
+
 @app.get("/api/personas/{persona_id}/growth")
 def persona_growth(persona_id: int, user: dict = Depends(current_user)):
+    _require_self_use_bound_persona(user, persona_id)
     user_id = int(user["id"])
     with get_db() as db:
         persona = db.execute(
@@ -2835,6 +2918,7 @@ def submit_persona_preference_request(
     req: PersonaPreferenceRequest,
     user: dict = Depends(current_user),
 ):
+    _require_self_use_bound_persona(user, persona_id)
     detail_text = scrub_identity_text(req.detail.strip())[:500]
     if not detail_text:
         raise HTTPException(status_code=400, detail="请写下希望调整的相处方式")
@@ -3004,6 +3088,7 @@ def retry_persona_preference_request(
     request_id: int,
     user: dict = Depends(current_user),
 ):
+    _require_self_use_bound_persona(user, persona_id)
     user_id = int(user["id"])
     with get_db() as db:
         row = dict_from_row(db.execute(
@@ -3042,6 +3127,7 @@ def withdraw_persona_preference_request(
     request_id: int,
     user: dict = Depends(current_user),
 ):
+    _require_self_use_bound_persona(user, persona_id)
     user_id = int(user["id"])
     with get_db() as db:
         row = dict_from_row(db.execute(
@@ -3091,6 +3177,7 @@ def set_persona_growth_feedback(
     req: PersonaGrowthFeedbackRequest,
     user: dict = Depends(current_user),
 ):
+    _require_self_use_bound_persona(user, persona_id)
     reaction = req.reaction.strip()
     if reaction not in {"helpful", "needs_adjustment"}:
         raise HTTPException(status_code=400, detail="invalid growth feedback reaction")
@@ -3171,6 +3258,7 @@ def set_persona_growth_feedback(
 
 @app.post("/api/personas/{persona_id}/growth/viewed")
 def mark_persona_growth_viewed(persona_id: int, user: dict = Depends(current_user)):
+    _require_self_use_bound_persona(user, persona_id)
     user_id = int(user["id"])
     with get_db() as db:
         persona = db.execute(
@@ -3204,6 +3292,7 @@ def mark_persona_growth_viewed(persona_id: int, user: dict = Depends(current_use
 
 @app.patch("/api/personas/{persona_id}")
 def update_persona(persona_id: int, req: PersonaUpdateRequest, user: dict = Depends(current_user)):
+    _require_self_use_bound_persona(user, persona_id)
     user_id = int(user["id"])
     with get_db() as db:
         row = db.execute(
@@ -3223,6 +3312,18 @@ def update_persona(persona_id: int, req: PersonaUpdateRequest, user: dict = Depe
     appearance = scrub_identity_text(req.appearance_description) if req.appearance_description is not None else current.get("appearance_description", "")
     desired = scrub_identity_text(req.desired_image) if req.desired_image is not None else current.get("desired_image", "")
     avatar_url = _clean_avatar_url(req.avatar_url) if req.avatar_url is not None else current.get("avatar_url")
+    live2d_model_id = str(req.live2d_model_id or "").strip() if req.live2d_model_id is not None else current.get("live2d_model_id", "")
+    live2d_preview_url = (
+        _clean_visual_asset_url(req.live2d_preview_url, "live2d_preview_url")
+        if req.live2d_preview_url is not None
+        else current.get("live2d_preview_url", "")
+    )
+    fallback_image_url = (
+        _clean_visual_asset_url(req.fallback_image_url, "fallback_image_url")
+        if req.fallback_image_url is not None
+        else current.get("fallback_image_url", "")
+    )
+    voice_profile = scrub_identity_text(req.voice_profile.strip()) if req.voice_profile is not None else current.get("voice_profile", "")
     content_changed = (
         name != current.get("name", "")
         or summary != current.get("summary", "")
@@ -3242,6 +3343,10 @@ def update_persona(persona_id: int, req: PersonaUpdateRequest, user: dict = Depe
     updated["appearance_description"] = appearance or ""
     updated["desired_image"] = desired or ""
     updated["avatar_url"] = avatar_url
+    updated["live2d_model_id"] = live2d_model_id
+    updated["live2d_preview_url"] = live2d_preview_url
+    updated["fallback_image_url"] = fallback_image_url
+    updated["voice_profile"] = voice_profile
     if content_changed:
         updated["prompt"] = build_prompt(updated)
 
@@ -3251,7 +3356,8 @@ def update_persona(persona_id: int, req: PersonaUpdateRequest, user: dict = Depe
             UPDATE personas
             SET name = ?, summary = ?, relationship = ?, speaking_style = ?,
                 avatar_url = ?, appearance_description = ?, desired_image = ?,
-                prompt = ?, version = ?, updated_at = ?
+                live2d_model_id = ?, live2d_preview_url = ?, fallback_image_url = ?,
+                voice_profile = ?, prompt = ?, version = ?, updated_at = ?
             WHERE id = ? AND user_id = ?
             """,
             (
@@ -3262,6 +3368,10 @@ def update_persona(persona_id: int, req: PersonaUpdateRequest, user: dict = Depe
                 avatar_url,
                 updated["appearance_description"],
                 updated["desired_image"],
+                updated["live2d_model_id"],
+                updated["live2d_preview_url"],
+                updated["fallback_image_url"],
+                updated["voice_profile"],
                 updated.get("prompt") or current.get("prompt") or "",
                 next_version,
                 ts,
@@ -3276,10 +3386,11 @@ def update_persona(persona_id: int, req: PersonaUpdateRequest, user: dict = Depe
                     persona_id, version, name, summary, prompt, traits_json,
                     relationship, speaking_style, boundaries_json,
                     psychological_profile_json, psychological_fit_notes,
-                    appearance_description, desired_image, growth_notes,
+                    appearance_description, desired_image, live2d_model_id,
+                    live2d_preview_url, fallback_image_url, voice_profile, growth_notes,
                     reason, change_type, change_notes_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     persona_id,
@@ -3295,6 +3406,10 @@ def update_persona(persona_id: int, req: PersonaUpdateRequest, user: dict = Depe
                     updated.get("psychological_fit_notes", ""),
                     updated.get("appearance_description", ""),
                     updated.get("desired_image", ""),
+                    updated.get("live2d_model_id", ""),
+                    updated.get("live2d_preview_url", ""),
+                    updated.get("fallback_image_url", ""),
+                    updated.get("voice_profile", ""),
                     updated.get("growth_notes", ""),
                     "persona profile update",
                     "user_profile_update",
@@ -3314,6 +3429,7 @@ def update_persona_expression_preference(
     req: ExpressionPreferenceUpdateRequest,
     user: dict = Depends(current_user),
 ):
+    _require_self_use_bound_persona(user, persona_id)
     user_id = int(user["id"])
     with get_db() as db:
         row = db.execute(
@@ -3349,6 +3465,7 @@ def generate_persona_avatar_placeholder(
     req: PersonaAvatarGenerateRequest,
     user: dict = Depends(current_user),
 ):
+    _require_self_use_bound_persona(user, persona_id)
     user_id = int(user["id"])
     with get_db() as db:
         row = db.execute(
@@ -3375,6 +3492,8 @@ def generate_persona_avatar_placeholder(
 
 @app.post("/api/personas/{persona_id}/delete")
 def delete_persona(persona_id: int, req: PersonaDeleteRequest, user: dict = Depends(current_user)):
+    if _self_use_public(user).get("enabled"):
+        raise HTTPException(status_code=403, detail="LING self-use mode keeps the single companion bound.")
     user_id = int(user["id"])
     with get_db() as db:
         row = db.execute(
@@ -3385,7 +3504,7 @@ def delete_persona(persona_id: int, req: PersonaDeleteRequest, user: dict = Depe
         if not persona:
             raise HTTPException(status_code=404, detail="persona not found")
         if req.confirm_name.strip() != str(persona["name"]).strip():
-            raise HTTPException(status_code=400, detail="请输入完整的人格名字以确认删除")
+            raise HTTPException(status_code=400, detail="请输入完整名字以确认删除")
         db.execute(
             """
             UPDATE personas
@@ -3417,6 +3536,8 @@ def restore_persona(persona_id: int, user: dict = Depends(current_user)):
 
 @app.post("/api/personas/{persona_id}/purge")
 def purge_persona(persona_id: int, req: PersonaDeleteRequest, user: dict = Depends(current_user)):
+    if _self_use_public(user).get("enabled"):
+        raise HTTPException(status_code=403, detail="LING self-use mode keeps the single companion bound.")
     user_id = int(user["id"])
     with get_db() as db:
         row = db.execute(
@@ -3427,9 +3548,9 @@ def purge_persona(persona_id: int, req: PersonaDeleteRequest, user: dict = Depen
         if not persona:
             raise HTTPException(status_code=404, detail="persona not found")
         if str(persona.get("status") or "") != "deleted":
-            raise HTTPException(status_code=400, detail="请先软删除人格，再执行永久删除")
+            raise HTTPException(status_code=400, detail="请先软删除，再执行永久删除")
         if req.confirm_name.strip() != str(persona["name"]).strip():
-            raise HTTPException(status_code=400, detail="请输入完整的人格名字以确认永久删除")
+            raise HTTPException(status_code=400, detail="请输入完整名字以确认永久删除")
         db.execute(
             "DELETE FROM personas WHERE id = ? AND user_id = ? AND status = 'deleted'",
             (persona_id, user_id),
@@ -3540,9 +3661,16 @@ def create_persona(req: PersonaCreateRequest, user: dict = Depends(current_user)
 def conversations(user: dict = Depends(current_user), status: str = "active"):
     if status not in {"active", "archived"}:
         raise HTTPException(status_code=400, detail="invalid conversation status")
+    bound_persona_id = _self_use_bound_persona_id(user)
+    if _self_use_public(user).get("enabled") and bound_persona_id is None:
+        return {"conversations": []}
+    persona_clause = "AND conversations.persona_id = ?" if bound_persona_id is not None else ""
+    params: list[Any] = [user["id"], status]
+    if bound_persona_id is not None:
+        params.append(bound_persona_id)
     with get_db() as db:
         rows = db.execute(
-            """
+            f"""
             SELECT conversations.*, personas.name AS persona_name, personas.avatar_url AS persona_avatar_url,
                    (
                        SELECT messages.content
@@ -3582,26 +3710,35 @@ def conversations(user: dict = Depends(current_user), status: str = "active"):
             WHERE conversations.user_id = ?
               AND conversations.status = ?
               AND personas.status = 'active'
+              {persona_clause}
             ORDER BY conversations.pinned_at DESC, conversations.updated_at DESC
             """,
-            (user["id"], status),
+            params,
         ).fetchall()
     return {"conversations": [dict_from_row(row) for row in rows]}
 
 
 @app.get("/api/conversations/{conversation_id}/messages")
 def conversation_messages(conversation_id: int, user: dict = Depends(current_user)):
+    bound_persona_id = _self_use_bound_persona_id(user)
+    if _self_use_public(user).get("enabled") and bound_persona_id is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    persona_clause = "AND conversations.persona_id = ?" if bound_persona_id is not None else ""
+    params: list[Any] = [conversation_id, user["id"]]
+    if bound_persona_id is not None:
+        params.append(bound_persona_id)
     with get_db() as db:
         conversation = db.execute(
-            """
+            f"""
             SELECT conversations.id
             FROM conversations
             JOIN personas ON personas.id = conversations.persona_id
             WHERE conversations.id = ?
               AND conversations.user_id = ?
               AND personas.status = 'active'
+              {persona_clause}
             """,
-            (conversation_id, user["id"]),
+            params,
         ).fetchone()
         if not conversation:
             raise HTTPException(status_code=404, detail="conversation not found")
@@ -3655,9 +3792,16 @@ def conversation_messages(conversation_id: int, user: dict = Depends(current_use
 @app.post("/api/conversations/{conversation_id}/read")
 def mark_conversation_read(conversation_id: int, user: dict = Depends(current_user)):
     ts = now_ts()
+    bound_persona_id = _self_use_bound_persona_id(user)
+    if _self_use_public(user).get("enabled") and bound_persona_id is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    persona_clause = "AND conversations.persona_id = ?" if bound_persona_id is not None else ""
+    params: list[Any] = [conversation_id, user["id"]]
+    if bound_persona_id is not None:
+        params.append(bound_persona_id)
     with get_db() as db:
         row = db.execute(
-            """
+            f"""
             SELECT conversations.id,
                    COALESCE(MAX(messages.id), 0) AS latest_message_id
             FROM conversations
@@ -3666,9 +3810,10 @@ def mark_conversation_read(conversation_id: int, user: dict = Depends(current_us
             WHERE conversations.id = ?
               AND conversations.user_id = ?
               AND personas.status = 'active'
+              {persona_clause}
             GROUP BY conversations.id
             """,
-            (conversation_id, user["id"]),
+            params,
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="conversation not found")
@@ -3695,6 +3840,10 @@ def update_conversation(conversation_id: int, req: ConversationUpdateRequest, us
         raise HTTPException(status_code=400, detail="title cannot be empty")
     if title is None and status is None and req.pinned is None:
         raise HTTPException(status_code=400, detail="nothing to update")
+    bound_persona_id = _self_use_bound_persona_id(user)
+    if _self_use_public(user).get("enabled") and bound_persona_id is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    persona_clause = "AND persona_id = ?" if bound_persona_id is not None else ""
 
     fields: list[str] = []
     params: list[Any] = []
@@ -3710,6 +3859,8 @@ def update_conversation(conversation_id: int, req: ConversationUpdateRequest, us
     fields.append("updated_at = ?")
     params.append(now_ts())
     params.extend([conversation_id, user["id"]])
+    if bound_persona_id is not None:
+        params.append(bound_persona_id)
 
     with get_db() as db:
         cursor = db.execute(
@@ -3717,6 +3868,7 @@ def update_conversation(conversation_id: int, req: ConversationUpdateRequest, us
             UPDATE conversations
             SET {", ".join(fields)}
             WHERE id = ? AND user_id = ?
+              {persona_clause}
               AND EXISTS (
                   SELECT 1
                   FROM personas
@@ -3742,6 +3894,8 @@ def update_conversation(conversation_id: int, req: ConversationUpdateRequest, us
 
 @app.get("/api/group-conversations")
 def group_conversations(user: dict = Depends(current_user), status: str = "active"):
+    if _self_use_group_disabled(user):
+        return {"group_conversations": []}
     try:
         return {"group_conversations": list_group_conversations(int(user["id"]), status)}
     except ValueError as exc:
@@ -3750,6 +3904,8 @@ def group_conversations(user: dict = Depends(current_user), status: str = "activ
 
 @app.post("/api/group-conversations")
 def create_group_conversation_endpoint(req: GroupConversationCreateRequest, user: dict = Depends(current_user)):
+    if _self_use_group_disabled(user):
+        raise HTTPException(status_code=403, detail="LING self-use mode does not use group conversations.")
     try:
         return {
             "group_conversation": create_group_conversation(
@@ -3764,6 +3920,8 @@ def create_group_conversation_endpoint(req: GroupConversationCreateRequest, user
 
 @app.get("/api/group-conversations/{group_conversation_id}/messages")
 def group_conversation_messages(group_conversation_id: int, user: dict = Depends(current_user)):
+    if _self_use_group_disabled(user):
+        raise HTTPException(status_code=403, detail="LING self-use mode does not use group conversations.")
     try:
         return {"messages": group_messages(int(user["id"]), group_conversation_id)}
     except ValueError as exc:
@@ -3772,6 +3930,8 @@ def group_conversation_messages(group_conversation_id: int, user: dict = Depends
 
 @app.post("/api/group-conversations/{group_conversation_id}/read")
 def mark_group_read(group_conversation_id: int, user: dict = Depends(current_user)):
+    if _self_use_group_disabled(user):
+        raise HTTPException(status_code=403, detail="LING self-use mode does not use group conversations.")
     try:
         return mark_group_conversation_read(int(user["id"]), group_conversation_id)
     except ValueError as exc:
@@ -3784,6 +3944,8 @@ def patch_group_conversation(
     req: GroupConversationUpdateRequest,
     user: dict = Depends(current_user),
 ):
+    if _self_use_group_disabled(user):
+        raise HTTPException(status_code=403, detail="LING self-use mode does not use group conversations.")
     try:
         return {
             "group_conversation": update_group_conversation(
@@ -3801,6 +3963,8 @@ def patch_group_conversation(
 
 @app.post("/api/group-chat")
 def group_chat_endpoint(req: GroupChatRequest, user: dict = Depends(current_user)):
+    if _self_use_group_disabled(user):
+        raise HTTPException(status_code=403, detail="LING self-use mode does not use group conversations.")
     try:
         return group_chat(
             user_id=int(user["id"]),
@@ -3820,8 +3984,10 @@ def group_chat_endpoint(req: GroupChatRequest, user: dict = Depends(current_user
 @app.post("/api/chat")
 def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: dict = Depends(current_user)):
     self_use = _self_use_public(user)
-    if self_use.get("enabled") and not self_use.get("chat_enabled"):
-        raise HTTPException(status_code=403, detail="LING chat is not enabled yet. Set self_use.chat_enabled: true after API setup.")
+    if self_use.get("enabled"):
+        _require_self_use_bound_persona(user, int(req.persona_id))
+        if not self_use.get("chat_enabled"):
+            raise HTTPException(status_code=403, detail="LING chat is not enabled yet. Set self_use.chat_enabled: true after API setup.")
     try:
         result = db_chat(
             user_id=int(user["id"]),
