@@ -1448,6 +1448,15 @@ small {
   background: #c0c6d0;
 }
 
+.companion-runtime-badge.listening .companion-runtime-dot {
+  background: #2f9d8f;
+}
+
+.companion-runtime-badge.listening {
+  border-color: rgba(47, 157, 143, 0.24);
+  background: rgba(47, 157, 143, 0.08);
+}
+
 .companion-stage-pills {
   display: flex;
   flex-wrap: wrap;
@@ -1741,6 +1750,47 @@ small {
   color: var(--muted);
 }
 
+.self-use-video-presence-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.self-use-video-presence-item {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  min-height: 42px;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.self-use-video-presence-item small,
+.self-use-video-presence-item strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.self-use-video-presence-item small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.self-use-video-presence-item.ok strong {
+  color: #2f6d3c;
+}
+
+.self-use-video-presence-item.waiting strong {
+  color: var(--accent-strong);
+}
+
+.self-use-video-presence-item.off strong {
+  color: var(--muted);
+}
+
 .self-use-video-actions {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1777,6 +1827,61 @@ small {
 
 .self-use-chat-log {
   padding: 18px;
+}
+
+.self-use-api-gate {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  min-height: 44px;
+  margin: 0 18px 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.self-use-api-gate div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.self-use-api-gate strong,
+.self-use-api-gate small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.self-use-api-gate strong {
+  font-size: 13px;
+}
+
+.self-use-api-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #c0c6d0;
+}
+
+.self-use-api-gate.ok {
+  border-color: rgba(74, 158, 92, 0.24);
+  background: rgba(74, 158, 92, 0.06);
+}
+
+.self-use-api-gate.ok .self-use-api-dot {
+  background: #4a9e5c;
+}
+
+.self-use-api-gate.waiting {
+  border-color: rgba(83, 109, 150, 0.26);
+  background: rgba(83, 109, 150, 0.06);
+}
+
+.self-use-api-gate.waiting .self-use-api-dot {
+  background: var(--accent);
 }
 
 .self-use-readiness {
@@ -2260,6 +2365,55 @@ small {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+.self-use-mapping-preview {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-3);
+}
+
+.self-use-mapping-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.self-use-runtime-map,
+.self-use-expression-map {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.self-use-runtime-map span,
+.self-use-expression-map span {
+  display: inline-grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  max-width: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.self-use-runtime-map small,
+.self-use-expression-map small {
+  color: var(--muted);
+}
+
+.self-use-runtime-map strong,
+.self-use-expression-map strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .expression-pill.intensity-2 {
@@ -3255,6 +3409,10 @@ small {
 
   .self-use-video-actions {
     grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .self-use-video-presence-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .self-use-embodiment-grid {

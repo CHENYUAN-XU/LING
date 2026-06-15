@@ -76,6 +76,10 @@ The core product surface should be:
 - The self-use companion binding prefers the configured default companion name, currently `澪`, so legacy active personas do not steal the embodied workspace.
 - If multiple legacy active personas exist and no configured companion exists, local startup seeds a clean `澪` companion while keeping legacy personas hidden behind compatibility boundaries.
 - Edge TTS is explicitly unavailable for LING; speech should come from Video Companion or a dedicated high-quality provider adapter.
+- The companion runtime state now covers text-input listening, thinking, speaking, idle/offline, and Video Companion session presence; listening is only shown when chat input is actually enabled.
+- The embodiment editor shows the current Live2D runtime/action mapping and expression map as read-only binding context, without expanding the old avatar system.
+- The self-use Video Companion control shows external path, config, bridge, and session presence as status only; camera, microphone, and video session UI remain owned by the external project.
+- The self-use chat panel shows an API gate near the composer so model calls stay visibly disabled until `self_use.chat_enabled` and provider credentials are intentionally ready.
 
 ## Definition Of Not Done
 

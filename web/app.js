@@ -79,6 +79,8 @@ let state = {
   showArchivedGroups: false,
   conversationSearch: "",
   focusComposer: false,
+  composerFocused: false,
+  composerDraft: "",
   sending: false,
   voiceConfig: null,
   voicePlaying: null,
@@ -1879,7 +1881,47 @@ function renderSelfUseWorkspace(persona) {
       ]),
       renderSelfUseReadinessPanel(persona),
       h("div", { id: "chat-log", class: "chat-log self-use-chat-log" }, state.messages.length ? renderMessageList(state.messages) : [renderChatEmpty()]),
+      renderSelfUseApiGate(),
       renderComposer(),
+    ]),
+  ]);
+}
+
+function selfUseApiReadiness() {
+  const readiness = state.companionStatus?.readiness || [];
+  const apiItem = readiness.find((item) => item && item.key === "api");
+  const llm = state.companionStatus?.llm || state.llmStatus || {};
+  const selfUse = state.companionStatus?.self_use || state.selfUse || {};
+  const configured = !!llm.configured;
+  const enabled = selfUse.chat_enabled !== false;
+  const provider = String(llm.provider || "").trim();
+  const model = String(llm.model || "").trim();
+  const missing = (llm.missing || []).filter(Boolean).join(", ");
+  return {
+    ready: enabled && configured,
+    enabled,
+    configured,
+    provider,
+    model,
+    missing,
+    text: apiItem?.text || (enabled ? llmStatusText() : "模型未启用"),
+  };
+}
+
+function renderSelfUseApiGate() {
+  if (!selfUseMode()) return null;
+  const apiState = selfUseApiReadiness();
+  const tone = apiState.ready ? "ok" : apiState.enabled ? "waiting" : "off";
+  const detail = apiState.ready
+    ? [apiState.provider, apiState.model].filter(Boolean).join(" / ") || "模型已可用"
+    : apiState.enabled && apiState.missing
+      ? `缺少 ${apiState.missing}`
+      : "保持关闭，避免未接 API 时误触发模型调用";
+  return h("section", { class: `self-use-api-gate ${tone}` }, [
+    h("span", { class: "self-use-api-dot" }),
+    h("div", {}, [
+      h("strong", { text: apiState.ready ? "对话可用" : "对话暂未启用" }),
+      h("small", { text: `${apiState.text} · ${detail}` }),
     ]),
   ]);
 }
@@ -1963,7 +2005,7 @@ function renderSelfUseCompanionDock(persona) {
       renderPresencePill(),
     ]),
     h("div", { class: "self-use-dock-grid" }, rows.map(([label, value]) => (
-      h("div", { class: "self-use-dock-cell" }, [
+      h("div", { class: `self-use-dock-cell ${label === "State" ? "runtime-state" : ""}`.trim() }, [
         h("small", { text: label }),
         h("strong", { text: value }),
       ])
@@ -2029,6 +2071,14 @@ function renderSelfUseActionControls() {
       h("button", {
         type: "button",
         class: "ghost compact",
+        text: `Listen ${actions.listening_expression || "Listening"}`,
+        disabled: canTrigger ? null : "disabled",
+        title: live2dActionDisabledReason(),
+        onclick: () => trigger("listening"),
+      }),
+      h("button", {
+        type: "button",
+        class: "ghost compact",
         text: `Talk ${actions.speaking_expression || "Talking"}`,
         disabled: canTrigger ? null : "disabled",
         title: live2dActionDisabledReason(),
@@ -2078,6 +2128,7 @@ function renderSelfUseVideoCompanionControl() {
       text: pathState.text,
       title: config.project_path || "",
     }),
+    renderVideoCompanionPresenceGrid(status, stateInfo, pathState),
     h("div", { class: "self-use-video-actions" }, [
       h("button", {
         type: "button",
@@ -3001,6 +3052,55 @@ function renderSelfUseEmbodimentEditor(persona, fields) {
       h("label", {}, ["Fallback 图像 URL", fields.fallbackImageUrl]),
       h("label", {}, ["声音档案", fields.voiceProfile]),
     ]),
+    renderSelfUseMappingPreview(),
+  ]);
+}
+
+function renderVideoCompanionPresenceGrid(status, stateInfo, pathState) {
+  const config = status.config || {};
+  const rows = [
+    ["Config", status.enabled ? "enabled" : "disabled", status.enabled ? "ok" : "off"],
+    ["Path", config.project_path_exists === false ? "missing" : "ready", pathState.tone],
+    ["Bridge", status.connected ? "connected" : "offline", status.connected ? "ok" : "off"],
+    ["Session", status.status?.session_active ? "active" : "idle", status.status?.session_active ? "ok" : stateInfo.tone],
+  ];
+  return h("div", { class: "self-use-video-presence-grid" }, rows.map(([label, value, tone]) => (
+    h("span", { class: `self-use-video-presence-item ${tone}` }, [
+      h("small", { text: label }),
+      h("strong", { text: value }),
+    ])
+  )));
+}
+
+function renderSelfUseMappingPreview() {
+  const actions = state.companionStatus?.live2d_actions || {};
+  const expressionMap = actions.expression_map && typeof actions.expression_map === "object" ? actions.expression_map : {};
+  const runtimeRows = [
+    ["Idle", actions.idle_expression || "Default"],
+    ["Listen", actions.listening_expression || "Listening"],
+    ["Think", actions.thinking_expression || "Thinking"],
+    ["Talk", actions.speaking_expression || "Talking"],
+  ];
+  const expressionRows = Object.entries(expressionMap).slice(0, 8);
+  return h("section", { class: "self-use-mapping-preview" }, [
+    h("div", { class: "self-use-mapping-head" }, [
+      h("strong", { text: "Live2D 状态映射" }),
+      h("small", { text: `${Object.keys(expressionMap).length} expression map` }),
+    ]),
+    h("div", { class: "self-use-runtime-map" }, runtimeRows.map(([label, value]) => (
+      h("span", {}, [
+        h("small", { text: label }),
+        h("strong", { text: value }),
+      ])
+    ))),
+    expressionRows.length
+      ? h("div", { class: "self-use-expression-map" }, expressionRows.map(([label, target]) => (
+          h("span", {}, [
+            h("small", { text: label }),
+            h("strong", { text: String(target || "") }),
+          ])
+        )))
+      : h("small", { class: "muted", text: "还没有配置表情标签到 Live2D 表达的映射。" }),
   ]);
 }
 
@@ -3469,12 +3569,15 @@ function renderComposer() {
   });
   const form = h("form", { class: "composer" }, [input, button]);
   input.value = loadDraft();
+  if (selfUseMode()) state.composerDraft = input.value.trim();
   requestAnimationFrame(() => {
     autoResizeTextarea(input);
     if (state.focusComposer) {
       input.focus();
       input.setSelectionRange(input.value.length, input.value.length);
       state.focusComposer = false;
+      state.composerFocused = true;
+      refreshRuntimeIndicators();
     }
   });
   form.addEventListener("submit", async (event) => {
@@ -3489,9 +3592,21 @@ function renderComposer() {
     if (state.view === "group") await sendGroupChatMessage(content);
     else await sendChatMessage(content);
   });
+  input.addEventListener("focus", () => {
+    state.composerFocused = true;
+    state.composerDraft = input.value.trim();
+    refreshRuntimeIndicators();
+  });
+  input.addEventListener("blur", () => {
+    state.composerFocused = false;
+    state.composerDraft = input.value.trim();
+    refreshRuntimeIndicators();
+  });
   input.addEventListener("input", () => {
     saveDraft(input.value);
+    state.composerDraft = input.value.trim();
     autoResizeTextarea(input);
+    refreshRuntimeIndicators();
   });
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -3555,6 +3670,9 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
   const requestPersonaId = Number(state.activePersona.id);
   const outgoingClientMessageId = clientMessageId || (retryUserMessageId ? "" : createClientMessageId());
   state.sending = true;
+  state.composerFocused = false;
+  state.composerDraft = "";
+  applyLive2dRuntimeState("thinking");
   if (retryLocalId) {
     state.messages = state.messages.filter((message) => message.local_id !== retryLocalId);
   }
@@ -3624,6 +3742,7 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
       });
     }
     await loadPresenceStatus();
+    applyLive2dRuntimeState("idle");
   }
   state.sending = false;
   renderShell();
@@ -4138,6 +4257,14 @@ function companionRuntimeState() {
   }
   if (state.sending) return { key: "thinking", label: "思考中", detail: "正在组织回应", ready: true };
   if (state.voicePlaying) return { key: "speaking", label: "回应中", detail: "正在播放语音", ready: true };
+  if (state.composerFocused && !chatInputBlocked()) {
+    return {
+      key: "listening",
+      label: "倾听中",
+      detail: state.composerDraft ? "正在接收你的输入" : "输入框已准备好",
+      ready: true,
+    };
+  }
   if (presenceKey === "quiet") return { key: "quiet", label: "安静模式", detail: "澪会降低主动打扰", ready: true };
   if (presenceKey === "thinking") return { key: "thinking", label: "思考中", detail: "正在组织回应", ready: true };
   if (presenceKey === "speaking") return { key: "speaking", label: "回应中", detail: "正在表达", ready: true };
@@ -4153,6 +4280,21 @@ function companionRuntimeState() {
   if (live2dReady) return { key: "present", label: "在场", detail: "Live2D 已连接", ready: true };
   if (live2dAvailable()) return { key: "waiting", label: "待连接", detail: "Live2D 已启用但未连接", ready: true };
   return { key: "idle", label: "待机", detail: "基础陪伴状态", ready: true };
+}
+
+function refreshRuntimeIndicators() {
+  if (!selfUseMode()) return;
+  const runtime = companionRuntimeState();
+  const badge = document.querySelector(".companion-runtime-badge");
+  if (badge) {
+    badge.className = `companion-runtime-badge ${runtime.key}`;
+    const label = badge.querySelector("strong");
+    const detail = badge.querySelector("small");
+    if (label) label.textContent = runtime.label || "";
+    if (detail) detail.textContent = runtime.detail || "";
+  }
+  const stateCell = document.querySelector(".self-use-dock-cell.runtime-state strong");
+  if (stateCell) stateCell.textContent = runtime.label || "";
 }
 
 async function loadAwarenessStatus() {
@@ -4972,6 +5114,8 @@ function resetClientState() {
     showArchivedGroups: false,
     conversationSearch: "",
     focusComposer: false,
+    composerFocused: false,
+    composerDraft: "",
     sending: false,
     voiceConfig: null,
     voicePlaying: null,

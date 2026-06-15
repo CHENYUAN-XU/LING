@@ -104,6 +104,9 @@ live2d:
   # or run the app on a different port before enabling Live2D.
   vts_ws_url: ws://127.0.0.1:8002
   vts_plugin_name: LINGEmbodiment
+  listening_expression: Listening
+  speaking_expression: Talking
+  thinking_expression: Thinking
   expression_map:
     微笑: Smile
     轻笑: Smile

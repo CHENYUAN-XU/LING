@@ -22,6 +22,7 @@ DEFAULT_LIVE2D_CONFIG: dict[str, Any] = {
         "点头": "Nod",
     },
     "idle_expressions": ["Default", "Breathing"],
+    "listening_expression": "Listening",
     "speaking_expression": "Talking",
     "thinking_expression": "Thinking",
 }

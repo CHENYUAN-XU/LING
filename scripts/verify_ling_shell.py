@@ -34,8 +34,16 @@ def main() -> None:
     assert 'selfUse ? Promise.resolve({ group_conversations: [] }) : api("/api/group-conversations?status=active")' in app_js
     assert "function companionRuntimeState()" in app_js
     assert "function renderSelfUseReadinessPanel(persona)" in app_js
+    assert "function selfUseApiReadiness()" in app_js
+    assert "function renderSelfUseApiGate()" in app_js
+    assert "renderSelfUseApiGate()" in app_js
+    assert "self-use-api-gate" in app_js
+    assert "保持关闭，避免未接 API 时误触发模型调用" in app_js
     assert "function renderSelfUseVideoCompanionControl()" in app_js
     assert "renderSelfUseVideoCompanionControl()" in app_js
+    assert "function renderVideoCompanionPresenceGrid(status, stateInfo, pathState)" in app_js
+    assert "self-use-video-presence-grid" in app_js
+    assert "self-use-video-presence-item" in app_js
     assert "Presence channel" in app_js
     assert "function videoCompanionPathState(config)" in app_js
     assert "config.project_path_exists === false" in app_js
@@ -59,6 +67,10 @@ def main() -> None:
     assert "actions.speaking_expression" in app_js
     assert "function renderSelfUseEmbodimentEditor(persona, fields)" in app_js
     assert "renderSelfUseEmbodimentEditor(persona" in app_js
+    assert "function renderSelfUseMappingPreview()" in app_js
+    assert "Live2D 状态映射" in app_js
+    assert "actions.listening_expression" in app_js
+    assert "self-use-mapping-preview" in app_js
     assert "Embodiment binding" in app_js
     assert "...(!selfUseMode() ? [" in app_js
     assert "async function loadCompanionStatus()" in app_js
@@ -84,6 +96,15 @@ def main() -> None:
     assert "video.status?.session_active" in app_js
     assert "state.sending" in app_js
     assert "state.voicePlaying" in app_js
+    assert "composerFocused" in app_js
+    assert "composerDraft" in app_js
+    assert "if (selfUseMode()) state.composerDraft = input.value.trim();" in app_js
+    assert "state.composerFocused = true;" in app_js
+    assert "state.composerFocused = false;" in app_js
+    assert "if (state.composerFocused && !chatInputBlocked())" in app_js
+    assert 'key: "listening"' in app_js
+    assert "refreshRuntimeIndicators()" in app_js
+    assert ".self-use-dock-cell.runtime-state strong" in app_js
     assert "chatInputBlocked()" in app_js
     assert "function applyMessageExpressionsToLive2d(expressions)" in app_js
     assert '"/api/live2d/apply-expression"' in app_js
@@ -92,6 +113,9 @@ def main() -> None:
     assert '"/api/live2d/apply-runtime-state"' in app_js
     assert 'applyLive2dRuntimeState("speaking")' in app_js
     assert 'applyLive2dRuntimeState("idle")' in app_js
+    assert 'applyLive2dRuntimeState("thinking")' in app_js
+    assert 'trigger("listening")' in app_js
+    assert "actions.listening_expression" in app_js
     assert "state.voiceConfig.enabled && state.voiceConfig.available" in app_js
     assert '"available": bool(health.get("available"))' in server_py
     assert '"voice": voice_health' in server_py
@@ -100,15 +124,23 @@ def main() -> None:
     assert ".self-use-shell" in style_css
     assert ".companion-rail" in style_css
     assert ".self-use-workspace" in style_css
+    assert ".self-use-api-gate" in style_css
+    assert ".self-use-api-dot" in style_css
     assert ".companion-runtime-badge" in style_css
+    assert ".companion-runtime-badge.listening" in style_css
     assert ".self-use-readiness" in style_css
     assert ".self-use-video-control" in style_css
     assert ".self-use-video-path" in style_css
+    assert ".self-use-video-presence-grid" in style_css
+    assert ".self-use-video-presence-item" in style_css
     assert ".self-use-action-control" in style_css
     assert ".self-use-action-buttons" in style_css
     assert ".self-use-video-actions" in style_css
     assert ".self-use-embodiment-editor" in style_css
     assert ".self-use-embodiment-grid" in style_css
+    assert ".self-use-mapping-preview" in style_css
+    assert ".self-use-runtime-map" in style_css
+    assert ".self-use-expression-map" in style_css
     assert ".local-startup-card" in style_css
     assert ".local-startup-detail" in style_css
     assert "@media (max-width: 1024px)" in style_css
