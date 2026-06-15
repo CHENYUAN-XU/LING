@@ -83,7 +83,7 @@ memory:
 voice:
   enabled: false
   # Realtime speech belongs to Video Companion or a higher-quality provider.
-  # Edge TTS is kept only as a legacy adapter, not as the default route.
+  # Edge TTS is intentionally disabled for LING.
   tts_provider: openai_tts
   voice_id: alloy
   rate: 1.0
@@ -103,7 +103,7 @@ live2d:
   # The app development server uses 8001, so configure VTube Studio's API to 8002
   # or run the app on a different port before enabling Live2D.
   vts_ws_url: ws://127.0.0.1:8002
-  vts_plugin_name: MnemosyneEmbodiment
+  vts_plugin_name: LINGEmbodiment
   expression_map:
     微笑: Smile
     轻笑: Smile
@@ -197,7 +197,7 @@ security:
 video_companion:
   enabled: false
   # External project path: E:\视觉\video-companion
-  # Keep this on a different port from Mnemosyne's 8001 dev server.
+  # Keep this on a different port from LING's 8001 dev server.
   base_url: http://127.0.0.1:8782
   ws_url: ws://127.0.0.1:8782/ws
   project_path: "E:\\视觉\\video-companion"

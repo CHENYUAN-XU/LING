@@ -12,7 +12,7 @@ from .config import BASE_DIR, load_config
 DEFAULT_LIVE2D_CONFIG: dict[str, Any] = {
     "enabled": False,
     "vts_ws_url": "ws://127.0.0.1:8002",
-    "vts_plugin_name": "MnemosyneEmbodiment",
+    "vts_plugin_name": "LINGEmbodiment",
     "expression_map": {
         "微笑": "Smile",
         "轻笑": "Smile",
@@ -27,7 +27,7 @@ DEFAULT_LIVE2D_CONFIG: dict[str, Any] = {
 }
 
 LIVE2D_TOKEN_PATH = BASE_DIR / "data" / "live2d_auth_token.json"
-PLUGIN_DEVELOPER = "ProjectMnemosyne"
+PLUGIN_DEVELOPER = "LING"
 
 
 def load_live2d_config() -> dict[str, Any]:
@@ -83,7 +83,7 @@ class Live2DConnection:
 
         self._config = load_live2d_config()
         url = self._config.get("vts_ws_url", "ws://127.0.0.1:8002")
-        plugin_name = self._config.get("vts_plugin_name", "MnemosyneEmbodiment")
+        plugin_name = self._config.get("vts_plugin_name", "LINGEmbodiment")
 
         try:
             import websockets
@@ -328,7 +328,7 @@ class Live2DConnection:
 
         if not isinstance(payload, dict):
             return None
-        if payload.get("plugin_name") != self._config.get("vts_plugin_name", "MnemosyneEmbodiment"):
+        if payload.get("plugin_name") != self._config.get("vts_plugin_name", "LINGEmbodiment"):
             return None
         if payload.get("vts_ws_url") != self._config.get("vts_ws_url", "ws://127.0.0.1:8002"):
             return None
@@ -337,7 +337,7 @@ class Live2DConnection:
 
     def _save_auth_token(self, token: str) -> None:
         payload = {
-            "plugin_name": self._config.get("vts_plugin_name", "MnemosyneEmbodiment"),
+            "plugin_name": self._config.get("vts_plugin_name", "LINGEmbodiment"),
             "plugin_developer": PLUGIN_DEVELOPER,
             "vts_ws_url": self._config.get("vts_ws_url", "ws://127.0.0.1:8002"),
             "authentication_token": token,

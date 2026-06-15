@@ -35,7 +35,7 @@ def verify_live2d_config() -> None:
 
     assert live2d_mod.live2d_enabled() is False
     config = live2d_mod.load_live2d_config()
-    assert config["vts_plugin_name"] == "MnemosyneEmbodiment"
+    assert config["vts_plugin_name"] == "LINGEmbodiment"
     assert isinstance(config["expression_map"], dict)
     assert "微笑" in config["expression_map"]
     assert config["expression_map"]["微笑"] == "Smile"
@@ -56,9 +56,41 @@ def verify_embodiment() -> None:
     assert result["applied"] is False
     assert result["reason"] == "live2d_disabled"
 
+    runtime_result = emb.apply_runtime_state_to_live2d("speaking")
+    assert runtime_result["applied"] is False
+    assert runtime_result["reason"] == "live2d_disabled"
+
     status = emb.live2d_connection_status()
     assert status["enabled"] is False
     assert status["connected"] is False
+
+    original_enabled = emb.live2d_enabled
+    original_connection = emb.get_live2d_connection
+    try:
+        calls: list[str] = []
+
+        class FakeConnection:
+            is_connected = True
+
+            def set_expression(self, expression: str) -> bool:
+                calls.append(expression)
+                return True
+
+        emb.live2d_enabled = lambda: True
+        emb.get_live2d_connection = lambda: FakeConnection()
+        speaking = emb.apply_runtime_state_to_live2d("speaking")
+        idle = emb.apply_runtime_state_to_live2d("idle")
+        unsupported = emb.apply_runtime_state_to_live2d("dancing")
+        assert speaking["applied"] is True
+        assert speaking["expression"] == "Talking"
+        assert idle["applied"] is True
+        assert idle["expression"] == "Default"
+        assert unsupported["applied"] is False
+        assert unsupported["reason"] == "unsupported_state"
+        assert calls == ["Talking", "Default"]
+    finally:
+        emb.live2d_enabled = original_enabled
+        emb.get_live2d_connection = original_connection
 
 
 def verify_expression_mapper() -> None:
@@ -141,15 +173,15 @@ def verify_live2d_auth_and_capabilities() -> None:
                 conn._ws = object()
                 conn._send_vts_request = fake_send
 
-                assert await conn._authenticate_with_vts("MnemosyneEmbodiment") is True
+                assert await conn._authenticate_with_vts("LINGEmbodiment") is True
                 assert ("AuthenticationTokenRequest", {
-                    "pluginName": "MnemosyneEmbodiment",
-                    "pluginDeveloper": "ProjectMnemosyne",
+                    "pluginName": "LINGEmbodiment",
+                    "pluginDeveloper": "LING",
                 }) in requests
                 assert conn._load_auth_token() == "token-abc"
 
                 requests.clear()
-                assert await conn._authenticate_with_vts("MnemosyneEmbodiment") is True
+                assert await conn._authenticate_with_vts("LINGEmbodiment") is True
                 assert requests[0][0] == "AuthenticationRequest"
                 assert requests[0][1]["authenticationToken"] == "token-abc"
 
@@ -251,6 +283,15 @@ def verify_server_endpoints(user_id: int) -> None:
     try:
         server.live2d_apply_expression(
             server.Live2DExpressionRequest(label="微笑"),
+            user,
+        )
+        raise AssertionError("should fail when live2d is disabled")
+    except HTTPException as exc:
+        assert exc.status_code == 400
+
+    try:
+        server.live2d_apply_runtime_state(
+            server.Live2DRuntimeStateRequest(state="speaking"),
             user,
         )
         raise AssertionError("should fail when live2d is disabled")

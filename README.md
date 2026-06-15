@@ -6,6 +6,8 @@
 
 2026-06-14 起，当前本地开发方向按 `LING` 收拢：第一界面应是以 Live2D/实时形象在场为主体的 AI companion，而不是继续扩张旧的“人格列表 + 聊天气泡 + 群聊成员”聊天产品。现有列表、记录、群聊和头像字段保留为兼容、账号、历史和调试能力；后续形象字段优先考虑 `live2d_model_id`、`live2d_preview_url`、`fallback_image_url`、`voice_profile` 和 expression/action mapping。实时摄像头视频陪伴仍在外部 `E:\视觉\video-companion`，主项目只做接入、授权、上下文提供和摘要回写。
 
+LING 后续主线见 `docs/LING_ROADMAP.md`：旧 P1/P2/P3 能力保留为底层和兼容能力，但当前第一体验必须转向“澪 / Live2D 形象在场”的自用 AI VTB 工作区。
+
 ## 接力开发说明
 
 如果换一个聊天窗口继续开发，先阅读：
@@ -30,7 +32,7 @@ SYSTEM_PLAN.md
 - 明确边界：实时视频陪伴项目已由项目作者拿到外部独立制作并完成到 `E:\视觉\video-companion`。后续即使换到其他聊天窗口继续开发本仓库，也必须默认跳过该项目，不要在主项目内继续实现视频通话、连续摄像头理解或视觉模型抽帧链路。`docs/VIDEO_COMPANION_PROJECT_PLAN.md` 保留不删，只作为外部项目计划、接口契约和接回主项目的参考。
 - 实时视频陪伴已拆为独立项目：类似豆包视频的“摄像头 + 麦克风 + 视觉理解 + 低延迟语音对话”不继续塞进主项目硬做。主项目只保留授权、人格上下文、会话摘要回写和入口位置；当前通过 `app/video_companion.py` 与 `/api/video-companion/*` 适配外部服务，默认端口为 `8782`，避免和主项目开发端口 `8001` 冲突。
 - Video Companion 接入运行手册见 `docs/VIDEO_COMPANION_INTEGRATION_RUNBOOK.md`；开发期可用 `scripts/start_integrated_video_companion.ps1` 同时拉起主项目和外部视频服务。
-- 语音：`/api/voice/tts-reply` 已能返回前端可播放音频，普通端 assistant 消息提供播放按钮、播放中状态和失败提示；仍依赖 `edge-tts` 与网络。
+- 语音：主项目保留 `/api/voice/*` 的播放入口、分句和表达风格规划，但不再把 Edge TTS 当作 LING 主线；实时/高质量语音优先交给 Video Companion 或后续专用 TTS provider 接入。
 - Live2D：普通端资料面板提供 VTube Studio 连接、断开和测试表情入口；后端会按 VTube Studio 插件 API 申请/缓存授权 token，并加载当前模型热键与表情能力，失败原因会明示；真实模型动作仍需本机 VTube Studio 实机联调。
 - Presence：已接入聊天发送流程和前端状态展示，支持 idle/thinking/quiet 等最小状态，运行态按当前用户隔离，安静模式不会被回复结束冲掉；仍不是完整实时陪伴引擎。
 - Camera：默认关闭，需全局配置开启且用户显式授权；状态接口按当前用户授权计算，未授权不会误报 active；有 OpenCV 可用时可做一次性取帧、Haar 人脸存在检测和本机 MJPEG 预览。普通元数据接口不返回图像字节，本机预览只在用户点开时建立连接，不等于视频通话或连续视觉理解。

@@ -39,7 +39,12 @@ def verify_voice_config() -> None:
     assert config["split_long_replies"] is True
     assert config["max_chunk_length"] == 80
     assert isinstance(config["expression_style_map"], dict)
-    assert "微笑" in config["expression_style_map"]
+    assert config["expression_style_map"]["微笑"] == "cheerful"
+    assert config["expression_style_map"]["轻笑"] == "cheerful"
+    assert config["expression_style_map"]["担心"] == "concerned"
+    assert config["expression_style_map"]["轻声"] == "gentle"
+    assert config["expression_style_map"]["停顿"] == "default"
+    assert config["expression_style_map"]["点头"] == "default"
 
 
 def verify_speech_planner() -> None:
@@ -99,6 +104,27 @@ def verify_tts_failure_metadata_and_cleanup() -> None:
         audio = tts_svc.generate_tts_audio("测试")
         assert audio is None
         assert "Video Companion" in (tts_svc.get_last_tts_error() or "")
+    finally:
+        tts_svc.voice_enabled = original_enabled
+        tts_svc.load_voice_config = original_config
+
+    original_enabled = tts_svc.voice_enabled
+    original_config = tts_svc.load_voice_config
+    try:
+        tts_svc.voice_enabled = lambda: True
+        tts_svc.load_voice_config = lambda: {
+            "enabled": True,
+            "tts_provider": "edge",
+            "voice_id": "zh-CN-XiaoxiaoNeural",
+            "rate": 1.0,
+            "pitch": 1.0,
+        }
+        audio = tts_svc.generate_tts_audio("测试")
+        assert audio is None
+        assert "edge TTS is disabled" in (tts_svc.get_last_tts_error() or "")
+        health = tts_svc.tts_health_check()
+        assert health["available"] is False
+        assert "edge TTS is disabled" in (health["error"] or "")
     finally:
         tts_svc.voice_enabled = original_enabled
         tts_svc.load_voice_config = original_config
