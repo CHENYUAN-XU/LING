@@ -50,6 +50,7 @@ from .speech_planner import build_tts_request_params, split_reply_into_utterance
 from .live2d import load_live2d_config, live2d_enabled
 from .embodiment import (
     apply_expression_to_live2d,
+    apply_runtime_state_to_live2d,
     expression_to_live2d,
     live2d_connection_status,
 )
@@ -207,7 +208,7 @@ try:
 except Exception as exc:
     print("[AdaptiveRuntime] pending chat preference reconciliation skipped:", exc)
 
-app = FastAPI(title="忆界树 / Project Mnemosyne")
+app = FastAPI(title="LING")
 rate_limiter = InMemoryRateLimiter(enabled=rate_limit_enabled())
 request_logger = configure_request_logging()
 
@@ -489,6 +490,66 @@ def llm_status(user: dict = Depends(current_user), task: str = "chat"):
     return {"llm": llm_runtime_status(task)}
 
 
+@app.get("/api/companion/status")
+def companion_status(user: dict = Depends(current_user), persona_id: int | None = None):
+    self_use = _self_use_public(user)
+    persona = _companion_status_persona(user, persona_id)
+    embodiment = persona_embodiment_profile(persona)
+    llm = llm_runtime_status("chat")
+    video = get_video_companion_status()
+    live2d_config = load_live2d_config()
+    voice_config = load_voice_config()
+    voice_health = tts_health_check()
+    live2d_actions = _companion_live2d_actions(live2d_config)
+
+    api_ready = bool(self_use.get("chat_enabled", True)) and bool(llm.get("configured"))
+    live2d_ready = bool(embodiment.get("live2d_bound")) and live2d_enabled()
+    voice_ready = bool(embodiment.get("voice_bound")) and bool(voice_health.get("available"))
+    video_ready = bool(video.get("enabled")) and bool(video.get("connected"))
+    runtime = _companion_runtime_state(self_use, llm, video, embodiment)
+    readiness = [
+        {
+            "key": "api",
+            "label": "API",
+            "ready": api_ready,
+            "text": _companion_api_readiness_text(self_use, llm),
+        },
+        {
+            "key": "live2d",
+            "label": "Live2D",
+            "ready": live2d_ready,
+            "text": _companion_live2d_readiness_text(embodiment, live2d_config),
+        },
+        {
+            "key": "voice",
+            "label": "Voice",
+            "ready": voice_ready,
+            "text": _companion_voice_readiness_text(embodiment, voice_config, voice_health),
+        },
+        {
+            "key": "video",
+            "label": "Video",
+            "ready": video_ready,
+            "text": _companion_video_readiness_text(video),
+        },
+    ]
+    ready_count = sum(1 for item in readiness if item["ready"])
+    return {
+        "self_use": self_use,
+        "persona_id": int(persona["id"]) if persona else None,
+        "name": persona.get("name") if persona else None,
+        "embodiment": embodiment,
+        "llm": llm,
+        "video_companion": video,
+        "voice": voice_health,
+        "live2d_actions": live2d_actions,
+        "runtime": runtime,
+        "readiness": readiness,
+        "ready_count": ready_count,
+        "total_count": len(readiness),
+    }
+
+
 @app.get("/api/privacy")
 def privacy_policy():
     return {"policy": get_privacy_policy()}
@@ -542,11 +603,26 @@ def _self_use_group_disabled(user: dict[str, Any]) -> bool:
 def _self_use_bound_persona_id(user: dict[str, Any]) -> int | None:
     if not _self_use_public(user).get("enabled"):
         return None
+    config = _self_use_config()
+    default_name = str(config.get("default_persona_name") or "澪").strip()
     with get_db() as db:
-        row = db.execute(
-            "SELECT id FROM personas WHERE user_id = ? AND status = 'active' ORDER BY id ASC LIMIT 1",
-            (int(user["id"]),),
-        ).fetchone()
+        row = None
+        if default_name:
+            row = db.execute(
+                """
+                SELECT id
+                FROM personas
+                WHERE user_id = ? AND status = 'active' AND name = ?
+                ORDER BY id ASC
+                LIMIT 1
+                """,
+                (int(user["id"]), default_name),
+            ).fetchone()
+        if not row:
+            row = db.execute(
+                "SELECT id FROM personas WHERE user_id = ? AND status = 'active' ORDER BY id ASC LIMIT 1",
+                (int(user["id"]),),
+            ).fetchone()
     return int(row["id"]) if row else None
 
 
@@ -554,6 +630,131 @@ def _require_self_use_bound_persona(user: dict[str, Any], persona_id: int) -> No
     bound_id = _self_use_bound_persona_id(user)
     if bound_id is not None and int(persona_id) != bound_id:
         raise HTTPException(status_code=404, detail="companion not found in LING self-use mode")
+
+
+def _companion_status_persona(user: dict[str, Any], persona_id: int | None = None) -> dict[str, Any] | None:
+    target_persona_id = persona_id
+    if _self_use_public(user).get("enabled"):
+        bound_id = _self_use_bound_persona_id(user)
+        if bound_id is None:
+            return None
+        if target_persona_id is not None and int(target_persona_id) != int(bound_id):
+            raise HTTPException(status_code=404, detail="companion not found in LING self-use mode")
+        target_persona_id = bound_id
+
+    with get_db() as db:
+        if target_persona_id is not None:
+            row = db.execute(
+                "SELECT * FROM personas WHERE id = ? AND user_id = ? AND status = 'active'",
+                (int(target_persona_id), int(user["id"])),
+            ).fetchone()
+        else:
+            row = db.execute(
+                """
+                SELECT * FROM personas
+                WHERE user_id = ? AND status = 'active'
+                ORDER BY updated_at DESC, id ASC
+                LIMIT 1
+                """,
+                (int(user["id"]),),
+            ).fetchone()
+    persona = _public_persona(dict_from_row(row))
+    if target_persona_id is not None and not persona:
+        raise HTTPException(status_code=404, detail="persona not found")
+    return persona
+
+
+def _companion_api_readiness_text(self_use: dict[str, Any], llm: dict[str, Any]) -> str:
+    if not bool(self_use.get("chat_enabled", True)):
+        return "未启用，接好 API 后再开放对话"
+    if bool(llm.get("configured")):
+        provider = str(llm.get("provider") or "").strip()
+        model = str(llm.get("model") or "").strip()
+        return " / ".join(part for part in (provider, model) if part) or "已配置"
+    missing = ", ".join(str(item) for item in llm.get("missing") or [])
+    return f"缺少 {missing}" if missing else "模型未配置"
+
+
+def _companion_live2d_readiness_text(embodiment: dict[str, Any], config: dict[str, Any]) -> str:
+    model_id = str(embodiment.get("live2d_model_id") or "").strip()
+    if not model_id:
+        return "未绑定模型"
+    if not bool(config.get("enabled", False)):
+        return "形象已绑定，Live2D 适配器未启用"
+    return model_id
+
+
+def _companion_voice_readiness_text(
+    embodiment: dict[str, Any],
+    config: dict[str, Any],
+    health: dict[str, Any],
+) -> str:
+    profile = str(embodiment.get("voice_profile") or "").strip()
+    if not profile:
+        return "未绑定声音档案"
+    if not bool(config.get("enabled", False)):
+        return "声音已绑定，TTS 未启用"
+    if not bool(health.get("available")):
+        error = str(health.get("error") or "").strip()
+        return error or "声音已绑定，语音 provider 未就绪"
+    return profile
+
+
+def _companion_video_readiness_text(video: dict[str, Any]) -> str:
+    if not bool(video.get("enabled")):
+        return "未启用"
+    if bool(video.get("connected")):
+        return "已连接"
+    reason = str(video.get("reason") or "").strip()
+    return reason or "未连接"
+
+
+def _companion_live2d_actions(config: dict[str, Any]) -> dict[str, Any]:
+    idle_expressions = config.get("idle_expressions") or []
+    if isinstance(idle_expressions, list):
+        idle_expression = str(idle_expressions[0]) if idle_expressions else "Default"
+    else:
+        idle_expression = str(idle_expressions)
+    expression_map = config.get("expression_map") or {}
+    if not isinstance(expression_map, dict):
+        expression_map = {}
+    return {
+        "idle_expression": idle_expression,
+        "speaking_expression": str(config.get("speaking_expression") or "Talking"),
+        "thinking_expression": str(config.get("thinking_expression") or "Thinking"),
+        "expression_map": expression_map,
+        "expression_map_count": len(expression_map),
+    }
+
+
+def _companion_runtime_state(
+    self_use: dict[str, Any],
+    llm: dict[str, Any],
+    video: dict[str, Any],
+    embodiment: dict[str, Any],
+) -> dict[str, Any]:
+    video_status = video.get("status") if isinstance(video.get("status"), dict) else {}
+    if bool(video.get("enabled")) and bool(video.get("connected")) and bool(video_status.get("session_active")):
+        return {
+            "key": "video",
+            "label": "视频会话中",
+            "detail": "Video Companion 正在接管实时感知",
+            "ready": True,
+        }
+    if not bool(self_use.get("chat_enabled", True)) or not bool(llm.get("configured")):
+        return {
+            "key": "offline",
+            "label": "模型未启用",
+            "detail": "接好 API 后再开始对话",
+            "ready": False,
+        }
+    if live2d_enabled():
+        status = live2d_connection_status()
+        if bool(status.get("connected")) and bool(status.get("authenticated")) and not status.get("last_error"):
+            return {"key": "present", "label": "在场", "detail": "Live2D 已连接", "ready": True}
+        if bool(embodiment.get("live2d_bound")):
+            return {"key": "waiting", "label": "待连接", "detail": "Live2D 已启用但未连接", "ready": True}
+    return {"key": "idle", "label": "待机", "detail": "基础陪伴状态", "ready": True}
 
 
 def _is_local_request(request: Request) -> bool:
@@ -691,19 +892,35 @@ def _reset_self_use_persona_to_blank(db, persona: dict[str, Any], config: dict[s
 def _ensure_self_use_default_persona(user_id: int, config: dict[str, Any]) -> dict[str, Any] | None:
     if not bool(config.get("seed_default_persona", True)):
         return None
+    default_name = str(config.get("default_persona_name") or "澪").strip() or "澪"
     with get_db() as db:
-        existing = db.execute(
-            "SELECT * FROM personas WHERE user_id = ? AND status = 'active' ORDER BY id ASC LIMIT 1",
-            (user_id,),
+        named_existing = db.execute(
+            """
+            SELECT * FROM personas
+            WHERE user_id = ? AND status = 'active' AND name = ?
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            (user_id, default_name),
         ).fetchone()
-        if existing:
-            existing_persona = dict_from_row(existing) or {}
+        if named_existing:
+            named_persona = dict_from_row(named_existing) or {}
+            if _should_reset_legacy_self_use_persona(db, named_persona):
+                return _reset_self_use_persona_to_blank(db, named_persona, config)
+            return named_persona
+
+        existing_rows = db.execute(
+            "SELECT * FROM personas WHERE user_id = ? AND status = 'active' ORDER BY id ASC",
+            (user_id,),
+        ).fetchall()
+        if len(existing_rows) == 1:
+            existing_persona = dict_from_row(existing_rows[0]) or {}
             if _should_reset_legacy_self_use_persona(db, existing_persona):
                 return _reset_self_use_persona_to_blank(db, existing_persona, config)
             return existing_persona
 
         ts = now_ts()
-        persona = _default_self_use_persona(str(config.get("default_persona_name") or "澪"))
+        persona = _default_self_use_persona(default_name)
         cursor = db.execute(
             """
             INSERT INTO personas (
@@ -1007,14 +1224,17 @@ def _avatar_header_matches(content_type: str, data: bytes) -> bool:
 @app.get("/api/voice/config")
 def voice_config(user: dict = Depends(current_user)):
     config = load_voice_config()
+    health = tts_health_check()
     safe = {
-        "enabled": config.get("enabled", False),
+        "enabled": bool(config.get("enabled", False)),
         "tts_provider": config.get("tts_provider", "openai_tts"),
         "voice_id": config.get("voice_id", ""),
         "rate": config.get("rate", 1.0),
         "pitch": config.get("pitch", 1.0),
-        "split_long_replies": config.get("split_long_replies", True),
+        "split_long_replies": bool(config.get("split_long_replies", True)),
         "max_chunk_length": config.get("max_chunk_length", 80),
+        "available": bool(health.get("available")),
+        "error": health.get("error"),
     }
     return {"voice": safe}
 
@@ -1059,7 +1279,7 @@ def voice_tts(req: VoiceTTSRequest, user: dict = Depends(current_user)):
         error = get_last_tts_error() or "unknown error"
         raise HTTPException(
             status_code=503,
-            detail=f"语音生成失败：{error}。请确认已安装 edge-tts（pip install edge-tts）且网络可访问微软 TTS 服务。",
+            detail=f"语音生成失败：{error}。请配置 Video Companion 的语音链路，或接入专用高质量 TTS provider。",
         )
     return Response(content=audio, media_type="audio/mpeg")
 
@@ -1143,12 +1363,23 @@ class Live2DExpressionRequest(BaseModel):
     expression_type: str = Field(default="mood", max_length=40)
 
 
+class Live2DRuntimeStateRequest(BaseModel):
+    state: str = Field(..., min_length=1, max_length=40)
+
+
 @app.post("/api/live2d/apply-expression")
 def live2d_apply_expression(req: Live2DExpressionRequest, user: dict = Depends(current_user)):
     if not live2d_enabled():
         raise HTTPException(status_code=400, detail="live2d is disabled in config")
     result = apply_expression_to_live2d(req.label, req.expression_type)
     return result
+
+
+@app.post("/api/live2d/apply-runtime-state")
+def live2d_apply_runtime_state(req: Live2DRuntimeStateRequest, user: dict = Depends(current_user)):
+    if not live2d_enabled():
+        raise HTTPException(status_code=400, detail="live2d is disabled in config")
+    return apply_runtime_state_to_live2d(req.state)
 
 
 @app.post("/api/live2d/connect")

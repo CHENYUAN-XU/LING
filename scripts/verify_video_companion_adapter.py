@@ -58,9 +58,11 @@ def verify_disabled_defaults(user_id: int) -> None:
     assert cfg["base_url"] == "http://127.0.0.1:8782"
     assert cfg["ws_url"] == "ws://127.0.0.1:8782/ws"
     assert cfg["project_path"].endswith("video-companion")
+    assert "project_path_exists" in cfg
 
     server_cfg = server.video_companion_config(user)
     assert server_cfg["video_companion"]["enabled"] is False
+    assert "project_path_exists" in server_cfg["video_companion"]
 
     status = server.video_companion_status(user)
     assert status["enabled"] is False

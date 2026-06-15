@@ -91,6 +91,7 @@ let state = {
   screenStatus: null,
   proactiveStatus: null,
   videoCompanionStatus: null,
+  companionStatus: null,
   llmStatus: null,
   privacyPolicy: null,
   cameraPreviewActive: false,
@@ -217,15 +218,25 @@ function h(tag, attrs = {}, children = []) {
 
 async function bootstrap() {
   try {
-    await bootstrapAuthenticated();
-  } catch {
-    try {
-      const local = await api("/api/auth/local", { method: "POST" });
-      await enterAuthenticatedSession(local, false);
-    } catch {
-      renderAuth("login");
+    const local = await api("/api/auth/local", { method: "POST" });
+    await enterAuthenticatedSession(local, false);
+    return;
+  } catch (localErr) {
+    if (!localSelfUseUnavailable(localErr)) {
+      renderLocalStartupError(localErr);
+      return;
     }
   }
+
+  try {
+    await bootstrapAuthenticated();
+  } catch {
+    renderAuth("login");
+  }
+}
+
+function localSelfUseUnavailable(err) {
+  return String(err?.message || "").includes("local self-use mode is not enabled");
 }
 
 async function bootstrapAuthenticated() {
@@ -343,16 +354,40 @@ function renderAuth(mode) {
   app.replaceChildren(form, ...(state.privacyOpen ? [renderPrivacyModal(() => renderAuth(mode))] : []));
 }
 
+function renderLocalStartupError(err) {
+  const message = String(err?.message || "").trim() || "本地自用工作区启动失败";
+  const card = h("section", { class: "auth-card local-startup-card" }, [
+    h("p", { class: "eyebrow", text: "LING local workspace" }),
+    h("h1", { text: "没有进入澪的工作区" }),
+    h("p", {
+      text: "LING 当前按本地自用模式启动；正常情况下会自动进入 embodied workspace，不会出现登录、注册或游客入口。",
+    }),
+    h("p", { class: "local-startup-detail", text: message }),
+    h("div", { class: "local-startup-actions" }, [
+      h("button", { type: "button", text: "重试", onclick: bootstrap }),
+      h("button", {
+        type: "button",
+        class: "ghost",
+        text: "数据与隐私",
+        onclick: () => openPrivacyModal(() => renderLocalStartupError(err)),
+      }),
+    ]),
+  ]);
+  app.className = "auth-screen self-use-startup-screen";
+  app.replaceChildren(card, ...(state.privacyOpen ? [renderPrivacyModal(() => renderLocalStartupError(err))] : []));
+}
+
 async function loadMainData({ openLatest = false } = {}) {
+  const selfUse = selfUseMode();
   const [options, expressionAssets, personas, deletedPersonas, conversations, archivedConversations, groupConversations, archivedGroupConversations] = await Promise.all([
-    api("/api/persona-options"),
+    selfUse ? Promise.resolve({ options: {} }) : api("/api/persona-options"),
     api("/api/expression-assets").catch(() => ({ assets: [] })),
     api("/api/personas"),
-    api("/api/personas/deleted"),
+    selfUse ? Promise.resolve({ personas: [] }) : api("/api/personas/deleted"),
     api("/api/conversations?status=active"),
     api("/api/conversations?status=archived"),
-    api("/api/group-conversations?status=active"),
-    api("/api/group-conversations?status=archived"),
+    selfUse ? Promise.resolve({ group_conversations: [] }) : api("/api/group-conversations?status=active"),
+    selfUse ? Promise.resolve({ group_conversations: [] }) : api("/api/group-conversations?status=archived"),
   ]);
   await loadVoiceConfig();
   await loadPresenceStatus();
@@ -400,6 +435,7 @@ async function loadMainData({ openLatest = false } = {}) {
     state.activeGroupConversationId = null;
     state.activeGroupConversation = null;
   }
+  await loadCompanionStatus();
 }
 
 async function loadConversationMessages(conversationId) {
@@ -460,6 +496,11 @@ async function openConversationItem(item) {
 }
 
 async function openGroupConversationItem(item) {
+  if (selfUseMode()) {
+    normalizeSelfUseUiState();
+    renderShell();
+    return;
+  }
   state.activeGroupConversation = item;
   state.activeGroupConversationId = item.id;
   state.activePersona = null;
@@ -489,11 +530,11 @@ async function openPersonaItem(persona) {
   scrollChat();
 }
 
-async function openPersonaPanel() {
+async function openPersonaPanel(options = {}) {
   const personaId = Number(state.activePersona?.id);
   if (!personaId) return;
   state.personaPanelOpen = true;
-  state.editingPersona = false;
+  state.editingPersona = !!options.edit;
   state.loadingGrowthPersonaId = personaId;
   await loadLive2dStatus();
   renderShell();
@@ -523,6 +564,10 @@ async function openPersonaGrowthNotice(event, persona = state.activePersona) {
   event?.stopPropagation();
   if (persona) state.activePersona = persona;
   await openPersonaPanel();
+}
+
+async function openPersonaEditor() {
+  await openPersonaPanel({ edit: true });
 }
 
 function clearGrowthNotice(personaId) {
@@ -622,9 +667,10 @@ function saveLastActive() {
 }
 
 function renderShell() {
+  normalizeSelfUseUiState();
   saveLastActive();
   const restoreSearchFocus = document.activeElement?.classList?.contains("conversation-search");
-  app.className = `app-shell view-${state.view || "chat"} ${state.activePersona || state.activeGroupConversation ? "has-persona" : "no-persona"}`;
+  app.className = `app-shell view-${state.view || "chat"} ${selfUseMode() ? "self-use-shell" : ""} ${state.activePersona || state.activeGroupConversation ? "has-persona" : "no-persona"}`;
   const children = [renderSidebar(), renderMain()];
   if (state.profileOpen) children.push(renderProfileModal());
   if (state.personaPanelOpen) children.push(renderPersonaModal());
@@ -644,8 +690,20 @@ function renderShell() {
   }
 }
 
+function normalizeSelfUseUiState() {
+  if (!selfUseMode()) return;
+  if (state.view === "forge" || state.view === "group" || state.view === "home") {
+    state.view = "chat";
+  }
+  state.activeGroupConversationId = null;
+  state.activeGroupConversation = null;
+  state.groupMessages = [];
+  state.groupCreateOpen = false;
+  state.groupSettingsOpen = false;
+}
+
 function renderSidebar() {
-  if (selfUseMode()) return renderSelfUseSidebar();
+  if (selfUseMode()) return renderSelfUseRail();
 
   return h("aside", { class: "sidebar" }, [
     renderBrand(),
@@ -691,6 +749,65 @@ function renderSidebar() {
 
 function selfUseMode() {
   return !!state.selfUse?.enabled;
+}
+
+function renderSelfUseRail() {
+  const persona = state.activePersona || state.personas?.[0] || null;
+  return h("aside", { class: "sidebar self-use-sidebar companion-rail" }, [
+    h("button", {
+      type: "button",
+      class: "rail-brand",
+      title: "LING",
+      "aria-label": "LING",
+      onclick: () => {
+        state.view = "chat";
+        if (persona) openPersonaItem(persona);
+        else renderShell();
+      },
+    }, [
+      h("strong", { text: "LING" }),
+      h("small", { text: persona?.name || "Mio" }),
+    ]),
+    h("nav", { class: "rail-actions", "aria-label": "LING controls" }, [
+      h("button", { type: "button", class: "rail-action active", title: "在场", "aria-label": "在场", text: "在", onclick: () => renderShell() }),
+      h("button", { type: "button", class: "rail-action", title: "资料", "aria-label": "资料", text: "资", onclick: openPersonaPanel }),
+      h("button", {
+        type: "button",
+        class: "rail-action",
+        title: "记录",
+        "aria-label": "记录",
+        text: "记",
+        onclick: () => {
+          state.threadPanelOpen = true;
+          state.editingConversationId = null;
+          renderShell();
+        },
+      }),
+      h("button", {
+        type: "button",
+        class: "rail-action",
+        title: "我",
+        "aria-label": "我",
+        text: "我",
+        onclick: () => {
+          state.profileOpen = true;
+          renderShell();
+        },
+      }),
+    ]),
+    isAdmin()
+      ? h("button", {
+          type: "button",
+          class: "rail-action rail-admin",
+          title: text.adminConsole,
+          "aria-label": text.adminConsole,
+          text: "管",
+          onclick: () => {
+            window.location.href = "/admin";
+          },
+        })
+      : null,
+  ]);
 }
 
 function renderSelfUseSidebar() {
@@ -1665,6 +1782,9 @@ function renderMain() {
   if (selfUseMode() && state.view === "forge" && state.activePersona) {
     state.view = "chat";
   }
+  if (selfUseMode() && state.activePersona) {
+    return renderSelfUseWorkspace(state.activePersona);
+  }
   if (state.view === "home") {
     return renderHome();
   }
@@ -1731,6 +1851,272 @@ function renderMain() {
   ]);
 }
 
+function renderSelfUseWorkspace(persona) {
+  return h("section", { class: "workspace self-use-workspace" }, [
+    h("section", { class: "self-use-stage-panel" }, [
+      renderCompanionStage(persona),
+      renderSelfUseCompanionDock(persona),
+    ]),
+    h("section", { class: "self-use-chat-panel" }, [
+      h("header", { class: "self-use-chat-head" }, [
+        h("div", {}, [
+          h("p", { class: "eyebrow", text: "Session" }),
+          h("h2", { text: "当前对话" }),
+        ]),
+        h("div", { class: "self-use-chat-actions" }, [
+          h("button", { type: "button", class: "ghost compact", text: "资料", onclick: openPersonaPanel }),
+          h("button", {
+            type: "button",
+            class: "ghost compact",
+            text: "记录",
+            onclick: () => {
+              state.threadPanelOpen = true;
+              state.editingConversationId = null;
+              renderShell();
+            },
+          }),
+        ]),
+      ]),
+      renderSelfUseReadinessPanel(persona),
+      h("div", { id: "chat-log", class: "chat-log self-use-chat-log" }, state.messages.length ? renderMessageList(state.messages) : [renderChatEmpty()]),
+      renderComposer(),
+    ]),
+  ]);
+}
+
+function selfUseReadinessItems(persona) {
+  if (state.companionStatus?.readiness?.length) {
+    return state.companionStatus.readiness.map((item) => ({
+      key: item.key || item.label,
+      label: item.label || item.key || "",
+      ready: !!item.ready,
+      text: item.text || "",
+    }));
+  }
+  const embodiment = personaEmbodimentProfile(persona);
+  const items = [];
+  items.push({
+    key: "llm",
+    label: "API",
+    ready: llmConfigured(),
+    text: llmConfigured() ? "模型已可用" : "未启用，接好 API 后再开放对话",
+  });
+  items.push({
+    key: "live2d",
+    label: "Live2D",
+    ready: !!embodiment.live2dModelId,
+    text: embodiment.live2dModelId ? embodiment.live2dModelId : "未绑定模型",
+  });
+  items.push({
+    key: "voice",
+    label: "Voice",
+    ready: !!embodiment.voiceProfile,
+    text: embodiment.voiceProfile || "未绑定声音档案",
+  });
+  items.push({
+    key: "video",
+    label: "Video",
+    ready: !!(state.videoCompanionStatus?.enabled && state.videoCompanionStatus?.connected),
+    text: videoCompanionStatusText(),
+  });
+  return items;
+}
+
+function renderSelfUseReadinessPanel(persona) {
+  const items = selfUseReadinessItems(persona);
+  const completeCount = items.filter((item) => item.ready).length;
+  return h("section", { class: "self-use-readiness" }, [
+    h("div", { class: "self-use-readiness-head" }, [
+      h("div", {}, [
+        h("p", { class: "eyebrow", text: "Readiness" }),
+        h("strong", { text: `${completeCount}/${items.length} 已就绪` }),
+      ]),
+      h("button", { type: "button", class: "ghost compact", text: "补形象资料", onclick: openPersonaEditor }),
+    ]),
+    h("div", { class: "self-use-readiness-list" }, items.map((item) => (
+      h("div", { class: `self-use-readiness-item ${item.ready ? "ready" : "missing"}` }, [
+        h("span", { class: "self-use-readiness-dot" }),
+        h("strong", { text: item.label }),
+        h("small", { text: item.text }),
+      ])
+    ))),
+  ]);
+}
+
+function renderSelfUseCompanionDock(persona) {
+  const embodiment = personaEmbodimentProfile(persona);
+  const runtime = companionRuntimeState();
+  const rows = [
+    ["State", runtime.label],
+    ["Actions", companionActionSummary()],
+    ["Live2D", embodiment.live2dModelId || "未绑定"],
+    ["Voice", companionVoiceSummary(embodiment)],
+    ["LLM", llmStatusText()],
+    ["Video", videoCompanionStatusText()],
+  ];
+  return h("section", { class: "self-use-dock" }, [
+    h("div", { class: "self-use-dock-head" }, [
+      h("div", {}, [
+        h("p", { class: "eyebrow", text: "Embodiment" }),
+        h("h3", { text: persona?.name || "澪" }),
+      ]),
+      renderPresencePill(),
+    ]),
+    h("div", { class: "self-use-dock-grid" }, rows.map(([label, value]) => (
+      h("div", { class: "self-use-dock-cell" }, [
+        h("small", { text: label }),
+        h("strong", { text: value }),
+      ])
+    ))),
+    renderSelfUseActionControls(),
+    renderSelfUseVideoCompanionControl(),
+    h("div", { class: "self-use-dock-actions" }, [
+      h("button", { type: "button", class: "ghost compact", text: "编辑形象", onclick: openPersonaEditor }),
+      live2dAvailable()
+        ? h("button", { type: "button", class: "compact", text: "连接 Live2D", onclick: live2dConnect })
+        : h("button", { type: "button", class: "ghost compact", text: "Live2D 未启用", disabled: "disabled" }),
+    ]),
+  ]);
+}
+
+function companionActionSummary() {
+  const actions = state.companionStatus?.live2d_actions || {};
+  const speaking = String(actions.speaking_expression || "Talking").trim();
+  const mapped = Number(actions.expression_map_count || 0);
+  return mapped > 0 ? `${speaking} / ${mapped} map` : speaking;
+}
+
+function companionVoiceSummary(embodiment) {
+  const voice = state.companionStatus?.voice || state.voiceConfig || {};
+  if (!embodiment.voiceProfile) return "未绑定";
+  if (voice.available) return embodiment.voiceProfile;
+  return voice.error || (voice.enabled ? "provider 未就绪" : "未启用");
+}
+
+function renderSelfUseActionControls() {
+  const statusEl = h("small", { class: "save-status" });
+  const actions = state.companionStatus?.live2d_actions || {};
+  const configured = live2dAvailable();
+  const connected = live2dConnected();
+  const canTrigger = configured && connected;
+  const trigger = async (runtimeState) => {
+    statusEl.textContent = "";
+    const result = await applyLive2dRuntimeState(runtimeState, { report: true });
+    statusEl.textContent = live2dRuntimeResultText(result, runtimeState);
+  };
+  return h("section", { class: "self-use-action-control" }, [
+    h("div", { class: "self-use-action-head" }, [
+      h("small", { text: "Live2D actions" }),
+      h("span", { class: `awareness-status ${canTrigger ? "ok" : configured ? "waiting" : "off"}`, text: canTrigger ? "connected" : configured ? "waiting" : "off" }),
+    ]),
+    h("div", { class: "self-use-action-buttons" }, [
+      h("button", {
+        type: "button",
+        class: "ghost compact",
+        text: `Idle ${actions.idle_expression || "Default"}`,
+        disabled: canTrigger ? null : "disabled",
+        title: live2dActionDisabledReason(),
+        onclick: () => trigger("idle"),
+      }),
+      h("button", {
+        type: "button",
+        class: "ghost compact",
+        text: `Think ${actions.thinking_expression || "Thinking"}`,
+        disabled: canTrigger ? null : "disabled",
+        title: live2dActionDisabledReason(),
+        onclick: () => trigger("thinking"),
+      }),
+      h("button", {
+        type: "button",
+        class: "ghost compact",
+        text: `Talk ${actions.speaking_expression || "Talking"}`,
+        disabled: canTrigger ? null : "disabled",
+        title: live2dActionDisabledReason(),
+        onclick: () => trigger("speaking"),
+      }),
+    ]),
+    statusEl,
+  ]);
+}
+
+function live2dActionDisabledReason() {
+  if (!live2dAvailable()) return "Live2D is disabled in config.yaml";
+  if (!live2dConnected()) return "Connect VTube Studio first";
+  return "";
+}
+
+function live2dRuntimeResultText(result, fallbackState) {
+  if (!result) return live2dActionDisabledReason() || fallbackState;
+  if (result.applied) return result.expression ? `applied ${result.expression}` : "applied";
+  if (result.expression) return `${result.reason || "not applied"}: ${result.expression}`;
+  return result.reason || "not applied";
+}
+
+function renderSelfUseVideoCompanionControl() {
+  const status = state.videoCompanionStatus || {};
+  const config = status.config || {};
+  const stateInfo = videoCompanionState();
+  const sessionActive = !!status.status?.session_active;
+  const canControl = !!status.enabled && !!status.connected;
+  const statusEl = h("small", { class: "save-status" });
+  const pathState = videoCompanionPathState(config);
+
+  return h("section", { class: `self-use-video-control ${stateInfo.tone}` }, [
+    h("div", { class: "self-use-video-head" }, [
+      h("div", {}, [
+        h("small", { text: "Presence channel" }),
+        h("strong", { text: "Video Companion" }),
+      ]),
+      h("span", { class: `awareness-status ${stateInfo.tone}`, text: sessionActive ? "会话中" : stateInfo.text }),
+    ]),
+    h("small", {
+      class: "muted",
+      text: config.base_url || "外部视频服务未配置",
+    }),
+    h("small", {
+      class: `self-use-video-path ${pathState.tone}`,
+      text: pathState.text,
+      title: config.project_path || "",
+    }),
+    h("div", { class: "self-use-video-actions" }, [
+      h("button", {
+        type: "button",
+        class: "ghost compact",
+        text: "打开",
+        title: config.base_url || "http://127.0.0.1:8782",
+        onclick: openVideoCompanionPage,
+      }),
+      h("button", {
+        type: "button",
+        class: "compact",
+        text: sessionActive ? "运行中" : "启动",
+        disabled: !canControl || sessionActive,
+        title: canControl ? "" : "先启动 E:\\视觉\\video-companion，并在 config.yaml 开启 video_companion.enabled",
+        onclick: () => startVideoCompanion(statusEl),
+      }),
+      h("button", {
+        type: "button",
+        class: "ghost compact",
+        text: "停止",
+        disabled: !canControl || !sessionActive,
+        title: canControl ? "" : "外部服务未连接",
+        onclick: () => stopVideoCompanion(statusEl),
+      }),
+      h("button", {
+        type: "button",
+        class: "ghost compact",
+        text: "刷新",
+        onclick: async () => {
+          await loadAwarenessStatus();
+          await loadCompanionStatus();
+          renderShell();
+        },
+      }),
+    ]),
+    statusEl,
+  ]);
+}
+
 function renderSelfUseMissingCompanion() {
   return h("section", { class: "workspace" }, [
     h("section", { class: "chat-panel empty-companion-panel" }, [
@@ -1766,6 +2152,7 @@ function personaVisualUrl(persona) {
 
 function renderCompanionStage(persona) {
   const embodiment = personaEmbodimentProfile(persona);
+  const runtime = companionRuntimeState();
   const imageUrl = embodiment.visualUrl;
   const live2dEnabled = live2dAvailable();
   const live2dConnected = live2dEnabled
@@ -1780,6 +2167,11 @@ function renderCompanionStage(persona) {
     h("div", { class: "companion-stage-copy" }, [
       h("p", { class: "eyebrow", text: "LING" }),
       h("h2", { text: persona?.name || "澪" }),
+      h("div", { class: `companion-runtime-badge ${runtime.key}` }, [
+        h("span", { class: "companion-runtime-dot" }),
+        h("strong", { text: runtime.label }),
+        h("small", { text: runtime.detail }),
+      ]),
       renderPersonaStatusLine(persona || {}),
       h("div", { class: "companion-stage-pills" }, [
         h("span", { class: `live2d-stage-pill ${statusClass}` }, [
@@ -2581,6 +2973,37 @@ function detailLine(label, value) {
   return h("div", { class: "detail-line" }, [h("span", { text: label }), h("p", { text: value })]);
 }
 
+function renderSelfUseEmbodimentEditor(persona, fields) {
+  const embodiment = personaEmbodimentProfile(persona);
+  return h("section", { class: "self-use-embodiment-editor" }, [
+    h("div", { class: "self-use-embodiment-editor-head" }, [
+      h("div", {}, [
+        h("p", { class: "eyebrow", text: "Embodiment binding" }),
+        h("strong", { text: "澪的形象与声音" }),
+      ]),
+      h("span", {
+        class: `companion-mode-pill ${embodiment.live2dModelId || embodiment.voiceProfile ? "ok" : "off"}`,
+        text: embodiment.live2dModelId || embodiment.voiceProfile ? "已填写部分绑定" : "等待绑定",
+      }),
+    ]),
+    h("div", { class: "self-use-embodiment-preview" }, [
+      embodiment.visualUrl
+        ? h("img", { src: embodiment.visualUrl, alt: persona?.name || "LING companion preview" })
+        : h("div", { class: "self-use-embodiment-placeholder", text: persona?.name || "LING" }),
+      h("div", {}, [
+        h("small", { class: "muted", text: "静态图只作为 Live2D 未连接时的 preview / fallback。" }),
+        h("small", { class: "muted", text: "实时视频、麦克风和视觉理解仍由外部 Video Companion 负责。" }),
+      ]),
+    ]),
+    h("div", { class: "self-use-embodiment-grid" }, [
+      h("label", {}, ["Live2D 模型 ID", fields.live2dModelId]),
+      h("label", {}, ["Live2D 预览图 URL", fields.live2dPreviewUrl]),
+      h("label", {}, ["Fallback 图像 URL", fields.fallbackImageUrl]),
+      h("label", {}, ["声音档案", fields.voiceProfile]),
+    ]),
+  ]);
+}
+
 function renderPersonaEditForm(persona) {
   const name = h("input", { name: "name", value: persona.name || "", maxlength: "40", placeholder: "给 TA 起个名字" });
   const summary = h("textarea", {
@@ -2739,6 +3162,7 @@ function renderPersonaEditForm(persona) {
               ? { ...item, persona_name: data.persona.name, persona_avatar_url: data.persona.avatar_url }
               : item
           ));
+          await refreshEmbodimentRuntimeStatus();
           state.editingPersona = false;
           state.personaPanelOpen = false;
           renderShell();
@@ -2747,16 +3171,26 @@ function renderPersonaEditForm(persona) {
         }
       },
     }, [
+      selfUseMode()
+        ? renderSelfUseEmbodimentEditor(persona, {
+            live2dModelId,
+            live2dPreviewUrl,
+            fallbackImageUrl,
+            voiceProfile,
+          })
+        : null,
       h("label", {}, ["名字", name]),
       h("label", {}, ["关系定位", relationship]),
       h("label", {}, ["说话方式", speakingStyle]),
       h("label", {}, ["摘要", summary]),
       h("details", { class: "persona-edit-more" }, [
         h("summary", { text: "形象与更多资料" }),
-        h("label", {}, ["Live2D 模型 ID", live2dModelId]),
-        h("label", {}, ["Live2D 预览图", live2dPreviewUrl]),
-        h("label", {}, ["Fallback 图像", fallbackImageUrl]),
-        h("label", {}, ["声音档案", voiceProfile]),
+        ...(!selfUseMode() ? [
+          h("label", {}, ["Live2D 模型 ID", live2dModelId]),
+          h("label", {}, ["Live2D 预览图", live2dPreviewUrl]),
+          h("label", {}, ["Fallback 图像", fallbackImageUrl]),
+          h("label", {}, ["声音档案", voiceProfile]),
+        ] : []),
         h("label", {}, ["兼容头像上传", avatarFile]),
         h("label", {}, ["兼容头像链接", avatarUrl]),
         h("label", {}, ["外貌参考", appearance]),
@@ -3171,6 +3605,7 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
           id: data.assistant_message_id,
           created_at: nowSeconds(),
         });
+        applyMessageExpressionsToLive2d(data.expressions || []);
         await markConversationRead(data.conversation_id);
       }
       applyPresenceRuntime(data.presence);
@@ -3193,6 +3628,52 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
   state.sending = false;
   renderShell();
   scrollChat();
+}
+
+async function applyMessageExpressionsToLive2d(expressions) {
+  if (!live2dAvailable()) return;
+  const status = state.live2dStatus || {};
+  if (!(status.connected && status.authenticated && !status.last_error)) return;
+  const expression = (expressions || []).find((item) => item && (item.label || item.expression_type));
+  if (!expression) return;
+  try {
+    await api("/api/live2d/apply-expression", {
+      method: "POST",
+      body: JSON.stringify({
+        label: expression.label || "",
+        expression_type: expression.expression_type || "mood",
+      }),
+    });
+    await loadLive2dStatus();
+  } catch {
+    // Expression mapping is a secondary embodiment signal; chat should not fail if it misses.
+  }
+}
+
+async function applyLive2dRuntimeState(runtimeState, options = {}) {
+  if (!live2dAvailable()) return options.report ? { applied: false, reason: "live2d_disabled" } : null;
+  const status = state.live2dStatus || {};
+  if (!(status.connected && status.authenticated && !status.last_error)) {
+    return options.report ? { applied: false, reason: status.last_error || "not_connected" } : null;
+  }
+  try {
+    const result = await api("/api/live2d/apply-runtime-state", {
+      method: "POST",
+      body: JSON.stringify({ state: runtimeState }),
+    });
+    await loadLive2dStatus();
+    return result;
+  } catch {
+    // Runtime animation is best-effort and should not interrupt voice playback.
+    return options.report ? { applied: false, reason: "request_failed" } : null;
+  }
+}
+
+function videoCompanionPathState(config) {
+  const path = String(config?.project_path || "").trim();
+  if (!path) return { tone: "off", text: "外部项目路径未配置" };
+  if (config.project_path_exists === false) return { tone: "off", text: `路径不存在：${path}` };
+  return { tone: "ok", text: path };
 }
 
 async function sendGroupChatMessage(content) {
@@ -3646,6 +4127,34 @@ function renderPresencePill() {
   ]);
 }
 
+function companionRuntimeState() {
+  const video = state.videoCompanionStatus || {};
+  const serverRuntime = state.companionStatus?.runtime;
+  const presenceKey = presenceAvailable() ? presenceStatusKey() : "";
+  const live2dReady = live2dAvailable()
+    && !!(state.live2dStatus?.connected && state.live2dStatus?.authenticated && !state.live2dStatus?.last_error);
+  if (video.enabled && video.connected && video.status?.session_active) {
+    return { key: "video", label: "视频会话中", detail: "Video Companion 正在接管实时感知", ready: true };
+  }
+  if (state.sending) return { key: "thinking", label: "思考中", detail: "正在组织回应", ready: true };
+  if (state.voicePlaying) return { key: "speaking", label: "回应中", detail: "正在播放语音", ready: true };
+  if (presenceKey === "quiet") return { key: "quiet", label: "安静模式", detail: "澪会降低主动打扰", ready: true };
+  if (presenceKey === "thinking") return { key: "thinking", label: "思考中", detail: "正在组织回应", ready: true };
+  if (presenceKey === "speaking") return { key: "speaking", label: "回应中", detail: "正在表达", ready: true };
+  if (serverRuntime?.key) {
+    return {
+      key: serverRuntime.key,
+      label: serverRuntime.label || "待机",
+      detail: serverRuntime.detail || "",
+      ready: serverRuntime.ready !== false,
+    };
+  }
+  if (chatInputBlocked()) return { key: "offline", label: "模型未启用", detail: "接好 API 后再开始对话", ready: false };
+  if (live2dReady) return { key: "present", label: "在场", detail: "Live2D 已连接", ready: true };
+  if (live2dAvailable()) return { key: "waiting", label: "待连接", detail: "Live2D 已启用但未连接", ready: true };
+  return { key: "idle", label: "待机", detail: "基础陪伴状态", ready: true };
+}
+
 async function loadAwarenessStatus() {
   try {
     const [consents, camera, screen, proactive, videoCompanion] = await Promise.all([
@@ -3711,6 +4220,7 @@ async function setAwarenessConsent(key, granted, statusEl) {
       body: JSON.stringify({ consent_key: key }),
     });
     await loadAwarenessStatus();
+    await loadCompanionStatus();
     renderShell();
   } catch (err) {
     if (statusEl) statusEl.textContent = err.message;
@@ -3768,6 +4278,7 @@ async function startVideoCompanion(statusEl) {
     });
     if (statusEl) statusEl.textContent = data.started ? "视频会话已启动" : "视频会话未启动";
     await loadAwarenessStatus();
+    await loadCompanionStatus();
     renderShell();
   } catch (err) {
     if (statusEl) statusEl.textContent = err.message;
@@ -3791,6 +4302,14 @@ function videoCompanionState() {
   if (!status.enabled) return { tone: "off", text: "外部服务配置关闭" };
   if (status.connected) return { tone: "ok", text: "外部服务已连接" };
   return { tone: "waiting", text: status.error ? "外部服务未连接" : "等待外部服务" };
+}
+
+function videoCompanionStatusText() {
+  const status = state.videoCompanionStatus || {};
+  if (!status.enabled) return "未启用";
+  if (status.connected && status.status?.session_active) return "会话中";
+  if (status.connected) return "已连接";
+  return "未连接";
 }
 
 function openVideoCompanionPage() {
@@ -3975,8 +4494,29 @@ async function loadLLMStatus() {
   }
 }
 
+async function loadCompanionStatus() {
+  try {
+    const query = state.activePersona?.id ? `?persona_id=${encodeURIComponent(state.activePersona.id)}` : "";
+    const data = await api(`/api/companion/status${query}`);
+    state.companionStatus = data;
+    if (data.llm) state.llmStatus = data.llm;
+    if (data.video_companion) state.videoCompanionStatus = data.video_companion;
+  } catch {
+    state.companionStatus = null;
+  }
+}
+
+async function refreshEmbodimentRuntimeStatus() {
+  await Promise.all([
+    loadVoiceConfig(),
+    loadLive2dStatus(),
+    loadAwarenessStatus(),
+  ]);
+  await loadCompanionStatus();
+}
+
 function voiceAvailable() {
-  return !!(state.voiceConfig && state.voiceConfig.enabled);
+  return !!(state.voiceConfig && state.voiceConfig.enabled && state.voiceConfig.available);
 }
 
 async function playMessageVoice(message, buttonEl) {
@@ -3989,6 +4529,7 @@ async function playMessageVoice(message, buttonEl) {
   state.voicePlaying = messageId;
   state.voiceError = null;
   state.voiceErrorMessageId = null;
+  applyLive2dRuntimeState("speaking");
   if (buttonEl) {
     buttonEl.textContent = "播放中...";
     buttonEl.disabled = true;
@@ -4039,6 +4580,7 @@ async function playMessageVoice(message, buttonEl) {
       buttonEl.classList.add("voice-error");
     }
   } finally {
+    applyLive2dRuntimeState("idle");
     if (Number(state.voicePlaying) === Number(messageId)) {
       state.voicePlaying = null;
     }
@@ -4089,6 +4631,11 @@ async function loadLive2dStatus() {
 
 function live2dAvailable() {
   return !!(state.live2dStatus && state.live2dStatus.enabled);
+}
+
+function live2dConnected() {
+  var s = state.live2dStatus || {};
+  return !!(s.enabled && s.connected && s.authenticated && !s.last_error);
 }
 
 function live2dStatusText(embodiment = null) {
@@ -4437,6 +4984,7 @@ function resetClientState() {
     screenStatus: null,
     proactiveStatus: null,
     videoCompanionStatus: null,
+    companionStatus: null,
     llmStatus: null,
     privacyPolicy: null,
     cameraPreviewActive: false,

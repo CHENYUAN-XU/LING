@@ -82,6 +82,32 @@ def apply_expression_to_live2d(expression_label: str, expression_type: str = "")
     }
 
 
+def apply_runtime_state_to_live2d(state: str) -> dict[str, Any]:
+    if not live2d_enabled():
+        return {"applied": False, "reason": "live2d_disabled", "state": state}
+
+    normalized = str(state or "").strip().lower()
+    if normalized == "speaking":
+        expression = get_speaking_expression()
+    elif normalized == "thinking":
+        expression = get_thinking_expression()
+    elif normalized in {"idle", "present"}:
+        expression = get_idle_expression()
+    else:
+        return {"applied": False, "reason": "unsupported_state", "state": state}
+
+    conn = get_live2d_connection()
+    if not conn.is_connected:
+        return {"applied": False, "reason": "not_connected", "state": normalized, "expression": expression}
+
+    applied = conn.set_expression(expression)
+    return {
+        "applied": applied,
+        "state": normalized,
+        "expression": expression,
+    }
+
+
 def live2d_connection_status() -> dict:
     conn = get_live2d_connection()
     status = conn.get_connection_status()

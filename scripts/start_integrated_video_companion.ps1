@@ -59,7 +59,7 @@ if ([string]::IsNullOrWhiteSpace($VideoPath)) {
 }
 $VideoRoot = (Resolve-Path $VideoPath).Path
 $BridgeEnabled = if ($NoBridge) { "false" } else { "true" }
-$VideoConfig = Join-Path $env:TEMP "video-companion.mnemosyne.$VideoPort.yaml"
+$VideoConfig = Join-Path $env:TEMP "video-companion.ling.$VideoPort.yaml"
 
 @"
 server:
@@ -77,7 +77,7 @@ legacy_bridge:
   retries: 2
 "@ | Set-Content -LiteralPath $VideoConfig -Encoding UTF8
 
-Write-Host "Starting Project Mnemosyne on http://127.0.0.1:$MainPort"
+Write-Host "Starting LING on http://127.0.0.1:$MainPort"
 if ($DryRun) {
     Write-Host "Dry run: not starting processes."
     Write-Host "Project root: $ProjectRoot"
@@ -113,16 +113,16 @@ $VideoProcess = Start-Process -FilePath "powershell" `
     -PassThru
 
 Write-Host ""
-Write-Host "Mnemosyne:       http://127.0.0.1:$MainPort"
+Write-Host "LING:            http://127.0.0.1:$MainPort"
 Write-Host "Video Companion: http://127.0.0.1:$VideoPort"
-Write-Host "Mnemosyne PID:   $($MainProcess.Id)"
+Write-Host "LING PID:        $($MainProcess.Id)"
 Write-Host "Video PID:       $($VideoProcess.Id)"
 Write-Host "Main project video_companion is enabled through environment variables for this launched process."
 
 if (-not $SkipHealthCheck) {
     Write-Host ""
     Write-Host "Waiting for health checks..."
-    $mainOk = Wait-HttpHealth -Name "Mnemosyne" -Url "http://127.0.0.1:$MainPort/api/health" -TimeoutSeconds $HealthTimeoutSeconds
+    $mainOk = Wait-HttpHealth -Name "LING" -Url "http://127.0.0.1:$MainPort/api/health" -TimeoutSeconds $HealthTimeoutSeconds
     $videoOk = Wait-HttpHealth -Name "Video Companion" -Url "http://127.0.0.1:$VideoPort/api/health" -TimeoutSeconds $HealthTimeoutSeconds
 
     if (-not ($mainOk -and $videoOk)) {

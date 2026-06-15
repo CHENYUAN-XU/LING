@@ -5,6 +5,7 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 from .config import load_config
@@ -60,11 +61,13 @@ def video_companion_enabled() -> bool:
 
 def public_video_companion_config() -> dict[str, Any]:
     config = load_video_companion_config()
+    project_path = str(config["project_path"])
     return {
         "enabled": config["enabled"],
         "base_url": config["base_url"],
         "ws_url": config["ws_url"],
-        "project_path": config["project_path"],
+        "project_path": project_path,
+        "project_path_exists": Path(project_path).exists(),
     }
 
 

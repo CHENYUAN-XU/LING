@@ -66,6 +66,53 @@ def main() -> None:
             assert version is not None
             assert version["change_type"] == "self_use_default"
 
+        multi = auth.get_or_create_local_user("mio_owner_multi", "Mio Multi")
+        with database.get_db() as db:
+            ts = database.now_ts()
+            first_legacy_id = db.execute(
+                """
+                INSERT INTO personas (
+                    user_id, name, summary, prompt, traits_json, relationship,
+                    speaking_style, boundaries_json, created_at, updated_at
+                )
+                VALUES (?, 'Legacy One', 'legacy one', 'legacy prompt', '[]', '',
+                        '', '[]', ?, ?)
+                """,
+                (multi["id"], ts, ts),
+            ).lastrowid
+            db.execute(
+                """
+                INSERT INTO personas (
+                    user_id, name, summary, prompt, traits_json, relationship,
+                    speaking_style, boundaries_json, created_at, updated_at
+                )
+                VALUES (?, 'Legacy Two', 'legacy two', 'legacy prompt', '[]', '',
+                        '', '[]', ?, ?)
+                """,
+                (multi["id"], ts + 1, ts + 1),
+            )
+        multi_companion = server._ensure_self_use_default_persona(int(multi["id"]), config)
+        assert multi_companion is not None
+        assert multi_companion["name"] == "澪"
+        assert multi_companion["id"] != first_legacy_id
+        with database.get_db() as db:
+            assert db.execute("SELECT COUNT(*) FROM personas WHERE user_id = ?", (multi["id"],)).fetchone()[0] == 3
+
+        original_load_config = server.load_config
+        try:
+            server.load_config = lambda: {
+                "self_use": {
+                    "enabled": True,
+                    "username": "mio_owner_multi",
+                    "chat_enabled": False,
+                    "seed_default_persona": True,
+                    "default_persona_name": "澪",
+                }
+            }
+            assert server._self_use_bound_persona_id(multi) == multi_companion["id"]
+        finally:
+            server.load_config = original_load_config
+
         with database.get_db() as db:
             db.execute(
                 """

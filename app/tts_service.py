@@ -1,12 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import io
 import json
-import subprocess
-import sys
-import tempfile
-from pathlib import Path
 from typing import Any
 
 from .voice import load_voice_config, voice_enabled
@@ -35,7 +30,8 @@ def generate_tts_audio(text: str, voice_id: str | None = None, rate: float = 1.0
     provider = str(config.get("tts_provider", "openai_tts") or "openai_tts").strip().lower()
 
     if provider == "edge":
-        return _edge_tts_text(text, voice_id, rate, pitch, style)
+        _set_tts_error("edge TTS is disabled for LING; use Video Companion speech or a dedicated high-quality provider")
+        return None
     if provider in {"openai_tts", "elevenlabs"}:
         _set_tts_error(
             f"{provider} is configured, but realtime speech is owned by Video Companion or a dedicated provider adapter"
@@ -143,109 +139,6 @@ def generate_tts_single_chunk(
     return audio, metadata
 
 
-def _edge_tts_text(text: str, voice_id: str | None = None, rate: float = 1.0, pitch: float = 1.0, style: str | None = None) -> bytes | None:
-    config = load_voice_config()
-    vid = voice_id or config.get("voice_id", "zh-CN-XiaoxiaoNeural")
-
-    rate_str = f"{int((rate - 1.0) * 100):+d}%"
-    pitch_str = f"{int((pitch - 1.0) * 100):+d}Hz"
-
-    text_escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
-
-    ssml = (
-        '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis"'
-        ' xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="zh-CN">'
-        f'<voice name="{vid}">'
-        f'<prosody rate="{rate_str}" pitch="{pitch_str}">'
-        f"{text_escaped}"
-        f"</prosody>"
-        f"</voice>"
-        f"</speak>"
-    )
-
-    try:
-        import edge_tts
-
-        communicate = edge_tts.Communicate(ssml, vid)
-        loop = asyncio.new_event_loop()
-        try:
-            result = loop.run_until_complete(_collect_audio(communicate))
-        finally:
-            loop.close()
-        if result:
-            _set_tts_error(None)
-            return result
-    except ImportError:
-        _set_tts_error("edge-tts library is not importable; trying subprocess fallback")
-    except Exception as exc:
-        error = f"edge-tts library failed: {exc}"
-        _set_tts_error(error)
-        print(f"[TTS] {error}")
-
-    return _edge_tts_subprocess(text, vid)
-
-
-def _edge_tts_subprocess(text: str, voice_id: str) -> bytes | None:
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp_file:
-            tmp_path = tmp_file.name
-
-        cmd = [
-            sys.executable, "-m", "edge_tts",
-            "--voice", voice_id,
-            "--text", text,
-            "--write-media", tmp_path,
-        ]
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=60,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-        )
-
-        if result.returncode != 0:
-            stderr = (result.stderr or "")[:300]
-            error = f"edge-tts failed: {stderr}" if stderr else "edge-tts failed"
-            _set_tts_error(error)
-            print(f"[TTS] {error}")
-            return None
-
-        if tmp_path and Path(tmp_path).exists():
-            audio_data = Path(tmp_path).read_bytes()
-            if audio_data:
-                _set_tts_error(None)
-                return audio_data
-            _set_tts_error("edge-tts wrote an empty audio file")
-            return None
-        _set_tts_error("edge-tts did not write an audio file")
-        return None
-    except FileNotFoundError:
-        _set_tts_error("edge-tts not installed. Run: pip install edge-tts")
-        print("[TTS] edge-tts not installed. Run: pip install edge-tts")
-        return None
-    except Exception as exc:
-        error = f"edge-tts subprocess failed: {exc}"
-        _set_tts_error(error)
-        print(f"[TTS] {error}")
-        return None
-    finally:
-        if tmp_path:
-            try:
-                Path(tmp_path).unlink(missing_ok=True)
-            except OSError:
-                pass
-
-
-async def _collect_audio(communicate) -> bytes:
-    buffer = io.BytesIO()
-    async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            buffer.write(chunk["data"])
-    return buffer.getvalue()
-
-
 def tts_health_check() -> dict:
     """Check if TTS provider is available."""
     config = load_voice_config()
@@ -264,21 +157,7 @@ def tts_health_check() -> dict:
 
     provider = str(config.get("tts_provider", "openai_tts") or "openai_tts").strip().lower()
     if provider == "edge":
-        try:
-            import edge_tts
-            result["available"] = True
-        except ImportError:
-            try:
-                check = subprocess.run(
-                    [sys.executable, "-m", "edge_tts", "--help"],
-                    capture_output=True, timeout=15,
-                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-                )
-                result["available"] = check.returncode == 0
-                if not result["available"]:
-                    result["error"] = "edge-tts not installed. Run: pip install edge-tts"
-            except Exception as exc:
-                result["error"] = str(exc)
+        result["error"] = "edge TTS is disabled for LING; use Video Companion speech or a dedicated high-quality provider"
     elif provider in {"openai_tts", "elevenlabs"}:
         result["error"] = (
             f"{provider} is not implemented in the main project; use Video Companion speech configuration"
