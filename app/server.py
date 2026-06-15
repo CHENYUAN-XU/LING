@@ -720,6 +720,7 @@ def _companion_live2d_actions(config: dict[str, Any]) -> dict[str, Any]:
         expression_map = {}
     return {
         "idle_expression": idle_expression,
+        "listening_expression": str(config.get("listening_expression") or "Listening"),
         "speaking_expression": str(config.get("speaking_expression") or "Talking"),
         "thinking_expression": str(config.get("thinking_expression") or "Thinking"),
         "expression_map": expression_map,

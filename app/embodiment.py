@@ -60,6 +60,11 @@ def get_thinking_expression() -> str:
     return str(config.get("thinking_expression", "Thinking"))
 
 
+def get_listening_expression() -> str:
+    config = load_live2d_config()
+    return str(config.get("listening_expression", "Listening"))
+
+
 def apply_expression_to_live2d(expression_label: str, expression_type: str = "") -> dict[str, Any]:
     """Apply an expression to Live2D and return result."""
     if not live2d_enabled():
@@ -91,6 +96,8 @@ def apply_runtime_state_to_live2d(state: str) -> dict[str, Any]:
         expression = get_speaking_expression()
     elif normalized == "thinking":
         expression = get_thinking_expression()
+    elif normalized == "listening":
+        expression = get_listening_expression()
     elif normalized in {"idle", "present"}:
         expression = get_idle_expression()
     else:

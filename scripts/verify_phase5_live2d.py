@@ -42,6 +42,7 @@ def verify_live2d_config() -> None:
     assert "点头" in config["expression_map"]
     assert config["expression_map"]["点头"] == "Nod"
     assert config["idle_expressions"][0] == "Default"
+    assert config["listening_expression"] == "Listening"
     assert config["speaking_expression"] == "Talking"
     assert config["thinking_expression"] == "Thinking"
 
@@ -79,15 +80,18 @@ def verify_embodiment() -> None:
         emb.live2d_enabled = lambda: True
         emb.get_live2d_connection = lambda: FakeConnection()
         speaking = emb.apply_runtime_state_to_live2d("speaking")
+        listening = emb.apply_runtime_state_to_live2d("listening")
         idle = emb.apply_runtime_state_to_live2d("idle")
         unsupported = emb.apply_runtime_state_to_live2d("dancing")
         assert speaking["applied"] is True
         assert speaking["expression"] == "Talking"
+        assert listening["applied"] is True
+        assert listening["expression"] == "Listening"
         assert idle["applied"] is True
         assert idle["expression"] == "Default"
         assert unsupported["applied"] is False
         assert unsupported["reason"] == "unsupported_state"
-        assert calls == ["Talking", "Default"]
+        assert calls == ["Talking", "Listening", "Default"]
     finally:
         emb.live2d_enabled = original_enabled
         emb.get_live2d_connection = original_connection
