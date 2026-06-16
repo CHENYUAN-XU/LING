@@ -1357,6 +1357,22 @@ small {
   color: var(--accent-strong);
   font-size: clamp(44px, 8vw, 88px);
   font-weight: 800;
+  cursor: pointer;
+  appearance: none;
+  padding: 0;
+  text-align: center;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+}
+
+.companion-visual:hover {
+  border-color: rgba(83, 109, 150, 0.36);
+  box-shadow: 0 10px 28px rgba(20, 27, 39, 0.08);
+  transform: translateY(-1px);
+}
+
+.companion-visual:focus-visible {
+  outline: 2px solid rgba(83, 109, 150, 0.36);
+  outline-offset: 3px;
 }
 
 .companion-visual img {
@@ -1563,6 +1579,91 @@ small {
   border-color: rgba(83, 109, 150, 0.34);
   background: rgba(83, 109, 150, 0.1);
   color: var(--accent-strong);
+}
+
+.self-use-integration-modal {
+  width: min(920px, calc(100vw - 28px));
+}
+
+.self-use-integration-modal .profile-modal-head {
+  align-items: start;
+}
+
+.self-use-integration-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+.self-use-integration-card {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.self-use-integration-card.ok {
+  border-color: rgba(74, 158, 92, 0.3);
+}
+
+.self-use-integration-card.waiting {
+  border-color: rgba(173, 134, 54, 0.32);
+}
+
+.self-use-integration-card.off {
+  background: #fbfcfd;
+}
+
+.self-use-integration-card-head,
+.self-use-integration-actions {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.self-use-integration-card-head div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.self-use-integration-card-head strong,
+.self-use-integration-row strong,
+.self-use-integration-card .muted {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.self-use-integration-rows {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.self-use-integration-row {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid rgba(218, 224, 232, 0.75);
+  border-radius: 8px;
+  background: var(--panel-3);
+}
+
+.self-use-integration-row small {
+  color: var(--muted);
+}
+
+.self-use-integration-row strong {
+  font-size: 12px;
 }
 
 .rail-admin {
@@ -3413,6 +3514,14 @@ small {
 
   .self-use-video-presence-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .self-use-integration-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .self-use-integration-row {
+    grid-template-columns: 78px minmax(0, 1fr);
   }
 
   .self-use-embodiment-grid {

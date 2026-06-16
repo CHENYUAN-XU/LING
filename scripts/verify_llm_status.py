@@ -18,6 +18,7 @@ def main() -> None:
             "llm": {
                 "provider": "kimi",
                 "model": "kimi-k2.6",
+                "base_url": "https://api.moonshot.cn/v1",
                 "api_key_env": "MNEMOSYNE_VERIFY_MISSING_KEY",
             },
             "llm_routes": {},
@@ -26,11 +27,13 @@ def main() -> None:
         assert missing["configured"] is False
         assert missing["requires_api_key"] is True
         assert missing["missing"] == ["MNEMOSYNE_VERIFY_MISSING_KEY"]
+        assert missing["base_url"] == "https://api.moonshot.cn/v1"
 
         llm_client.load_config = lambda: {
             "llm": {
                 "provider": "ollama",
                 "model": "qwen2.5:3b",
+                "base_url": "http://localhost:11434",
             },
             "llm_routes": {},
         }
@@ -38,6 +41,7 @@ def main() -> None:
         assert local["configured"] is True
         assert local["requires_api_key"] is False
         assert local["missing"] == []
+        assert local["base_url"] == "http://localhost:11434"
     finally:
         llm_client.load_config = original_load_config
 

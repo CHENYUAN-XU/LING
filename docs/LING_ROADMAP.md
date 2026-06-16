@@ -80,6 +80,10 @@ The core product surface should be:
 - The embodiment editor shows the current Live2D runtime/action mapping and expression map as read-only binding context, without expanding the old avatar system.
 - The self-use Video Companion control shows external path, config, bridge, and session presence as status only; camera, microphone, and video session UI remain owned by the external project.
 - The self-use chat panel shows an API gate near the composer so model calls stay visibly disabled until `self_use.chat_enabled` and provider credentials are intentionally ready.
+- The self-use rail exposes a compact integration panel for API chat, Live2D, Voice, and external Video Companion readiness without collecting or storing API keys in the browser.
+- `/api/companion/status` now returns an authoritative `chat_gate` object so the UI can distinguish disabled-by-config, missing-key, ready, and ready-but-still-manually-closed states.
+- The first-screen companion visual is now a direct embodiment-edit entry point, keeping Live2D/preview/fallback binding centered on the character instead of burying it in legacy profile chrome.
+- The self-use shell now funnels chat completion, speech playback, and Video Companion session changes through one runtime sync path that updates the stage badge, dock state, companion status, and Live2D runtime mapping together.
 
 ## Definition Of Not Done
 

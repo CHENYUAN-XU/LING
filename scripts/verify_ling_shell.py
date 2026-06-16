@@ -36,6 +36,22 @@ def main() -> None:
     assert "function renderSelfUseReadinessPanel(persona)" in app_js
     assert "function selfUseApiReadiness()" in app_js
     assert "function renderSelfUseApiGate()" in app_js
+    assert "function renderSelfUseIntegrationModal()" in app_js
+    assert "function renderSelfUseApiSetupCard()" in app_js
+    assert "function renderSelfUseLive2dSetupCard()" in app_js
+    assert "function renderSelfUseVoiceSetupCard()" in app_js
+    assert "function renderSelfUseVideoSetupCard()" in app_js
+    assert "self-use-integration-modal" in app_js
+    assert "self-use-integration-card" in app_js
+    assert "state.integrationOpen = true;" in app_js
+    assert "state.companionStatus?.chat_gate" in app_js
+    assert "apiState.canEnable" in app_js
+    assert "function chatGateReasonText(reason)" in app_js
+    assert '["状态原因", chatGateReasonText(apiState.reason)]' in app_js
+    assert '["可手动开启", apiState.canEnable ? "可以" : "暂不可以"]' in app_js
+    assert '"base_url": base_url' in read("app/llm_client.py")
+    assert '"chat_gate": chat_gate' in server_py
+    assert "def _companion_chat_gate" in server_py
     assert "renderSelfUseApiGate()" in app_js
     assert "self-use-api-gate" in app_js
     assert "保持关闭，避免未接 API 时误触发模型调用" in app_js
@@ -91,6 +107,10 @@ def main() -> None:
     assert "state.companionStatus?.readiness?.length" in app_js
     assert "state.companionStatus?.runtime" in app_js
     assert "async function openPersonaEditor()" in app_js
+    assert 'class: "companion-visual"' in app_js
+    assert '"aria-label": "编辑形象"' in app_js
+    assert "event.stopPropagation();" in app_js
+    assert "openPersonaEditor();" in app_js
     assert 'text: "补形象资料", onclick: openPersonaEditor' in app_js
     assert 'text: "编辑形象", onclick: openPersonaEditor' in app_js
     assert "video.status?.session_active" in app_js
@@ -103,7 +123,12 @@ def main() -> None:
     assert "state.composerFocused = false;" in app_js
     assert "if (state.composerFocused && !chatInputBlocked())" in app_js
     assert 'key: "listening"' in app_js
+    assert "function runtimeToLive2dState(runtime)" in app_js
+    assert "async function syncCompanionRuntime(options = {})" in app_js
     assert "refreshRuntimeIndicators()" in app_js
+    assert "await syncCompanionRuntime({ applyLive2d: true });" in app_js
+    assert "await syncCompanionRuntime({ reload: true, applyLive2d: true });" in app_js
+    assert "await applyLive2dRuntimeState(runtimeToLive2dState(runtime));" in app_js
     assert ".self-use-dock-cell.runtime-state strong" in app_js
     assert "chatInputBlocked()" in app_js
     assert "function applyMessageExpressionsToLive2d(expressions)" in app_js
@@ -123,10 +148,16 @@ def main() -> None:
 
     assert ".self-use-shell" in style_css
     assert ".companion-rail" in style_css
+    assert ".self-use-integration-modal" in style_css
+    assert ".self-use-integration-grid" in style_css
+    assert ".self-use-integration-card" in style_css
+    assert ".self-use-integration-row" in style_css
     assert ".self-use-workspace" in style_css
     assert ".self-use-api-gate" in style_css
     assert ".self-use-api-dot" in style_css
     assert ".companion-runtime-badge" in style_css
+    assert ".companion-visual:hover" in style_css
+    assert ".companion-visual:focus-visible" in style_css
     assert ".companion-runtime-badge.listening" in style_css
     assert ".self-use-readiness" in style_css
     assert ".self-use-video-control" in style_css
@@ -157,6 +188,7 @@ def main() -> None:
     assert "personal AI VTB" in roadmap
     assert "embodied workspace" in roadmap
     assert "Video Companion is external" in roadmap
+    assert "integration panel" in roadmap
     assert "old Project Mnemosyne UI paths no longer dominate" in roadmap
 
     print("LING self-use shell verification passed")
