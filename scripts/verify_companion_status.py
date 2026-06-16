@@ -89,6 +89,11 @@ def main() -> None:
             assert status["persona_id"] == persona["id"]
             assert status["runtime"]["key"] == "offline"
             assert status["runtime"]["ready"] is False
+            assert status["chat_gate"]["enabled"] is False
+            assert status["chat_gate"]["ready"] is False
+            assert status["chat_gate"]["can_enable"] is False
+            assert status["chat_gate"]["reason"] == "disabled_by_config"
+            assert status["chat_gate"]["missing"] == ["MOONSHOT_API_KEY"]
             assert status["ready_count"] == 0
             assert {item["key"] for item in status["readiness"]} == {"api", "live2d", "voice", "video"}
             assert status["live2d_actions"]["idle_expression"] == "Neutral"
@@ -180,6 +185,10 @@ def main() -> None:
                 "config": {"enabled": True},
             }
             ready_status = server.companion_status(user)
+            assert ready_status["chat_gate"]["enabled"] is True
+            assert ready_status["chat_gate"]["ready"] is True
+            assert ready_status["chat_gate"]["reason"] == "ready"
+            assert ready_status["chat_gate"]["provider"] == "ollama"
             assert ready_status["ready_count"] == 3
             assert not all(item["ready"] for item in ready_status["readiness"])
             assert ready_status["runtime"]["key"] in {"present", "waiting", "idle"}

@@ -208,6 +208,7 @@ def llm_runtime_status(task: str = "chat") -> dict[str, Any]:
     llm_config = _llm_config_for_task(task)
     provider = str(llm_config.get("provider", "ollama")).lower()
     model = str(llm_config.get("model") or "")
+    base_url = str(llm_config.get("base_url") or "").rstrip("/")
     api_key_env = str(llm_config.get("api_key_env") or _default_api_key_env(provider) or "")
     requires_api_key = provider != "ollama" and bool(api_key_env)
     configured = True
@@ -219,6 +220,7 @@ def llm_runtime_status(task: str = "chat") -> dict[str, Any]:
         "task": task,
         "provider": provider,
         "model": model,
+        "base_url": base_url,
         "api_key_env": api_key_env,
         "requires_api_key": requires_api_key,
         "configured": configured,

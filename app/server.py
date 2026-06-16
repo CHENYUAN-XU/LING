@@ -501,8 +501,9 @@ def companion_status(user: dict = Depends(current_user), persona_id: int | None 
     voice_config = load_voice_config()
     voice_health = tts_health_check()
     live2d_actions = _companion_live2d_actions(live2d_config)
+    chat_gate = _companion_chat_gate(self_use, llm)
 
-    api_ready = bool(self_use.get("chat_enabled", True)) and bool(llm.get("configured"))
+    api_ready = bool(chat_gate.get("ready"))
     live2d_ready = bool(embodiment.get("live2d_bound")) and live2d_enabled()
     voice_ready = bool(embodiment.get("voice_bound")) and bool(voice_health.get("available"))
     video_ready = bool(video.get("enabled")) and bool(video.get("connected"))
@@ -543,6 +544,7 @@ def companion_status(user: dict = Depends(current_user), persona_id: int | None 
         "video_companion": video,
         "voice": voice_health,
         "live2d_actions": live2d_actions,
+        "chat_gate": chat_gate,
         "runtime": runtime,
         "readiness": readiness,
         "ready_count": ready_count,
@@ -673,6 +675,37 @@ def _companion_api_readiness_text(self_use: dict[str, Any], llm: dict[str, Any])
         return " / ".join(part for part in (provider, model) if part) or "已配置"
     missing = ", ".join(str(item) for item in llm.get("missing") or [])
     return f"缺少 {missing}" if missing else "模型未配置"
+
+
+def _companion_chat_gate(self_use: dict[str, Any], llm: dict[str, Any]) -> dict[str, Any]:
+    enabled = bool(self_use.get("chat_enabled", True))
+    self_use_enabled = bool(self_use.get("enabled", False))
+    llm_configured = bool(llm.get("configured"))
+    missing = [str(item) for item in (llm.get("missing") or []) if str(item).strip()]
+    reason = "ready"
+    if self_use_enabled and not enabled:
+        reason = "disabled_by_config"
+    elif not llm_configured and missing:
+        reason = "missing_api_key"
+    elif not llm_configured:
+        reason = "llm_not_configured"
+    elif not self_use_enabled:
+        reason = "legacy_mode"
+    return {
+        "enabled": enabled,
+        "self_use_enabled": self_use_enabled,
+        "llm_configured": llm_configured,
+        "ready": enabled and llm_configured,
+        "can_enable": self_use_enabled and not enabled and llm_configured,
+        "reason": reason,
+        "provider": str(llm.get("provider") or ""),
+        "model": str(llm.get("model") or ""),
+        "base_url": str(llm.get("base_url") or ""),
+        "api_key_env": str(llm.get("api_key_env") or ""),
+        "requires_api_key": bool(llm.get("requires_api_key")),
+        "missing": missing,
+        "text": _companion_api_readiness_text(self_use, llm),
+    }
 
 
 def _companion_live2d_readiness_text(embodiment: dict[str, Any], config: dict[str, Any]) -> str:

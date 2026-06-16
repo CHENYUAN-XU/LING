@@ -72,6 +72,7 @@ let state = {
   threadPanelOpen: false,
   deletedPanelOpen: false,
   privacyOpen: false,
+  integrationOpen: false,
   groupCreateOpen: false,
   groupSettingsOpen: false,
   editingConversationId: null,
@@ -679,6 +680,7 @@ function renderShell() {
   if (state.threadPanelOpen) children.push(renderThreadModal());
   if (state.deletedPanelOpen) children.push(renderDeletedPersonasModal());
   if (state.privacyOpen) children.push(renderPrivacyModal(renderShell));
+  if (state.integrationOpen) children.push(renderSelfUseIntegrationModal());
   if (state.groupCreateOpen) children.push(renderGroupCreateModal());
   app.replaceChildren(...children);
   if (restoreSearchFocus) {
@@ -773,6 +775,17 @@ function renderSelfUseRail() {
     h("nav", { class: "rail-actions", "aria-label": "LING controls" }, [
       h("button", { type: "button", class: "rail-action active", title: "在场", "aria-label": "在场", text: "在", onclick: () => renderShell() }),
       h("button", { type: "button", class: "rail-action", title: "资料", "aria-label": "资料", text: "资", onclick: openPersonaPanel }),
+      h("button", {
+        type: "button",
+        class: "rail-action",
+        title: "接入",
+        "aria-label": "接入",
+        text: "接",
+        onclick: () => {
+          state.integrationOpen = true;
+          renderShell();
+        },
+      }),
       h("button", {
         type: "button",
         class: "rail-action",
@@ -1890,21 +1903,24 @@ function renderSelfUseWorkspace(persona) {
 function selfUseApiReadiness() {
   const readiness = state.companionStatus?.readiness || [];
   const apiItem = readiness.find((item) => item && item.key === "api");
+  const gate = state.companionStatus?.chat_gate || {};
   const llm = state.companionStatus?.llm || state.llmStatus || {};
   const selfUse = state.companionStatus?.self_use || state.selfUse || {};
-  const configured = !!llm.configured;
-  const enabled = selfUse.chat_enabled !== false;
-  const provider = String(llm.provider || "").trim();
-  const model = String(llm.model || "").trim();
-  const missing = (llm.missing || []).filter(Boolean).join(", ");
+  const configured = Object.prototype.hasOwnProperty.call(gate, "llm_configured") ? !!gate.llm_configured : !!llm.configured;
+  const enabled = Object.prototype.hasOwnProperty.call(gate, "enabled") ? !!gate.enabled : selfUse.chat_enabled !== false;
+  const provider = String(gate.provider || llm.provider || "").trim();
+  const model = String(gate.model || llm.model || "").trim();
+  const missing = (gate.missing || llm.missing || []).filter(Boolean).join(", ");
   return {
     ready: enabled && configured,
     enabled,
     configured,
+    canEnable: !!gate.can_enable,
+    reason: gate.reason || "",
     provider,
     model,
     missing,
-    text: apiItem?.text || (enabled ? llmStatusText() : "模型未启用"),
+    text: gate.text || apiItem?.text || (enabled ? llmStatusText() : "模型未启用"),
   };
 }
 
@@ -1914,6 +1930,8 @@ function renderSelfUseApiGate() {
   const tone = apiState.ready ? "ok" : apiState.enabled ? "waiting" : "off";
   const detail = apiState.ready
     ? [apiState.provider, apiState.model].filter(Boolean).join(" / ") || "模型已可用"
+    : apiState.canEnable
+      ? "API 已就绪，仍保持手动开闸"
     : apiState.enabled && apiState.missing
       ? `缺少 ${apiState.missing}`
       : "保持关闭，避免未接 API 时误触发模型调用";
@@ -1923,6 +1941,179 @@ function renderSelfUseApiGate() {
       h("strong", { text: apiState.ready ? "对话可用" : "对话暂未启用" }),
       h("small", { text: `${apiState.text} · ${detail}` }),
     ]),
+  ]);
+}
+
+function renderSelfUseIntegrationModal() {
+  if (!selfUseMode()) return null;
+  const close = () => {
+    state.integrationOpen = false;
+    renderShell();
+  };
+  const refresh = async () => {
+    await refreshEmbodimentRuntimeStatus();
+    renderShell();
+  };
+  return h("div", { class: "profile-modal-backdrop", onclick: (event) => {
+    if (event.target.classList.contains("profile-modal-backdrop")) close();
+  } }, [
+    h("section", { class: "profile-modal self-use-integration-modal" }, [
+      h("div", { class: "profile-modal-head" }, [
+        h("div", {}, [
+          h("p", { class: "eyebrow", text: "LING" }),
+          h("h3", { text: "接入状态" }),
+        ]),
+        h("div", { class: "modal-actions" }, [
+          h("button", { type: "button", class: "ghost compact", text: "刷新", onclick: refresh }),
+          h("button", { type: "button", class: "ghost compact", text: "关闭", onclick: close }),
+        ]),
+      ]),
+      h("div", { class: "self-use-integration-grid" }, [
+        renderSelfUseApiSetupCard(),
+        renderSelfUseLive2dSetupCard(),
+        renderSelfUseVoiceSetupCard(),
+        renderSelfUseVideoSetupCard(),
+      ]),
+    ]),
+  ]);
+}
+
+function renderSelfUseApiSetupCard() {
+  const apiState = selfUseApiReadiness();
+  const gate = state.companionStatus?.chat_gate || {};
+  const llm = state.companionStatus?.llm || state.llmStatus || {};
+  const gateTone = apiState.ready ? "ok" : apiState.enabled ? "waiting" : "off";
+  const rows = [
+    ["对话闸门", apiState.enabled ? "已打开" : "手动关闭"],
+    ["状态原因", chatGateReasonText(apiState.reason)],
+    ["可手动开启", apiState.canEnable ? "可以" : "暂不可以"],
+    ["Provider", apiState.provider || "unset"],
+    ["Model", apiState.model || "unset"],
+    ["Base URL", String(gate.base_url || llm.base_url || "").trim() || (apiState.provider === "ollama" ? "local" : "default")],
+    ["Key env", gate.requires_api_key || llm.requires_api_key ? (gate.api_key_env || llm.api_key_env || "missing") : "not required"],
+    ["Env state", apiState.missing || (gate.requires_api_key || llm.requires_api_key ? "present" : "local")],
+  ];
+  return h("section", { class: `self-use-integration-card ${gateTone}` }, [
+    h("div", { class: "self-use-integration-card-head" }, [
+      h("div", {}, [
+        h("small", { text: "Model route" }),
+        h("strong", { text: "API chat" }),
+      ]),
+      h("span", { class: `awareness-status ${gateTone}`, text: apiState.ready ? "ready" : apiState.enabled ? "waiting" : "off" }),
+    ]),
+    h("div", { class: "self-use-integration-rows" }, rows.map(([label, value]) => renderSelfUseIntegrationRow(label, value))),
+    h("small", { class: "muted", text: apiState.ready ? "对话输入会使用当前 chat route。" : "对话入口保持锁定，直到 chat gate 与密钥状态同时就绪。" }),
+  ]);
+}
+
+function chatGateReasonText(reason) {
+  return {
+    disabled_by_config: "API 已就绪，仍按自用配置保持关闭",
+    missing_api_key: "缺少密钥环境变量",
+    llm_not_configured: "模型路由未就绪",
+    legacy_mode: "兼容模式",
+    ready: "可以对话",
+  }[reason] || "未知";
+}
+
+function renderSelfUseLive2dSetupCard() {
+  const persona = state.activePersona || {};
+  const embodiment = personaEmbodimentProfile(persona);
+  const enabled = live2dAvailable();
+  const connected = live2dConnected();
+  const tone = connected ? "ok" : enabled ? "waiting" : "off";
+  const actions = state.companionStatus?.live2d_actions || {};
+  const rows = [
+    ["Config", enabled ? "enabled" : "disabled"],
+    ["VTube Studio", connected ? "connected" : "offline"],
+    ["Model id", embodiment.live2dModelId || "unbound"],
+    ["Idle", actions.idle_expression || "Default"],
+    ["Listen", actions.listening_expression || "Listening"],
+    ["Think", actions.thinking_expression || "Thinking"],
+    ["Talk", actions.speaking_expression || "Talking"],
+  ];
+  return h("section", { class: `self-use-integration-card ${tone}` }, [
+    h("div", { class: "self-use-integration-card-head" }, [
+      h("div", {}, [
+        h("small", { text: "Embodiment" }),
+        h("strong", { text: "Live2D" }),
+      ]),
+      h("span", { class: `awareness-status ${tone}`, text: connected ? "ready" : enabled ? "waiting" : "off" }),
+    ]),
+    h("div", { class: "self-use-integration-rows" }, rows.map(([label, value]) => renderSelfUseIntegrationRow(label, value))),
+    h("div", { class: "self-use-integration-actions" }, [
+      h("button", { type: "button", class: "ghost compact", text: "编辑形象", onclick: () => {
+        state.integrationOpen = false;
+        openPersonaEditor();
+      } }),
+      enabled ? h("button", { type: "button", class: "compact", text: connected ? "重连" : "连接", onclick: live2dConnect }) : null,
+    ]),
+  ]);
+}
+
+function renderSelfUseVoiceSetupCard() {
+  const persona = state.activePersona || {};
+  const embodiment = personaEmbodimentProfile(persona);
+  const voice = state.companionStatus?.voice || state.voiceConfig || {};
+  const configured = !!voice.enabled;
+  const available = !!voice.available;
+  const tone = available ? "ok" : configured ? "waiting" : "off";
+  const rows = [
+    ["Config", configured ? "enabled" : "disabled"],
+    ["Provider", voice.provider || voice.tts_provider || "unset"],
+    ["Voice", embodiment.voiceProfile || voice.voice_id || "unbound"],
+    ["Runtime", available ? "available" : (voice.error || "offline")],
+  ];
+  return h("section", { class: `self-use-integration-card ${tone}` }, [
+    h("div", { class: "self-use-integration-card-head" }, [
+      h("div", {}, [
+        h("small", { text: "Speech" }),
+        h("strong", { text: "Voice" }),
+      ]),
+      h("span", { class: `awareness-status ${tone}`, text: available ? "ready" : configured ? "waiting" : "off" }),
+    ]),
+    h("div", { class: "self-use-integration-rows" }, rows.map(([label, value]) => renderSelfUseIntegrationRow(label, value))),
+    h("small", { class: "muted", text: "Edge TTS 不作为 LING 主线；实时语音优先交给 Video Companion 或专用 provider。" }),
+  ]);
+}
+
+function renderSelfUseVideoSetupCard() {
+  const status = state.videoCompanionStatus || {};
+  const config = status.config || {};
+  const stateInfo = videoCompanionState();
+  const pathState = videoCompanionPathState(config);
+  const sessionActive = !!status.status?.session_active;
+  const rows = [
+    ["Config", status.enabled ? "enabled" : "disabled"],
+    ["Path", pathState.text],
+    ["Bridge", status.connected ? "connected" : "offline"],
+    ["Session", sessionActive ? "active" : "idle"],
+    ["Base URL", config.base_url || "unset"],
+  ];
+  return h("section", { class: `self-use-integration-card ${stateInfo.tone}` }, [
+    h("div", { class: "self-use-integration-card-head" }, [
+      h("div", {}, [
+        h("small", { text: "External presence" }),
+        h("strong", { text: "Video Companion" }),
+      ]),
+      h("span", { class: `awareness-status ${stateInfo.tone}`, text: sessionActive ? "session" : stateInfo.text }),
+    ]),
+    h("div", { class: "self-use-integration-rows" }, rows.map(([label, value]) => renderSelfUseIntegrationRow(label, value))),
+    h("div", { class: "self-use-integration-actions" }, [
+      h("button", { type: "button", class: "ghost compact", text: "打开", onclick: openVideoCompanionPage }),
+      h("button", { type: "button", class: "ghost compact", text: "刷新", onclick: async () => {
+        await loadAwarenessStatus();
+        await loadCompanionStatus();
+        renderShell();
+      } }),
+    ]),
+  ]);
+}
+
+function renderSelfUseIntegrationRow(label, value) {
+  return h("div", { class: "self-use-integration-row" }, [
+    h("small", { text: label }),
+    h("strong", { text: String(value || "unset") }),
   ]);
 }
 
@@ -2210,7 +2401,17 @@ function renderCompanionStage(persona) {
     && !!(state.live2dStatus?.connected && state.live2dStatus?.authenticated && !state.live2dStatus?.last_error);
   const statusClass = live2dStatusClass();
   return h("section", { class: `companion-stage ${imageUrl ? "has-image" : "no-image"}` }, [
-    h("div", { class: "companion-visual" }, [
+    h("button", {
+      type: "button",
+      class: "companion-visual",
+      title: "编辑形象",
+      "aria-label": "编辑形象",
+      onclick: (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openPersonaEditor();
+      },
+    }, [
       imageUrl
         ? h("img", { src: imageUrl, alt: persona?.name || "LING companion" })
         : h("span", { text: avatarText(persona?.name || "LING") }),
@@ -3745,6 +3946,7 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
     applyLive2dRuntimeState("idle");
   }
   state.sending = false;
+  await syncCompanionRuntime({ applyLive2d: true });
   renderShell();
   scrollChat();
 }
@@ -4297,6 +4499,27 @@ function refreshRuntimeIndicators() {
   if (stateCell) stateCell.textContent = runtime.label || "";
 }
 
+function runtimeToLive2dState(runtime) {
+  const key = String(runtime?.key || "");
+  if (key === "thinking") return "thinking";
+  if (key === "listening") return "listening";
+  if (key === "speaking") return "speaking";
+  return "idle";
+}
+
+async function syncCompanionRuntime(options = {}) {
+  if (!selfUseMode()) return companionRuntimeState();
+  if (options.reload) {
+    await loadCompanionStatus();
+  }
+  const runtime = companionRuntimeState();
+  refreshRuntimeIndicators();
+  if (options.applyLive2d) {
+    await applyLive2dRuntimeState(runtimeToLive2dState(runtime));
+  }
+  return runtime;
+}
+
 async function loadAwarenessStatus() {
   try {
     const [consents, camera, screen, proactive, videoCompanion] = await Promise.all([
@@ -4420,7 +4643,7 @@ async function startVideoCompanion(statusEl) {
     });
     if (statusEl) statusEl.textContent = data.started ? "视频会话已启动" : "视频会话未启动";
     await loadAwarenessStatus();
-    await loadCompanionStatus();
+    await syncCompanionRuntime({ reload: true, applyLive2d: true });
     renderShell();
   } catch (err) {
     if (statusEl) statusEl.textContent = err.message;
@@ -4433,6 +4656,7 @@ async function stopVideoCompanion(statusEl) {
     const data = await api("/api/video-companion/session/stop", { method: "POST" });
     if (statusEl) statusEl.textContent = data.stopped ? "视频会话已停止" : "视频会话未停止";
     await loadAwarenessStatus();
+    await syncCompanionRuntime({ reload: true, applyLive2d: true });
     renderShell();
   } catch (err) {
     if (statusEl) statusEl.textContent = err.message;
@@ -4722,10 +4946,10 @@ async function playMessageVoice(message, buttonEl) {
       buttonEl.classList.add("voice-error");
     }
   } finally {
-    applyLive2dRuntimeState("idle");
     if (Number(state.voicePlaying) === Number(messageId)) {
       state.voicePlaying = null;
     }
+    await syncCompanionRuntime({ applyLive2d: true });
     if (buttonEl) {
       buttonEl.disabled = false;
       if (state.voicePlaying === null && !state.voiceError) {
