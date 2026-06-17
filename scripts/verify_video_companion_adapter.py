@@ -228,6 +228,13 @@ def verify_video_bridge_endpoints(user_id: int, persona_id: int) -> None:
     assert obs["saved"] is True
     assert obs["observation"]["confidence"] == 0.9
 
+    status = server.video_companion_status({"id": user_id})
+    assert status["recent_observation"]["observation_type"] == "video_observation"
+    assert "visible and smiling" in status["recent_observation"]["content"]
+
+    companion = server.companion_status({"id": user_id})
+    assert companion["video_companion"]["recent_observation"]["observation_type"] == "video_observation"
+
     consent = server.video_consent(
         {
             "persona_id": str(persona_id),

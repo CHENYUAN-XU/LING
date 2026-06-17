@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -74,3 +75,77 @@ def load_config() -> dict[str, Any]:
         raise ValueError("config.yaml must contain a YAML object")
 
     return _deep_merge(DEFAULT_CONFIG, loaded)
+
+
+def set_self_use_chat_enabled(enabled: bool, config_file: Path = CONFIG_FILE) -> None:
+    set_config_section_bool("self_use", "chat_enabled", enabled, config_file)
+
+
+def set_config_section_bool(section: str, key: str, enabled: bool, config_file: Path = CONFIG_FILE) -> None:
+    set_config_section_value(section, key, bool(enabled), config_file)
+
+
+def set_config_section_value(section: str, key: str, value: str | bool, config_file: Path = CONFIG_FILE) -> None:
+    section = str(section or "").strip()
+    key = str(key or "").strip()
+    if not section or not key:
+        raise ValueError("section and key are required")
+    yaml_value = _yaml_scalar(value)
+    if not config_file.exists():
+        config = _deep_merge(DEFAULT_CONFIG, {section: {key: value}})
+        config_file.write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8")
+        return
+
+    lines = config_file.read_text(encoding="utf-8").splitlines(keepends=True)
+    section_start = -1
+    section_indent = 0
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped == f"{section}:":
+            section_start = index
+            section_indent = len(line) - len(line.lstrip(" "))
+            break
+
+    if section_start < 0:
+        suffix = "" if not lines or lines[-1].endswith(("\n", "\r")) else "\n"
+        lines.append(f"{suffix}{section}:\n  {key}: {yaml_value}\n")
+        config_file.write_text("".join(lines), encoding="utf-8")
+        return
+
+    section_end = len(lines)
+    child_indent = section_indent + 2
+    target_index = -1
+    for index in range(section_start + 1, len(lines)):
+        line = lines[index]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if indent <= section_indent:
+            section_end = index
+            break
+        child_indent = indent
+        if stripped.startswith(f"{key}:"):
+            target_index = index
+            break
+
+    if target_index >= 0:
+        newline = "\r\n" if lines[target_index].endswith("\r\n") else "\n"
+        comment = ""
+        if "#" in lines[target_index]:
+            comment = "  #" + lines[target_index].split("#", 1)[1].rstrip("\r\n")
+        lines[target_index] = f"{' ' * child_indent}{key}: {yaml_value}{comment}{newline}"
+    else:
+        newline = "\r\n" if any(line.endswith("\r\n") for line in lines) else "\n"
+        lines.insert(section_end, f"{' ' * child_indent}{key}: {yaml_value}{newline}")
+
+    config_file.write_text("".join(lines), encoding="utf-8")
+
+
+def _yaml_scalar(value: str | bool) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    text = str(value)
+    return json.dumps(text, ensure_ascii=False)

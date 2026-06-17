@@ -70,6 +70,7 @@ def main() -> None:
         "scripts\\verify_sqlite_runtime.py",
         "scripts\\verify_guest_admin.py",
         "scripts\\verify_self_use_login.py",
+        "scripts\\verify_self_use_chat_gate.py",
         "scripts\\verify_persona_purge.py",
         "scripts\\verify_account_delete.py",
         "scripts\\verify_admin_protection.py",

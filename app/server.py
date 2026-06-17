@@ -34,7 +34,7 @@ from .auth import (
     set_session_cookie,
 )
 from .archivist import recall_memories
-from .config import load_config
+from .config import load_config, set_config_section_bool, set_config_section_value, set_self_use_chat_enabled
 from .database import dict_from_row, get_db, init_db, now_ts, sqlite_runtime_status
 from .db_chat import db_chat, normalize_existing_assistant_messages
 from .expression_assets import active_expression_labels, expression_assets_public, update_expression_asset_setting
@@ -480,6 +480,19 @@ class MemoryEvalRequest(BaseModel):
     include_semantic: bool = False
 
 
+class SelfUseChatGateRequest(BaseModel):
+    enabled: bool
+
+
+class SelfUseIntegrationFlagRequest(BaseModel):
+    key: str = Field(..., min_length=1, max_length=40)
+    enabled: bool
+
+
+class SelfUseIntegrationConfigRequest(BaseModel):
+    values: dict[str, str] = Field(default_factory=dict)
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True, "database": "sqlite", "db_initialized": True, "sqlite": sqlite_runtime_status()}
@@ -496,7 +509,7 @@ def companion_status(user: dict = Depends(current_user), persona_id: int | None 
     persona = _companion_status_persona(user, persona_id)
     embodiment = persona_embodiment_profile(persona)
     llm = llm_runtime_status("chat")
-    video = get_video_companion_status()
+    video = _video_companion_status_for_user(int(user["id"]))
     live2d_config = load_live2d_config()
     voice_config = load_voice_config()
     voice_health = tts_health_check()
@@ -550,6 +563,107 @@ def companion_status(user: dict = Depends(current_user), persona_id: int | None 
         "ready_count": ready_count,
         "total_count": len(readiness),
     }
+
+
+@app.post("/api/self-use/chat-gate")
+def self_use_chat_gate(req: SelfUseChatGateRequest, request: Request, user: dict = Depends(current_user)):
+    self_use = _require_self_use_local_config_change(request, user)
+
+    llm = llm_runtime_status("chat")
+    current_gate = _companion_chat_gate(self_use, llm)
+    if req.enabled and not bool(current_gate.get("can_enable")) and not bool(current_gate.get("ready")):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "reason": current_gate.get("reason"),
+                "missing": current_gate.get("missing", []),
+                "text": current_gate.get("text"),
+            },
+        )
+
+    set_self_use_chat_enabled(bool(req.enabled))
+    updated_self_use = _self_use_public(user)
+    updated_gate = _companion_chat_gate(updated_self_use, llm_runtime_status("chat"))
+    return {"self_use": updated_self_use, "chat_gate": updated_gate}
+
+
+@app.post("/api/self-use/integration-flag")
+def self_use_integration_flag(req: SelfUseIntegrationFlagRequest, request: Request, user: dict = Depends(current_user)):
+    _require_self_use_local_config_change(request, user)
+    allowed = {
+        "live2d": ("live2d", "enabled"),
+        "video_companion": ("video_companion", "enabled"),
+    }
+    key = str(req.key or "").strip()
+    if key not in allowed:
+        raise HTTPException(status_code=400, detail="unsupported LING integration flag")
+    section, config_key = allowed[key]
+    set_config_section_bool(section, config_key, bool(req.enabled))
+    return {
+        "key": key,
+        "enabled": bool(req.enabled),
+        "companion_status": companion_status(user),
+    }
+
+
+@app.post("/api/self-use/integration-config")
+def self_use_integration_config(req: SelfUseIntegrationConfigRequest, request: Request, user: dict = Depends(current_user)):
+    _require_self_use_local_config_change(request, user)
+    allowed = {
+        "live2d.vts_ws_url": ("live2d", "vts_ws_url", _validate_ws_url),
+        "video_companion.base_url": ("video_companion", "base_url", _validate_http_url),
+        "video_companion.ws_url": ("video_companion", "ws_url", _validate_ws_url),
+        "video_companion.project_path": ("video_companion", "project_path", _validate_local_path_text),
+    }
+    saved: dict[str, str] = {}
+    for raw_key, raw_value in (req.values or {}).items():
+        key = str(raw_key or "").strip()
+        if key not in allowed:
+            raise HTTPException(status_code=400, detail=f"unsupported LING integration config: {key}")
+        section, config_key, validator = allowed[key]
+        value = validator(raw_value, key)
+        set_config_section_value(section, config_key, value)
+        saved[key] = value
+    return {"saved": saved, "companion_status": companion_status(user)}
+
+
+def _require_self_use_local_config_change(request: Request, user: dict[str, Any]) -> dict[str, Any]:
+    self_use = _self_use_public(user)
+    if not bool(self_use.get("enabled")):
+        raise HTTPException(status_code=403, detail="LING self-use mode is not enabled for this user")
+
+    config = _self_use_config()
+    if bool(config.get("require_localhost", True)) and not _is_local_request(request):
+        raise HTTPException(status_code=403, detail="local LING configuration changes are only allowed from localhost")
+    return self_use
+
+
+def _validate_http_url(value: Any, key: str) -> str:
+    text = str(value or "").strip()
+    if not (text.startswith("http://") or text.startswith("https://")):
+        raise HTTPException(status_code=400, detail=f"{key} must start with http:// or https://")
+    return _bounded_config_text(text.rstrip("/"), key, 300)
+
+
+def _validate_ws_url(value: Any, key: str) -> str:
+    text = str(value or "").strip()
+    if not (text.startswith("ws://") or text.startswith("wss://")):
+        raise HTTPException(status_code=400, detail=f"{key} must start with ws:// or wss://")
+    return _bounded_config_text(text, key, 300)
+
+
+def _validate_local_path_text(value: Any, key: str) -> str:
+    return _bounded_config_text(str(value or "").strip(), key, 500)
+
+
+def _bounded_config_text(text: str, key: str, max_length: int) -> str:
+    if not text:
+        raise HTTPException(status_code=400, detail=f"{key} cannot be empty")
+    if "\n" in text or "\r" in text:
+        raise HTTPException(status_code=400, detail=f"{key} cannot contain newlines")
+    if len(text) > max_length:
+        raise HTTPException(status_code=400, detail=f"{key} is too long")
+    return text
 
 
 @app.get("/api/privacy")
@@ -706,6 +820,23 @@ def _companion_chat_gate(self_use: dict[str, Any], llm: dict[str, Any]) -> dict[
         "missing": missing,
         "text": _companion_api_readiness_text(self_use, llm),
     }
+
+
+def _video_companion_status_for_user(user_id: int) -> dict[str, Any]:
+    status = dict(get_video_companion_status())
+    recent = get_recent_world_observations(user_id, source="video_companion", limit=1)
+    if recent:
+        item = recent[0]
+        status["recent_observation"] = {
+            "id": item.get("id"),
+            "observation_type": item.get("observation_type"),
+            "content": str(item.get("content") or "")[:500],
+            "confidence": item.get("confidence"),
+            "created_at": item.get("created_at"),
+        }
+    else:
+        status["recent_observation"] = None
+    return status
 
 
 def _companion_live2d_readiness_text(embodiment: dict[str, Any], config: dict[str, Any]) -> str:
@@ -1365,7 +1496,14 @@ def voice_speech_plan(req: VoiceTTSReplyRequest, user: dict = Depends(current_us
     reply_text = _non_empty_voice_text(req.reply_text)
     utterances = split_reply_into_utterances(reply_text)
     params = build_tts_request_params(utterances, req.expression_labels)
-    return {"utterances": utterances, "tts_params": params}
+    styles = [str(param.get("style")) for param in params if param.get("style")]
+    return {
+        "utterances": utterances,
+        "tts_params": params,
+        "chunk_count": len(utterances),
+        "styles": styles,
+        "expression_labels": [str(label) for label in (req.expression_labels or []) if str(label).strip()],
+    }
 
 
 @app.get("/api/live2d/config")
@@ -1578,7 +1716,7 @@ def video_companion_config(user: dict = Depends(current_user)):
 
 @app.get("/api/video-companion/status")
 def video_companion_status(user: dict = Depends(current_user)):
-    return get_video_companion_status()
+    return _video_companion_status_for_user(int(user["id"]))
 
 
 @app.post("/api/video-companion/session/start")

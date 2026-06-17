@@ -1627,6 +1627,18 @@ small {
   min-width: 0;
 }
 
+.self-use-integration-actions {
+  flex-wrap: wrap;
+}
+
+.self-use-integration-actions .save-status {
+  flex: 1 1 100%;
+}
+
+.self-use-integration-actions .save-status.danger-text {
+  margin-top: 0;
+}
+
 .self-use-integration-card-head div {
   display: grid;
   gap: 2px;
@@ -1639,6 +1651,33 @@ small {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.self-use-integration-field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.self-use-integration-field-grid .wide {
+  grid-column: 1 / -1;
+}
+
+.self-use-integration-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.self-use-integration-field input {
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  font: inherit;
 }
 
 .self-use-integration-rows {
@@ -1718,6 +1757,18 @@ small {
 
 .self-use-stage-panel .companion-stage-actions {
   justify-content: start;
+}
+
+.self-use-stage-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.companion-stage-action-status {
+  min-width: 0;
+  margin: 0;
 }
 
 .self-use-dock {
@@ -1843,6 +1894,12 @@ small {
   white-space: nowrap;
 }
 
+.self-use-video-recent {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .self-use-video-path.off {
   color: var(--danger);
 }
@@ -1932,7 +1989,7 @@ small {
 
 .self-use-api-gate {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 9px;
   min-height: 44px;
@@ -1958,6 +2015,10 @@ small {
 
 .self-use-api-gate strong {
   font-size: 13px;
+}
+
+.self-use-api-gate > button {
+  justify-self: end;
 }
 
 .self-use-api-dot {
@@ -2466,6 +2527,42 @@ small {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+.self-use-embodiment-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.self-use-embodiment-actions .save-status {
+  margin: 0;
+}
+
+.self-use-live2d-model-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.self-use-live2d-model-picker div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.self-use-live2d-model-picker strong,
+.self-use-live2d-model-picker small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .self-use-mapping-preview {
@@ -3524,8 +3621,20 @@ small {
     grid-template-columns: 78px minmax(0, 1fr);
   }
 
+  .self-use-integration-field-grid {
+    grid-template-columns: 1fr;
+  }
+
   .self-use-embodiment-grid {
     grid-template-columns: 1fr;
+  }
+
+  .self-use-live2d-model-picker {
+    grid-template-columns: 1fr;
+  }
+
+  .self-use-live2d-model-picker > button {
+    width: fit-content;
   }
 
   .self-use-chat-head {
@@ -3548,6 +3657,15 @@ small {
   .self-use-readiness-item {
     min-height: 34px;
     padding: 6px 8px;
+  }
+
+  .self-use-api-gate {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .self-use-api-gate > button {
+    grid-column: 2;
+    width: fit-content;
   }
 
   .brand {

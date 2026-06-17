@@ -60,6 +60,8 @@ class Live2DConnection:
         self._request_id = 0
         self._available_hotkeys: list[dict] = []
         self._available_expressions: list[dict] = []
+        self._current_model: dict[str, Any] = {}
+        self._available_models: list[dict[str, Any]] = []
 
     @property
     def is_connected(self) -> bool:
@@ -142,6 +144,8 @@ class Live2DConnection:
             self._authenticated = False
             self._available_hotkeys = []
             self._available_expressions = []
+            self._current_model = {}
+            self._available_models = []
 
     def disconnect(self) -> None:
         try:
@@ -320,6 +324,18 @@ class Live2DConnection:
                 with self._lock:
                     self._available_expressions = [expr for expr in available if isinstance(expr, dict)]
 
+        current_model = await self._send_vts_request("CurrentModelRequest", {})
+        if current_model and current_model is not False:
+            with self._lock:
+                self._current_model = self._compact_model(current_model)
+
+        available_models = await self._send_vts_request("AvailableModelsRequest", {})
+        if available_models and available_models is not False:
+            models = available_models.get("availableModels") or available_models.get("models") or []
+            if isinstance(models, list):
+                with self._lock:
+                    self._available_models = [self._compact_model(model) for model in models if isinstance(model, dict)]
+
     def _load_auth_token(self) -> str | None:
         try:
             with LIVE2D_TOKEN_PATH.open("r", encoding="utf-8") as f:
@@ -368,6 +384,17 @@ class Live2DConnection:
                     return hotkey_id if isinstance(hotkey_id, str) else None
         return None
 
+    @staticmethod
+    def _compact_model(model: dict[str, Any]) -> dict[str, str | bool]:
+        compact: dict[str, str | bool] = {}
+        for key in ("modelID", "modelName", "vtsModelName", "modelFileName"):
+            value = model.get(key)
+            if isinstance(value, str) and value.strip():
+                compact[key] = value.strip()
+        if "modelLoaded" in model:
+            compact["modelLoaded"] = bool(model.get("modelLoaded"))
+        return compact
+
     def get_connection_status(self) -> dict:
         config = load_live2d_config()
         with self._lock:
@@ -381,6 +408,9 @@ class Live2DConnection:
                 "websockets_available": self._check_websockets_available(),
                 "available_hotkey_count": len(self._available_hotkeys),
                 "available_expression_count": len(self._available_expressions),
+                "available_model_count": len(self._available_models),
+                "current_model": dict(self._current_model),
+                "available_models": [dict(model) for model in self._available_models[:12]],
             }
 
     @staticmethod
