@@ -79,11 +79,20 @@ The core product surface should be:
 - The companion runtime state now covers text-input listening, thinking, speaking, idle/offline, and Video Companion session presence; listening is only shown when chat input is actually enabled.
 - The embodiment editor shows the current Live2D runtime/action mapping and expression map as read-only binding context, without expanding the old avatar system.
 - The self-use Video Companion control shows external path, config, bridge, and session presence as status only; camera, microphone, and video session UI remain owned by the external project.
+- Video Companion status now surfaces the latest saved external observation/summary from `world_observations`, so the embodied workspace reflects bridge writeback without owning the video pipeline.
 - The self-use chat panel shows an API gate near the composer so model calls stay visibly disabled until `self_use.chat_enabled` and provider credentials are intentionally ready.
 - The self-use rail exposes a compact integration panel for API chat, Live2D, Voice, and external Video Companion readiness without collecting or storing API keys in the browser.
 - `/api/companion/status` now returns an authoritative `chat_gate` object so the UI can distinguish disabled-by-config, missing-key, ready, and ready-but-still-manually-closed states.
+- The self-use API chat gate can now be opened or closed from the LING workspace through a localhost-only endpoint; it refuses to open when the chat route or required environment key is not actually ready.
 - The first-screen companion visual is now a direct embodiment-edit entry point, keeping Live2D/preview/fallback binding centered on the character instead of burying it in legacy profile chrome.
+- The Live2D adapter now reports VTube Studio current/available model summaries, and the self-use embodiment editor can copy the current VTS model into the companion binding.
+- The self-use embodiment editor can save only Live2D/preview/fallback/voice binding fields, including one-click save of the current VTS model, without submitting the full legacy profile form.
+- Voice playback now asks the backend for a speech plan before audio generation, so the self-use runtime can show speaking chunk/style state while Live2D is in the speaking action.
 - The self-use shell now funnels chat completion, speech playback, and Video Companion session changes through one runtime sync path that updates the stage badge, dock state, companion status, and Live2D runtime mapping together.
+- The embodied first screen now exposes direct actions for editing binding, Live2D connection, API chat gate, and external Video Companion session entry/control instead of requiring the legacy profile or secondary dock paths first.
+- Local self-use mode can toggle `live2d.enabled` and `video_companion.enabled` from the LING integration UI/first screen, keeping API keys and external video runtime ownership out of the browser.
+- The integration UI can now save allowlisted local connection parameters (`live2d.vts_ws_url`, Video Companion base/ws URLs and external project path) through localhost-only self-use endpoints instead of requiring manual config edits.
+- Live2D connection settings now have a save-and-connect path, and Video Companion settings have a save-and-check path with persistent per-card feedback, so local setup no longer ends at a silent config write.
 
 ## Definition Of Not Done
 

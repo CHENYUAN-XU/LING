@@ -129,6 +129,9 @@ def verify_live2d_connection() -> None:
     assert status["connected"] is False
     assert status["available_hotkey_count"] == 0
     assert status["available_expression_count"] == 0
+    assert status["available_model_count"] == 0
+    assert status["current_model"] == {}
+    assert status["available_models"] == []
 
 
 def verify_live2d_token_store() -> None:
@@ -168,6 +171,15 @@ def verify_live2d_auth_and_capabilities() -> None:
                         return {"availableHotkeys": [{"name": "Nod", "hotkeyID": "hk-nod"}]}
                     if message_type == "ExpressionStateRequest":
                         return {"expressions": [{"file": "Smile.exp3.json", "active": False}]}
+                    if message_type == "CurrentModelRequest":
+                        return {"modelLoaded": True, "modelName": "Mio Main", "modelID": "model-mio-main"}
+                    if message_type == "AvailableModelsRequest":
+                        return {
+                            "availableModels": [
+                                {"modelLoaded": True, "modelName": "Mio Main", "modelID": "model-mio-main"},
+                                {"modelName": "Mio Casual", "modelID": "model-mio-casual"},
+                            ]
+                        }
                     if message_type == "HotkeyTriggerRequest":
                         return {"hotkeyID": payload.get("hotkeyID")}
                     if message_type == "ExpressionActivationRequest":
@@ -192,6 +204,12 @@ def verify_live2d_auth_and_capabilities() -> None:
                 await conn._refresh_capabilities_async()
                 assert conn._find_hotkey_id("Nod") == "hk-nod"
                 assert conn._find_hotkey_id("hk-nod") == "hk-nod"
+                status = conn.get_connection_status()
+                assert status["current_model"]["modelID"] == "model-mio-main"
+                assert status["current_model"]["modelName"] == "Mio Main"
+                assert status["current_model"]["modelLoaded"] is True
+                assert status["available_model_count"] == 2
+                assert status["available_models"][1]["modelID"] == "model-mio-casual"
 
                 conn._connected = True
                 conn._authenticated = True
@@ -215,6 +233,9 @@ def verify_live2d_auth_and_capabilities() -> None:
                 assert status["authenticated"] is False
                 assert status["available_hotkey_count"] == 0
                 assert status["available_expression_count"] == 0
+                assert status["available_model_count"] == 0
+                assert status["current_model"] == {}
+                assert status["available_models"] == []
             finally:
                 live2d_mod.LIVE2D_TOKEN_PATH = original_path
 

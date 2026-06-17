@@ -90,7 +90,7 @@ def get_recent_world_observations(
                    metadata_json, created_at
             FROM world_observations
             WHERE {where}
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT ?
             """,
             params,

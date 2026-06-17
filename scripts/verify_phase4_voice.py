@@ -191,6 +191,17 @@ def verify_server_endpoints(user_id: int) -> None:
     plan = server.voice_speech_plan(server.VoiceTTSReplyRequest(reply_text="你好。今天怎么样？"), user)
     assert len(plan["utterances"]) >= 2
     assert len(plan["tts_params"]) == len(plan["utterances"])
+    assert plan["chunk_count"] == len(plan["utterances"])
+    assert plan["styles"] == []
+    assert plan["expression_labels"] == []
+
+    styled_plan = server.voice_speech_plan(
+        server.VoiceTTSReplyRequest(reply_text="你好。", expression_labels=["微笑"]),
+        user,
+    )
+    assert styled_plan["chunk_count"] == 1
+    assert styled_plan["styles"] == ["cheerful"]
+    assert styled_plan["expression_labels"] == ["微笑"]
 
 
 def verify_server_voice_error_detail(user_id: int) -> None:

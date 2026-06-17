@@ -87,6 +87,8 @@ let state = {
   voicePlaying: null,
   voiceError: null,
   voiceErrorMessageId: null,
+  voicePlan: null,
+  voicePlanMessageId: null,
   live2dStatus: null,
   presenceStatus: null,
   consents: [],
@@ -96,6 +98,12 @@ let state = {
   videoCompanionStatus: null,
   companionStatus: null,
   llmStatus: null,
+  chatGateSaving: false,
+  chatGateError: null,
+  integrationFlagSaving: "",
+  integrationFlagError: null,
+  integrationConfigSaving: "",
+  integrationConfigFeedback: {},
   privacyPolicy: null,
   cameraPreviewActive: false,
 };
@@ -1914,6 +1922,7 @@ function selfUseApiReadiness() {
   return {
     ready: enabled && configured,
     enabled,
+    selfUseEnabled: !!gate.self_use_enabled,
     configured,
     canEnable: !!gate.can_enable,
     reason: gate.reason || "",
@@ -1935,12 +1944,19 @@ function renderSelfUseApiGate() {
     : apiState.enabled && apiState.missing
       ? `缺少 ${apiState.missing}`
       : "保持关闭，避免未接 API 时误触发模型调用";
+  const action = apiState.ready
+    ? h("button", { type: "button", class: "ghost compact", text: state.chatGateSaving ? "关闭中..." : "关闭", disabled: state.chatGateSaving, onclick: () => setSelfUseChatGate(false) })
+    : apiState.canEnable
+      ? h("button", { type: "button", class: "primary compact", text: state.chatGateSaving ? "开启中..." : "开启对话", disabled: state.chatGateSaving, onclick: () => setSelfUseChatGate(true) })
+      : null;
   return h("section", { class: `self-use-api-gate ${tone}` }, [
     h("span", { class: "self-use-api-dot" }),
     h("div", {}, [
       h("strong", { text: apiState.ready ? "对话可用" : "对话暂未启用" }),
       h("small", { text: `${apiState.text} · ${detail}` }),
+      state.chatGateError ? h("small", { class: "danger-text", text: state.chatGateError }) : null,
     ]),
+    action,
   ]);
 }
 
@@ -1993,6 +2009,11 @@ function renderSelfUseApiSetupCard() {
     ["Key env", gate.requires_api_key || llm.requires_api_key ? (gate.api_key_env || llm.api_key_env || "missing") : "not required"],
     ["Env state", apiState.missing || (gate.requires_api_key || llm.requires_api_key ? "present" : "local")],
   ];
+  const action = apiState.ready
+    ? h("button", { type: "button", class: "ghost compact", text: state.chatGateSaving ? "关闭中..." : "关闭对话", disabled: state.chatGateSaving, onclick: () => setSelfUseChatGate(false) })
+    : apiState.canEnable
+      ? h("button", { type: "button", class: "primary compact", text: state.chatGateSaving ? "开启中..." : "开启对话", disabled: state.chatGateSaving, onclick: () => setSelfUseChatGate(true) })
+      : null;
   return h("section", { class: `self-use-integration-card ${gateTone}` }, [
     h("div", { class: "self-use-integration-card-head" }, [
       h("div", {}, [
@@ -2002,6 +2023,8 @@ function renderSelfUseApiSetupCard() {
       h("span", { class: `awareness-status ${gateTone}`, text: apiState.ready ? "ready" : apiState.enabled ? "waiting" : "off" }),
     ]),
     h("div", { class: "self-use-integration-rows" }, rows.map(([label, value]) => renderSelfUseIntegrationRow(label, value))),
+    action ? h("div", { class: "self-use-integration-actions" }, [action]) : null,
+    state.chatGateError ? h("small", { class: "danger-text", text: state.chatGateError }) : null,
     h("small", { class: "muted", text: apiState.ready ? "对话输入会使用当前 chat route。" : "对话入口保持锁定，直到 chat gate 与密钥状态同时就绪。" }),
   ]);
 }
@@ -2023,9 +2046,22 @@ function renderSelfUseLive2dSetupCard() {
   const connected = live2dConnected();
   const tone = connected ? "ok" : enabled ? "waiting" : "off";
   const actions = state.companionStatus?.live2d_actions || {};
+  const currentModel = live2dCurrentModelBinding();
+  const configKey = "live2d";
+  const configFeedback = integrationConfigFeedback(configKey);
+  const vtsUrlInput = h("input", {
+    value: state.live2dStatus?.vts_ws_url || "ws://127.0.0.1:8002",
+    placeholder: "ws://127.0.0.1:8002",
+  });
+  const configStatus = h("small", {
+    class: "save-status" + (configFeedback.tone === "error" ? " danger-text" : ""),
+    text: configFeedback.text,
+  });
   const rows = [
     ["Config", enabled ? "enabled" : "disabled"],
     ["VTube Studio", connected ? "connected" : "offline"],
+    ["Current", currentModel.label || "none"],
+    ["Models", String(state.live2dStatus?.available_model_count ?? 0)],
     ["Model id", embodiment.live2dModelId || "unbound"],
     ["Idle", actions.idle_expression || "Default"],
     ["Listen", actions.listening_expression || "Listening"],
@@ -2041,13 +2077,41 @@ function renderSelfUseLive2dSetupCard() {
       h("span", { class: `awareness-status ${tone}`, text: connected ? "ready" : enabled ? "waiting" : "off" }),
     ]),
     h("div", { class: "self-use-integration-rows" }, rows.map(([label, value]) => renderSelfUseIntegrationRow(label, value))),
+    h("label", { class: "self-use-integration-field" }, [
+      h("small", { text: "VTS WebSocket" }),
+      vtsUrlInput,
+    ]),
     h("div", { class: "self-use-integration-actions" }, [
+      h("button", {
+        type: "button",
+        class: "ghost compact",
+        text: "保存地址",
+        disabled: state.integrationConfigSaving === configKey,
+        onclick: () => setSelfUseIntegrationConfig({ "live2d.vts_ws_url": vtsUrlInput.value }, configStatus),
+      }),
+      h("button", {
+        type: "button",
+        class: "compact",
+        text: connected ? "保存并重连" : "保存并连接",
+        disabled: !enabled || state.integrationConfigSaving === configKey,
+        title: enabled ? "" : "先启用 Live2D 配置",
+        onclick: () => saveLive2dConfigAndConnect(vtsUrlInput.value),
+      }),
+      h("button", {
+        type: "button",
+        class: enabled ? "ghost compact" : "compact",
+        text: integrationFlagButtonText("live2d", enabled),
+        disabled: state.integrationFlagSaving === "live2d",
+        onclick: () => setSelfUseIntegrationFlag("live2d", !enabled),
+      }),
       h("button", { type: "button", class: "ghost compact", text: "编辑形象", onclick: () => {
         state.integrationOpen = false;
         openPersonaEditor();
       } }),
       enabled ? h("button", { type: "button", class: "compact", text: connected ? "重连" : "连接", onclick: live2dConnect }) : null,
+      configStatus,
     ]),
+    state.integrationFlagError ? h("small", { class: "danger-text", text: state.integrationFlagError }) : null,
   ]);
 }
 
@@ -2083,11 +2147,22 @@ function renderSelfUseVideoSetupCard() {
   const stateInfo = videoCompanionState();
   const pathState = videoCompanionPathState(config);
   const sessionActive = !!status.status?.session_active;
+  const recent = videoCompanionRecentObservation();
+  const configKey = "video_companion";
+  const configFeedback = integrationConfigFeedback(configKey);
+  const baseUrlInput = h("input", { value: config.base_url || "http://127.0.0.1:8782", placeholder: "http://127.0.0.1:8782" });
+  const wsUrlInput = h("input", { value: config.ws_url || "ws://127.0.0.1:8782/ws", placeholder: "ws://127.0.0.1:8782/ws" });
+  const projectPathInput = h("input", { value: config.project_path || "", placeholder: "E:\\视觉\\video-companion" });
+  const configStatus = h("small", {
+    class: "save-status" + (configFeedback.tone === "error" ? " danger-text" : ""),
+    text: configFeedback.text,
+  });
   const rows = [
     ["Config", status.enabled ? "enabled" : "disabled"],
     ["Path", pathState.text],
     ["Bridge", status.connected ? "connected" : "offline"],
     ["Session", sessionActive ? "active" : "idle"],
+    ["Latest", recent.text],
     ["Base URL", config.base_url || "unset"],
   ];
   return h("section", { class: `self-use-integration-card ${stateInfo.tone}` }, [
@@ -2099,14 +2174,50 @@ function renderSelfUseVideoSetupCard() {
       h("span", { class: `awareness-status ${stateInfo.tone}`, text: sessionActive ? "session" : stateInfo.text }),
     ]),
     h("div", { class: "self-use-integration-rows" }, rows.map(([label, value]) => renderSelfUseIntegrationRow(label, value))),
+    h("div", { class: "self-use-integration-field-grid" }, [
+      h("label", { class: "self-use-integration-field" }, [h("small", { text: "Base URL" }), baseUrlInput]),
+      h("label", { class: "self-use-integration-field" }, [h("small", { text: "WS URL" }), wsUrlInput]),
+      h("label", { class: "self-use-integration-field wide" }, [h("small", { text: "Project path" }), projectPathInput]),
+    ]),
     h("div", { class: "self-use-integration-actions" }, [
+      h("button", {
+        type: "button",
+        class: "ghost compact",
+        text: "保存地址",
+        disabled: state.integrationConfigSaving === configKey,
+        onclick: () => setSelfUseIntegrationConfig({
+          "video_companion.base_url": baseUrlInput.value,
+          "video_companion.ws_url": wsUrlInput.value,
+          "video_companion.project_path": projectPathInput.value,
+        }, configStatus),
+      }),
+      h("button", {
+        type: "button",
+        class: "compact",
+        text: "保存并检测",
+        disabled: state.integrationConfigSaving === configKey,
+        onclick: () => saveVideoCompanionConfigAndCheck({
+          "video_companion.base_url": baseUrlInput.value,
+          "video_companion.ws_url": wsUrlInput.value,
+          "video_companion.project_path": projectPathInput.value,
+        }),
+      }),
+      h("button", {
+        type: "button",
+        class: status.enabled ? "ghost compact" : "compact",
+        text: integrationFlagButtonText("video_companion", status.enabled),
+        disabled: state.integrationFlagSaving === "video_companion",
+        onclick: () => setSelfUseIntegrationFlag("video_companion", !status.enabled),
+      }),
       h("button", { type: "button", class: "ghost compact", text: "打开", onclick: openVideoCompanionPage }),
       h("button", { type: "button", class: "ghost compact", text: "刷新", onclick: async () => {
         await loadAwarenessStatus();
         await loadCompanionStatus();
         renderShell();
       } }),
+      configStatus,
     ]),
+    state.integrationFlagError ? h("small", { class: "danger-text", text: state.integrationFlagError }) : null,
   ]);
 }
 
@@ -2184,6 +2295,7 @@ function renderSelfUseCompanionDock(persona) {
     ["Actions", companionActionSummary()],
     ["Live2D", embodiment.live2dModelId || "未绑定"],
     ["Voice", companionVoiceSummary(embodiment)],
+    ["Speech", companionSpeechSummary()],
     ["LLM", llmStatusText()],
     ["Video", videoCompanionStatusText()],
   ];
@@ -2224,6 +2336,14 @@ function companionVoiceSummary(embodiment) {
   if (!embodiment.voiceProfile) return "未绑定";
   if (voice.available) return embodiment.voiceProfile;
   return voice.error || (voice.enabled ? "provider 未就绪" : "未启用");
+}
+
+function companionSpeechSummary() {
+  const plan = state.voicePlan || {};
+  const count = Number(plan.chunk_count || (plan.utterances || []).length || 0);
+  if (!state.voicePlaying || !count) return "idle";
+  const styles = (plan.styles || []).filter(Boolean);
+  return styles.length ? `${count} chunk / ${styles[0]}` : `${count} chunk`;
 }
 
 function renderSelfUseActionControls() {
@@ -2293,6 +2413,18 @@ function live2dRuntimeResultText(result, fallbackState) {
   return result.reason || "not applied";
 }
 
+function videoCompanionRecentObservation() {
+  const item = state.videoCompanionStatus?.recent_observation || state.companionStatus?.video_companion?.recent_observation || null;
+  if (!item) return { text: "none", title: "" };
+  const type = String(item.observation_type || "observation").trim();
+  const content = String(item.content || "").replace(/\s+/g, " ").trim();
+  const text = content ? `${type}: ${content}` : type;
+  return {
+    text: text.length > 96 ? `${text.slice(0, 93)}...` : text,
+    title: text,
+  };
+}
+
 function renderSelfUseVideoCompanionControl() {
   const status = state.videoCompanionStatus || {};
   const config = status.config || {};
@@ -2301,6 +2433,7 @@ function renderSelfUseVideoCompanionControl() {
   const canControl = !!status.enabled && !!status.connected;
   const statusEl = h("small", { class: "save-status" });
   const pathState = videoCompanionPathState(config);
+  const recent = videoCompanionRecentObservation();
 
   return h("section", { class: `self-use-video-control ${stateInfo.tone}` }, [
     h("div", { class: "self-use-video-head" }, [
@@ -2318,6 +2451,11 @@ function renderSelfUseVideoCompanionControl() {
       class: `self-use-video-path ${pathState.tone}`,
       text: pathState.text,
       title: config.project_path || "",
+    }),
+    h("small", {
+      class: "self-use-video-recent muted",
+      text: `最近回写：${recent.text}`,
+      title: recent.title,
     }),
     renderVideoCompanionPresenceGrid(status, stateInfo, pathState),
     h("div", { class: "self-use-video-actions" }, [
@@ -2442,15 +2580,64 @@ function renderCompanionStage(persona) {
         presenceAvailable() ? h("span", { class: "companion-mode-pill", text: presenceStatusText(presenceStatusKey()) }) : null,
       ]),
     ]),
-    live2dEnabled ? h("div", { class: "companion-stage-actions" }, [
+    renderCompanionStageActions({ live2dEnabled, live2dConnected }),
+  ]);
+}
+
+function renderCompanionStageActions({ live2dEnabled, live2dConnected }) {
+  if (!selfUseMode()) {
+    return live2dEnabled ? h("div", { class: "companion-stage-actions" }, [
       live2dConnected
         ? h("button", { type: "button", class: "ghost compact", text: "断开", onclick: live2dDisconnect })
         : h("button", { type: "button", class: "compact", text: "连接 Live2D", onclick: live2dConnect }),
       live2dConnected
         ? h("button", { type: "button", class: "ghost compact", text: "微笑", onclick: live2dTestExpression })
         : null,
-    ]) : null,
-  ]);
+    ]) : null;
+  }
+
+  const statusEl = h("small", { class: "save-status companion-stage-action-status" });
+  const apiState = selfUseApiReadiness();
+  const video = state.videoCompanionStatus || {};
+  const videoActive = !!video.status?.session_active;
+  const videoCanControl = !!video.enabled && !!video.connected;
+  const actions = [
+    h("button", { type: "button", class: "ghost compact", text: "编辑形象", onclick: openPersonaEditor }),
+    live2dEnabled
+      ? live2dConnected
+        ? h("button", { type: "button", class: "ghost compact", text: "断开 Live2D", onclick: live2dDisconnect })
+        : h("button", { type: "button", class: "compact", text: "连接 Live2D", onclick: live2dConnect })
+      : h("button", {
+        type: "button",
+        class: "compact",
+        text: integrationFlagButtonText("live2d", false),
+        disabled: state.integrationFlagSaving === "live2d",
+        onclick: () => setSelfUseIntegrationFlag("live2d", true),
+      }),
+    live2dConnected
+      ? h("button", { type: "button", class: "ghost compact", text: "微笑", onclick: live2dTestExpression })
+      : null,
+    apiState.ready
+      ? h("button", { type: "button", class: "ghost compact", text: state.chatGateSaving ? "关闭中..." : "关闭对话", disabled: state.chatGateSaving, onclick: () => setSelfUseChatGate(false) })
+      : apiState.canEnable
+        ? h("button", { type: "button", class: "primary compact", text: state.chatGateSaving ? "开启中..." : "开启对话", disabled: state.chatGateSaving, onclick: () => setSelfUseChatGate(true) })
+        : null,
+    !video.enabled
+      ? h("button", {
+        type: "button",
+        class: "compact",
+        text: integrationFlagButtonText("video_companion", false),
+        disabled: state.integrationFlagSaving === "video_companion",
+        onclick: () => setSelfUseIntegrationFlag("video_companion", true),
+      })
+      : videoCanControl
+      ? videoActive
+        ? h("button", { type: "button", class: "ghost compact", text: "停止视频", onclick: () => stopVideoCompanion(statusEl) })
+        : h("button", { type: "button", class: "compact", text: "启动视频", onclick: () => startVideoCompanion(statusEl) })
+      : h("button", { type: "button", class: "ghost compact", text: "打开视频", onclick: openVideoCompanionPage }),
+    statusEl,
+  ].filter(Boolean);
+  return h("div", { class: "companion-stage-actions self-use-stage-actions" }, actions);
 }
 
 function llmConfigured() {
@@ -3227,6 +3414,13 @@ function detailLine(label, value) {
 
 function renderSelfUseEmbodimentEditor(persona, fields) {
   const embodiment = personaEmbodimentProfile(persona);
+  const bindingStatus = h("small", { class: "save-status" });
+  const saveBinding = () => saveSelfUseEmbodimentBinding({
+    live2d_model_id: fields.live2dModelId.value,
+    live2d_preview_url: fields.live2dPreviewUrl.value,
+    fallback_image_url: fields.fallbackImageUrl.value,
+    voice_profile: fields.voiceProfile.value,
+  }, bindingStatus);
   return h("section", { class: "self-use-embodiment-editor" }, [
     h("div", { class: "self-use-embodiment-editor-head" }, [
       h("div", {}, [
@@ -3253,8 +3447,92 @@ function renderSelfUseEmbodimentEditor(persona, fields) {
       h("label", {}, ["Fallback 图像 URL", fields.fallbackImageUrl]),
       h("label", {}, ["声音档案", fields.voiceProfile]),
     ]),
+    h("div", { class: "self-use-embodiment-actions" }, [
+      h("button", { type: "button", class: "compact", text: "保存形象绑定", onclick: saveBinding }),
+      bindingStatus,
+    ]),
+    renderSelfUseLive2dModelPicker(fields.live2dModelId, bindingStatus),
     renderSelfUseMappingPreview(),
   ]);
+}
+
+function live2dCurrentModelBinding() {
+  const current = state.live2dStatus?.current_model || {};
+  const modelId = String(current.modelID || current.modelName || current.vtsModelName || current.modelFileName || "").trim();
+  const label = [current.modelName || current.vtsModelName || current.modelFileName || "", current.modelID || ""]
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .join(" / ");
+  return {
+    id: modelId,
+    label,
+    loaded: current.modelLoaded !== false,
+  };
+}
+
+function renderSelfUseLive2dModelPicker(live2dModelIdField, statusEl = null) {
+  const current = live2dCurrentModelBinding();
+  const count = Number(state.live2dStatus?.available_model_count || 0);
+  const statusText = live2dConnected()
+    ? current.label
+      ? `VTube Studio 当前模型：${current.label}`
+      : "已连接 VTube Studio，但没有读取到已加载模型"
+    : live2dAvailable()
+      ? "Live2D 已启用，先连接 VTube Studio 后可读取当前模型"
+      : "Live2D 未启用，仍可先手动填写模型 ID";
+  return h("section", { class: "self-use-live2d-model-picker" }, [
+    h("div", {}, [
+      h("strong", { text: "VTube Studio 当前模型" }),
+      h("small", { class: "muted", text: count ? `${statusText} · ${count} models` : statusText }),
+    ]),
+    h("button", {
+      type: "button",
+      class: "ghost compact",
+      text: "使用并保存当前模型",
+      disabled: current.id ? null : "disabled",
+      onclick: async () => {
+        live2dModelIdField.value = current.id;
+        live2dModelIdField.focus();
+        await saveSelfUseEmbodimentBinding({ live2d_model_id: current.id }, statusEl);
+      },
+    }),
+  ]);
+}
+
+async function saveSelfUseEmbodimentBinding(payload, statusEl = null) {
+  if (!selfUseMode() || !state.activePersona?.id) return;
+  if (statusEl) statusEl.textContent = "保存中...";
+  try {
+    const data = await api(`/api/personas/${state.activePersona.id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+    applyUpdatedPersona(data.persona);
+    await refreshEmbodimentRuntimeStatus();
+    if (statusEl) statusEl.textContent = "已保存";
+    renderShell();
+  } catch (err) {
+    if (statusEl) statusEl.textContent = err.message || "保存失败";
+  }
+}
+
+function applyUpdatedPersona(persona) {
+  if (!persona) return;
+  state.activePersona = persona;
+  delete state.personaGrowth[Number(persona.id)];
+  state.personas = state.personas.map((item) => (
+    Number(item.id) === Number(persona.id) ? persona : item
+  ));
+  state.conversations = state.conversations.map((item) => (
+    Number(item.persona_id) === Number(persona.id)
+      ? { ...item, persona_name: persona.name, persona_avatar_url: persona.avatar_url }
+      : item
+  ));
+  state.archivedConversations = state.archivedConversations.map((item) => (
+    Number(item.persona_id) === Number(persona.id)
+      ? { ...item, persona_name: persona.name, persona_avatar_url: persona.avatar_url }
+      : item
+  ));
 }
 
 function renderVideoCompanionPresenceGrid(status, stateInfo, pathState) {
@@ -3448,21 +3726,7 @@ function renderPersonaEditForm(persona) {
               voice_profile: voiceProfile.value,
             }),
           });
-          state.activePersona = data.persona;
-          delete state.personaGrowth[Number(data.persona.id)];
-          state.personas = state.personas.map((item) => (
-            Number(item.id) === Number(data.persona.id) ? data.persona : item
-          ));
-          state.conversations = state.conversations.map((item) => (
-            Number(item.persona_id) === Number(data.persona.id)
-              ? { ...item, persona_name: data.persona.name, persona_avatar_url: data.persona.avatar_url }
-              : item
-          ));
-          state.archivedConversations = state.archivedConversations.map((item) => (
-            Number(item.persona_id) === Number(data.persona.id)
-              ? { ...item, persona_name: data.persona.name, persona_avatar_url: data.persona.avatar_url }
-              : item
-          ));
+          applyUpdatedPersona(data.persona);
           await refreshEmbodimentRuntimeStatus();
           state.editingPersona = false;
           state.personaPanelOpen = false;
@@ -4448,6 +4712,14 @@ function renderPresencePill() {
   ]);
 }
 
+function voicePlaybackDetail() {
+  const plan = state.voicePlan || {};
+  const count = Number(plan.chunk_count || (plan.utterances || []).length || 0);
+  if (!count) return "正在播放语音";
+  const styles = (plan.styles || []).filter(Boolean);
+  return styles.length ? `正在播放语音：${count} 段 / ${styles[0]}` : `正在播放语音：${count} 段`;
+}
+
 function companionRuntimeState() {
   const video = state.videoCompanionStatus || {};
   const serverRuntime = state.companionStatus?.runtime;
@@ -4455,10 +4727,16 @@ function companionRuntimeState() {
   const live2dReady = live2dAvailable()
     && !!(state.live2dStatus?.connected && state.live2dStatus?.authenticated && !state.live2dStatus?.last_error);
   if (video.enabled && video.connected && video.status?.session_active) {
-    return { key: "video", label: "视频会话中", detail: "Video Companion 正在接管实时感知", ready: true };
+    const recent = videoCompanionRecentObservation();
+    return {
+      key: "video",
+      label: "视频会话中",
+      detail: recent.title || "Video Companion 正在接管实时感知",
+      ready: true,
+    };
   }
   if (state.sending) return { key: "thinking", label: "思考中", detail: "正在组织回应", ready: true };
-  if (state.voicePlaying) return { key: "speaking", label: "回应中", detail: "正在播放语音", ready: true };
+  if (state.voicePlaying) return { key: "speaking", label: "回应中", detail: voicePlaybackDetail(), ready: true };
   if (state.composerFocused && !chatInputBlocked()) {
     return {
       key: "listening",
@@ -4872,6 +5150,159 @@ async function loadCompanionStatus() {
   }
 }
 
+async function setSelfUseChatGate(enabled) {
+  if (state.chatGateSaving) return;
+  state.chatGateSaving = true;
+  state.chatGateError = null;
+  renderShell();
+  try {
+    const data = await api("/api/self-use/chat-gate", {
+      method: "POST",
+      body: JSON.stringify({ enabled: !!enabled }),
+    });
+    if (data.self_use) state.selfUse = data.self_use;
+    if (state.companionStatus) {
+      state.companionStatus = {
+        ...state.companionStatus,
+        self_use: data.self_use || state.companionStatus.self_use,
+        chat_gate: data.chat_gate || state.companionStatus.chat_gate,
+      };
+    }
+    await syncCompanionRuntime({ reload: true, applyLive2d: true });
+  } catch (err) {
+    state.chatGateError = err.message || "更新对话闸门失败";
+  } finally {
+    state.chatGateSaving = false;
+    renderShell();
+  }
+}
+
+function integrationFlagButtonText(key, enabled) {
+  if (state.integrationFlagSaving === key) return enabled ? "关闭中..." : "启用中...";
+  if (key === "live2d") return enabled ? "关闭 Live2D 配置" : "启用 Live2D 配置";
+  if (key === "video_companion") return enabled ? "关闭视频接入" : "启用视频接入";
+  return enabled ? "关闭" : "启用";
+}
+
+async function setSelfUseIntegrationFlag(key, enabled) {
+  if (state.integrationFlagSaving) return;
+  state.integrationFlagSaving = key;
+  state.integrationFlagError = null;
+  renderShell();
+  try {
+    const data = await api("/api/self-use/integration-flag", {
+      method: "POST",
+      body: JSON.stringify({ key, enabled: !!enabled }),
+    });
+    if (data.companion_status) {
+      state.companionStatus = data.companion_status;
+      if (data.companion_status.llm) state.llmStatus = data.companion_status.llm;
+      if (data.companion_status.video_companion) state.videoCompanionStatus = data.companion_status.video_companion;
+    }
+    await refreshEmbodimentRuntimeStatus();
+  } catch (err) {
+    state.integrationFlagError = err.message || "更新接入配置失败";
+  } finally {
+    state.integrationFlagSaving = "";
+    renderShell();
+  }
+}
+
+function integrationConfigFeedback(key) {
+  const item = state.integrationConfigFeedback?.[key];
+  if (!item) return { text: "", tone: "" };
+  if (typeof item === "string") return { text: item, tone: "" };
+  return { text: item.text || "", tone: item.tone || "" };
+}
+
+function setIntegrationConfigFeedback(key, text, tone = "") {
+  if (!key) return;
+  state.integrationConfigFeedback = {
+    ...(state.integrationConfigFeedback || {}),
+    [key]: { text, tone },
+  };
+}
+
+function integrationConfigFeedbackKey(values) {
+  const keys = Object.keys(values || {});
+  if (keys.some((key) => key.startsWith("live2d."))) return "live2d";
+  if (keys.some((key) => key.startsWith("video_companion."))) return "video_companion";
+  return "config";
+}
+
+function applyCompanionStatus(data) {
+  if (!data?.companion_status) return;
+  state.companionStatus = data.companion_status;
+  if (data.companion_status.llm) state.llmStatus = data.companion_status.llm;
+  if (data.companion_status.video_companion) state.videoCompanionStatus = data.companion_status.video_companion;
+}
+
+async function setSelfUseIntegrationConfig(values, statusEl = null, options = {}) {
+  const feedbackKey = options.feedbackKey || integrationConfigFeedbackKey(values);
+  const renderAfter = options.render !== false;
+  state.integrationConfigSaving = feedbackKey;
+  setIntegrationConfigFeedback(feedbackKey, "保存中...");
+  if (statusEl) statusEl.textContent = "保存中...";
+  state.integrationFlagError = null;
+  try {
+    const data = await api("/api/self-use/integration-config", {
+      method: "POST",
+      body: JSON.stringify({ values }),
+    });
+    applyCompanionStatus(data);
+    await refreshEmbodimentRuntimeStatus();
+    setIntegrationConfigFeedback(feedbackKey, "已保存");
+    if (statusEl) statusEl.textContent = "已保存";
+    return data;
+  } catch (err) {
+    const message = err.message || "保存接入参数失败";
+    state.integrationFlagError = message;
+    setIntegrationConfigFeedback(feedbackKey, message, "error");
+    if (statusEl) statusEl.textContent = message;
+    return null;
+  } finally {
+    state.integrationConfigSaving = "";
+    if (renderAfter) renderShell();
+  }
+}
+
+async function saveLive2dConfigAndConnect(vtsWsUrl) {
+  const feedbackKey = "live2d";
+  const data = await setSelfUseIntegrationConfig(
+    { "live2d.vts_ws_url": vtsWsUrl },
+    null,
+    { feedbackKey, render: false },
+  );
+  if (!data) {
+    renderShell();
+    return;
+  }
+  if (!live2dAvailable()) {
+    setIntegrationConfigFeedback(feedbackKey, "已保存；请先启用 Live2D 配置");
+    renderShell();
+    return;
+  }
+  await live2dConnect({ feedbackKey });
+}
+
+async function saveVideoCompanionConfigAndCheck(values) {
+  const feedbackKey = "video_companion";
+  const data = await setSelfUseIntegrationConfig(values, null, { feedbackKey, render: false });
+  if (!data) {
+    renderShell();
+    return;
+  }
+  const video = state.videoCompanionStatus || {};
+  if (!video.enabled) {
+    setIntegrationConfigFeedback(feedbackKey, "已保存；请先启用 Video Companion 配置");
+  } else if (video.connected) {
+    setIntegrationConfigFeedback(feedbackKey, video.status?.session_active ? "已保存；外部会话运行中" : "已保存；外部服务已连接");
+  } else {
+    setIntegrationConfigFeedback(feedbackKey, video.error ? `已保存；未连上：${video.error}` : "已保存；等待外部服务启动");
+  }
+  renderShell();
+}
+
 async function refreshEmbodimentRuntimeStatus() {
   await Promise.all([
     loadVoiceConfig(),
@@ -4885,6 +5316,28 @@ function voiceAvailable() {
   return !!(state.voiceConfig && state.voiceConfig.enabled && state.voiceConfig.available);
 }
 
+function messageExpressionLabels(message) {
+  return (message.expressions || []).map(function(e) {
+    return e.label || e.expression_type;
+  }).filter(Boolean);
+}
+
+async function loadVoiceSpeechPlan(text, expressionLabels, messageId) {
+  try {
+    const plan = await api("/api/voice/speech-plan", {
+      method: "POST",
+      body: JSON.stringify({ reply_text: text, expression_labels: expressionLabels }),
+    });
+    state.voicePlan = plan;
+    state.voicePlanMessageId = messageId;
+    return plan;
+  } catch {
+    state.voicePlan = null;
+    state.voicePlanMessageId = null;
+    return null;
+  }
+}
+
 async function playMessageVoice(message, buttonEl) {
   if (state.voicePlaying) return;
 
@@ -4892,10 +5345,15 @@ async function playMessageVoice(message, buttonEl) {
   if (!text) return;
 
   const messageId = message.id;
+  const expressionLabels = messageExpressionLabels(message);
   state.voicePlaying = messageId;
   state.voiceError = null;
   state.voiceErrorMessageId = null;
+  state.voicePlan = null;
+  state.voicePlanMessageId = null;
+  await loadVoiceSpeechPlan(text, expressionLabels, messageId);
   applyLive2dRuntimeState("speaking");
+  renderShell();
   if (buttonEl) {
     buttonEl.textContent = "播放中...";
     buttonEl.disabled = true;
@@ -4911,7 +5369,7 @@ async function playMessageVoice(message, buttonEl) {
       method: "POST",
       credentials: isolated ? "omit" : "same-origin",
       headers: { "Content-Type": "application/json", ...headers },
-      body: JSON.stringify({ reply_text: text, expression_labels: (message.expressions || []).map(function(e) { return e.label || e.expression_type; }) }),
+      body: JSON.stringify({ reply_text: text, expression_labels: expressionLabels }),
     });
 
     if (!res.ok) {
@@ -4948,6 +5406,10 @@ async function playMessageVoice(message, buttonEl) {
   } finally {
     if (Number(state.voicePlaying) === Number(messageId)) {
       state.voicePlaying = null;
+    }
+    if (Number(state.voicePlanMessageId) === Number(messageId)) {
+      state.voicePlan = null;
+      state.voicePlanMessageId = null;
     }
     await syncCompanionRuntime({ applyLive2d: true });
     if (buttonEl) {
@@ -5022,17 +5484,21 @@ function live2dStatusClass() {
   return "error";
 }
 
-async function live2dConnect() {
-  var status = h("small", { class: "save-status" });
-  status.textContent = "正在连接 VTube Studio...";
+async function live2dConnect(options = {}) {
+  const feedbackKey = options.feedbackKey || "";
+  if (feedbackKey) setIntegrationConfigFeedback(feedbackKey, "正在连接 VTube Studio...");
   try {
     var data = await api("/api/live2d/connect", { method: "POST" });
     state.live2dStatus = data.status;
+    if (feedbackKey) {
+      setIntegrationConfigFeedback(feedbackKey, live2dConnected() ? "已连接 VTube Studio" : live2dStatusText());
+    }
     renderShell();
   } catch (err) {
     state.live2dStatus = (state.live2dStatus || {});
     state.live2dStatus.last_error = err.message;
     state.live2dStatus.connected = false;
+    if (feedbackKey) setIntegrationConfigFeedback(feedbackKey, err.message || "连接 VTube Studio 失败", "error");
     renderShell();
   }
 }
@@ -5331,6 +5797,7 @@ function resetClientState() {
     threadPanelOpen: false,
     deletedPanelOpen: false,
     privacyOpen: false,
+    integrationOpen: false,
     groupCreateOpen: false,
     groupSettingsOpen: false,
     editingConversationId: null,
@@ -5345,6 +5812,8 @@ function resetClientState() {
     voicePlaying: null,
     voiceError: null,
     voiceErrorMessageId: null,
+    voicePlan: null,
+    voicePlanMessageId: null,
     live2dStatus: null,
     presenceStatus: null,
     consents: [],
@@ -5354,6 +5823,12 @@ function resetClientState() {
     videoCompanionStatus: null,
     companionStatus: null,
     llmStatus: null,
+    chatGateSaving: false,
+    chatGateError: null,
+    integrationFlagSaving: "",
+    integrationFlagError: null,
+    integrationConfigSaving: "",
+    integrationConfigFeedback: {},
     privacyPolicy: null,
     cameraPreviewActive: false,
   };
