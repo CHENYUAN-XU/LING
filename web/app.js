@@ -2514,15 +2514,17 @@ function personaEmbodimentProfile(persona) {
   const fallbackImageUrl = String(persona?.fallback_image_url || "").trim();
   const avatarUrl = String(persona?.avatar_url || "").trim();
   const visual = [
-    ["live2d_preview_url", live2dPreviewUrl],
-    ["fallback_image_url", fallbackImageUrl],
-    ["avatar_url", avatarUrl],
+    ["live2d_preview_url", live2dPreviewUrl, "Live2D preview", "preview"],
+    ["fallback_image_url", fallbackImageUrl, "Fallback image", "fallback"],
+    ["avatar_url", avatarUrl, "Legacy fallback", "legacy"],
   ].find(([, value]) => value);
   return {
     live2dModelId: String(persona?.live2d_model_id || "").trim(),
     voiceProfile: String(persona?.voice_profile || "").trim(),
     visualUrl: visual ? visual[1] : "",
     visualSource: visual ? visual[0] : "none",
+    visualLabel: visual ? visual[2] : "Live2D pending",
+    visualTone: visual ? visual[3] : "missing",
   };
 }
 
@@ -2530,30 +2532,46 @@ function personaVisualUrl(persona) {
   return personaEmbodimentProfile(persona).visualUrl;
 }
 
+function renderCompanionVisual(persona, embodiment) {
+  const imageUrl = embodiment.visualUrl;
+  const live2dLabel = embodiment.live2dModelId ? `Model ${embodiment.live2dModelId}` : "Model unbound";
+  return h("button", {
+    type: "button",
+    class: `companion-visual ${embodiment.visualTone}`,
+    title: "编辑形象",
+    "aria-label": "编辑形象",
+    onclick: (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openPersonaEditor();
+    },
+  }, [
+    imageUrl
+      ? h("img", {
+          src: imageUrl,
+          alt: persona?.name || "LING companion",
+          onerror: (event) => {
+            event.currentTarget.closest(".companion-visual")?.classList.add("image-error");
+          },
+        })
+      : h("span", { class: "companion-visual-empty" }, [
+          h("strong", { text: "Live2D" }),
+          h("small", { text: "No preview" }),
+        ]),
+    h("span", { class: `companion-visual-source ${embodiment.visualTone}`, text: embodiment.visualLabel }),
+    h("span", { class: "companion-visual-model", text: live2dLabel }),
+  ]);
+}
+
 function renderCompanionStage(persona) {
   const embodiment = personaEmbodimentProfile(persona);
   const runtime = companionRuntimeState();
-  const imageUrl = embodiment.visualUrl;
   const live2dEnabled = live2dAvailable();
   const live2dConnected = live2dEnabled
     && !!(state.live2dStatus?.connected && state.live2dStatus?.authenticated && !state.live2dStatus?.last_error);
   const statusClass = live2dStatusClass();
-  return h("section", { class: `companion-stage ${imageUrl ? "has-image" : "no-image"}` }, [
-    h("button", {
-      type: "button",
-      class: "companion-visual",
-      title: "编辑形象",
-      "aria-label": "编辑形象",
-      onclick: (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        openPersonaEditor();
-      },
-    }, [
-      imageUrl
-        ? h("img", { src: imageUrl, alt: persona?.name || "LING companion" })
-        : h("span", { text: avatarText(persona?.name || "LING") }),
-    ]),
+  return h("section", { class: `companion-stage ${embodiment.visualUrl ? "has-image" : "no-image"}` }, [
+    renderCompanionVisual(persona, embodiment),
     h("div", { class: "companion-stage-copy" }, [
       h("p", { class: "eyebrow", text: "LING" }),
       h("h2", { text: persona?.name || "澪" }),
@@ -3433,9 +3451,15 @@ function renderSelfUseEmbodimentEditor(persona, fields) {
       }),
     ]),
     h("div", { class: "self-use-embodiment-preview" }, [
-      embodiment.visualUrl
-        ? h("img", { src: embodiment.visualUrl, alt: persona?.name || "LING companion preview" })
-        : h("div", { class: "self-use-embodiment-placeholder", text: persona?.name || "LING" }),
+      h("div", { class: `self-use-embodiment-preview-visual ${embodiment.visualTone}` }, [
+        embodiment.visualUrl
+          ? h("img", { src: embodiment.visualUrl, alt: persona?.name || "LING companion preview" })
+          : h("div", { class: "self-use-embodiment-placeholder" }, [
+              h("strong", { text: "Live2D" }),
+              h("small", { text: "No preview" }),
+            ]),
+        h("span", { class: `companion-visual-source ${embodiment.visualTone}`, text: embodiment.visualLabel }),
+      ]),
       h("div", {}, [
         h("small", { class: "muted", text: "静态图只作为 Live2D 未连接时的 preview / fallback。" }),
         h("small", { class: "muted", text: "实时视频、麦克风和视觉理解仍由外部 Video Companion 负责。" }),

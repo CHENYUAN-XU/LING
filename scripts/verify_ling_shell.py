@@ -127,6 +127,13 @@ def main() -> None:
     assert "function live2dCurrentModelBinding()" in app_js
     assert "function renderSelfUseLive2dModelPicker(live2dModelIdField, statusEl = null)" in app_js
     assert "renderSelfUseLive2dModelPicker(fields.live2dModelId, bindingStatus)" in app_js
+    assert '["live2d_preview_url", live2dPreviewUrl, "Live2D preview", "preview"]' in app_js
+    assert '["fallback_image_url", fallbackImageUrl, "Fallback image", "fallback"]' in app_js
+    assert '["avatar_url", avatarUrl, "Legacy fallback", "legacy"]' in app_js
+    assert "function renderCompanionVisual(persona, embodiment)" in app_js
+    assert "companion-visual-empty" in app_js
+    assert "companion-visual-source" in app_js
+    assert "Live2D pending" in app_js
     assert "使用并保存当前模型" in app_js
     assert "保存形象绑定" in app_js
     assert "async function saveSelfUseEmbodimentBinding(payload, statusEl = null)" in app_js
@@ -158,7 +165,7 @@ def main() -> None:
     assert "state.companionStatus?.readiness?.length" in app_js
     assert "state.companionStatus?.runtime" in app_js
     assert "async function openPersonaEditor()" in app_js
-    assert 'class: "companion-visual"' in app_js
+    assert "class: `companion-visual ${embodiment.visualTone}`" in app_js
     assert '"aria-label": "编辑形象"' in app_js
     assert "event.stopPropagation();" in app_js
     assert "openPersonaEditor();" in app_js
@@ -226,6 +233,9 @@ def main() -> None:
     assert ".companion-runtime-badge" in style_css
     assert ".companion-visual:hover" in style_css
     assert ".companion-visual:focus-visible" in style_css
+    assert ".companion-visual-source" in style_css
+    assert ".companion-visual-empty" in style_css
+    assert ".companion-visual.legacy" in style_css
     assert ".self-use-stage-actions" in style_css
     assert ".companion-stage-action-status" in style_css
     assert ".companion-runtime-badge.listening" in style_css
@@ -241,6 +251,7 @@ def main() -> None:
     assert ".self-use-embodiment-grid" in style_css
     assert ".self-use-embodiment-actions" in style_css
     assert ".self-use-live2d-model-picker" in style_css
+    assert ".self-use-embodiment-preview-visual" in style_css
     assert ".self-use-video-recent" in style_css
     assert ".self-use-mapping-preview" in style_css
     assert ".self-use-runtime-map" in style_css
@@ -262,6 +273,7 @@ def main() -> None:
     assert "embodied workspace" in roadmap
     assert "Video Companion is external" in roadmap
     assert "integration panel" in roadmap
+    assert "legacy avatar fallback" in roadmap
     assert "old Project Mnemosyne UI paths no longer dominate" in roadmap
 
     print("LING self-use shell verification passed")
