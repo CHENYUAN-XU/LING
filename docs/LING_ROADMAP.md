@@ -87,6 +87,7 @@ The core product surface should be:
 - The first-screen companion visual is now a direct embodiment-edit entry point, keeping Live2D/preview/fallback binding centered on the character instead of burying it in legacy profile chrome.
 - The Live2D adapter now reports VTube Studio current/available model summaries, and the self-use embodiment editor can copy the current VTS model into the companion binding.
 - The self-use embodiment editor can save only Live2D/preview/fallback/voice binding fields, including one-click save of the current VTS model, without submitting the full legacy profile form.
+- The first-screen visual now labels Live2D preview, fallback image, and legacy avatar fallback distinctly, with an explicit Live2D pending placeholder when no visual asset is bound.
 - Voice playback now asks the backend for a speech plan before audio generation, so the self-use runtime can show speaking chunk/style state while Live2D is in the speaking action.
 - The self-use shell now funnels chat completion, speech playback, and Video Companion session changes through one runtime sync path that updates the stage badge, dock state, companion status, and Live2D runtime mapping together.
 - The embodied first screen now exposes direct actions for editing binding, Live2D connection, API chat gate, and external Video Companion session entry/control instead of requiring the legacy profile or secondary dock paths first.
