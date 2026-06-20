@@ -42,7 +42,11 @@ function Wait-HttpHealth {
 
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 if ([string]::IsNullOrWhiteSpace($VideoPath)) {
-    $envPath = $env:MNEMOSYNE_VIDEO_COMPANION_PROJECT_PATH
+    $envPath = if ($env:LING_VIDEO_COMPANION_PROJECT_PATH) {
+        $env:LING_VIDEO_COMPANION_PROJECT_PATH
+    } else {
+        $env:MNEMOSYNE_VIDEO_COMPANION_PROJECT_PATH
+    }
     $workspaceRoot = Split-Path $ProjectRoot -Parent
     $driveRoot = [System.IO.Path]::GetPathRoot($ProjectRoot)
     $visualDirName = -join ([char]0x89c6, [char]0x89c9)
@@ -59,6 +63,13 @@ if ([string]::IsNullOrWhiteSpace($VideoPath)) {
 }
 $VideoRoot = (Resolve-Path $VideoPath).Path
 $BridgeEnabled = if ($NoBridge) { "false" } else { "true" }
+$BridgeApiKeyEnv = if ($env:LING_VIDEO_BRIDGE_API_KEY) {
+    "LING_VIDEO_BRIDGE_API_KEY"
+} elseif ($env:MNEMOSYNE_API_KEY) {
+    "MNEMOSYNE_API_KEY"
+} else {
+    "LING_VIDEO_BRIDGE_API_KEY"
+}
 $VideoConfig = Join-Path $env:TEMP "video-companion.ling.$VideoPort.yaml"
 
 @"
@@ -72,7 +83,7 @@ server:
 legacy_bridge:
   enabled: $BridgeEnabled
   api_base: "http://127.0.0.1:$MainPort"
-  api_key_env: "MNEMOSYNE_API_KEY"
+  api_key_env: "$BridgeApiKeyEnv"
   timeout: 10
   retries: 2
 "@ | Set-Content -LiteralPath $VideoConfig -Encoding UTF8
@@ -83,7 +94,8 @@ if ($DryRun) {
     Write-Host "Project root: $ProjectRoot"
     Write-Host "Video root:   $VideoRoot"
     Write-Host "Video config: $VideoConfig"
-    Write-Host "Main env:     MNEMOSYNE_VIDEO_COMPANION_ENABLED=true"
+    Write-Host "Main env:     LING_VIDEO_COMPANION_ENABLED=true"
+    Write-Host "Bridge key:   $BridgeApiKeyEnv"
     Write-Host "Main health:  http://127.0.0.1:$MainPort/api/health"
     Write-Host "Video health: http://127.0.0.1:$VideoPort/api/health"
     exit 0
@@ -91,10 +103,10 @@ if ($DryRun) {
 
 $EscapedVideoRoot = $VideoRoot.Replace("'", "''")
 $MainCommand = @"
-`$env:MNEMOSYNE_VIDEO_COMPANION_ENABLED = 'true'
-`$env:MNEMOSYNE_VIDEO_COMPANION_BASE_URL = 'http://127.0.0.1:$VideoPort'
-`$env:MNEMOSYNE_VIDEO_COMPANION_WS_URL = 'ws://127.0.0.1:$VideoPort/ws'
-`$env:MNEMOSYNE_VIDEO_COMPANION_PROJECT_PATH = '$EscapedVideoRoot'
+`$env:LING_VIDEO_COMPANION_ENABLED = 'true'
+`$env:LING_VIDEO_COMPANION_BASE_URL = 'http://127.0.0.1:$VideoPort'
+`$env:LING_VIDEO_COMPANION_WS_URL = 'ws://127.0.0.1:$VideoPort/ws'
+`$env:LING_VIDEO_COMPANION_PROJECT_PATH = '$EscapedVideoRoot'
 py -m uvicorn app.server:app --host 127.0.0.1 --port $MainPort
 "@
 $MainProcess = Start-Process -FilePath "powershell" `

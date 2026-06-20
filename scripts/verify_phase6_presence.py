@@ -32,7 +32,7 @@ def seed_user() -> int:
 def verify_runtime_state() -> None:
     import app.runtime_state as rs
 
-    assert rs.presence_enabled() is False
+    assert rs.presence_enabled() is True
 
     state = rs.RuntimeState()
     assert state.current_state == "idle"
@@ -58,6 +58,13 @@ def verify_runtime_state() -> None:
     state.set_quiet_mode(False)
     assert state.is_quiet is False
     assert state.current_state == "idle"
+    assert state.previous_state == "quiet"
+
+    state.transition_to("thinking")
+    state.set_quiet_mode(True)
+    state.set_quiet_mode(False)
+    assert state.current_state == "idle"
+    assert state.previous_state == "quiet"
 
     snapshot = state.get_snapshot()
     assert snapshot["state"] == "idle"
@@ -70,19 +77,20 @@ def verify_presence_loop() -> None:
     import app.presence_loop as pl
     import app.runtime_state as rs
 
-    assert pl.presence_enabled() is False
-
-    summary = pl.get_presence_summary()
-    assert summary["enabled"] is False
-
-    result = pl.on_user_message()
-    assert result["transition"] == "disabled"
-
     original_runtime_config = rs.load_config
     original_presence_config = pl.load_config
     original_runtime_state = rs._runtime_state
     original_scoped_states = dict(rs._runtime_states)
     try:
+        rs.load_config = lambda: {"presence": {"enabled": False}}
+        pl.load_config = lambda: {"presence": {"enabled": False}}
+        assert pl.presence_enabled() is False
+        assert pl.get_presence_summary()["enabled"] is False
+        assert pl.on_user_message()["transition"] == "disabled"
+        assert pl.on_reply_start()["transition"] == "disabled"
+        assert pl.on_reply_end()["transition"] == "disabled"
+        assert pl.on_idle()["transition"] == "disabled"
+
         rs.load_config = lambda: {"presence": {"enabled": True}}
         pl.load_config = lambda: {"presence": {"enabled": True}}
 
@@ -99,6 +107,29 @@ def verify_presence_loop() -> None:
         assert pl.on_reply_end()["current"] == "quiet"
         assert rs.get_runtime_state().current_state == "quiet"
         assert rs.get_runtime_state().is_quiet is True
+        quiet_idle = pl.on_idle()
+        assert quiet_idle["state"] == "quiet"
+        assert quiet_idle["actions"] == []
+        assert rs.get_runtime_state().current_state == "quiet"
+
+        import app.db_chat as chat
+
+        failure_state = rs.get_runtime_state(3)
+        failure_state.transition_to("speaking")
+        failure_presence = chat._finish_presence_reply(3)
+        assert failure_presence is not None
+        assert failure_presence["state"] == "idle"
+        failed_payload = chat._failed_reply_payload(
+            {"id": 1},
+            persona_id=1,
+            user_message_id=999,
+            trace_id=None,
+            stored_memories=[],
+            layered=[],
+            semantic_memories=[],
+            presence=failure_presence,
+        )
+        assert failed_payload["presence"]["state"] == "idle"
 
         rs._runtime_states.clear()
         assert pl.on_user_message(user_id=1)["current"] == "thinking"
@@ -115,15 +146,6 @@ def verify_presence_loop() -> None:
         rs._runtime_states.clear()
         rs._runtime_states.update(original_scoped_states)
 
-    result = pl.on_reply_start()
-    assert result["transition"] == "disabled"
-
-    result = pl.on_reply_end()
-    assert result["transition"] == "disabled"
-
-    result = pl.on_idle()
-    assert result["transition"] == "disabled"
-
     assert pl.detect_quiet_mode_request("别打扰我") is True
     assert pl.detect_quiet_mode_request("安静一点") is True
     assert pl.detect_quiet_mode_request("先别说话") is True
@@ -138,25 +160,29 @@ def verify_server_endpoints(user_id: int) -> None:
     user = {"id": user_id}
 
     state = server.presence_state(user)
-    assert state["enabled"] is False
+    assert state["enabled"] is True
+    assert state["runtime"]["state"] == "idle"
 
     result = server.presence_user_message(user)
-    assert result["transition"] == "disabled"
+    assert result["current"] == "thinking"
 
     result = server.presence_reply_start(user)
-    assert result["transition"] == "disabled"
+    assert result["current"] == "speaking"
 
     result = server.presence_reply_end(user)
-    assert result["transition"] == "disabled"
-
-    result = server.presence_idle(user)
-    assert result["transition"] == "disabled"
+    assert result["current"] == "idle"
 
     result = server.presence_quiet_mode(user)
-    assert result["transition"] == "disabled"
+    assert result["state"] == "quiet"
+    assert result["quiet_mode"] is True
+
+    result = server.presence_idle(user)
+    assert result["state"] == "quiet"
+    assert result["actions"] == []
 
     result = server.presence_normal_mode(user)
-    assert result["transition"] == "disabled"
+    assert result["state"] == "idle"
+    assert result["quiet_mode"] is False
 
     check = server.presence_check_quiet(
         server.PresenceQuietCheckRequest(text="别打扰我"),

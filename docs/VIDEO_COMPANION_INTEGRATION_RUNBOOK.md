@@ -1,12 +1,12 @@
 # Video Companion 接入运行手册
 
-Video Companion 已作为外部独立项目放在 `E:\视觉\video-companion`。Project Mnemosyne 不在主仓库内实现实时视频通话、连续摄像头帧理解、麦克风链路或视觉模型抽帧状态机，只通过 HTTP/WebSocket 接入外部服务。
+Video Companion 已作为外部独立项目放在 `E:\视觉\video-companion`。LING 不在主仓库内实现实时视频通话、连续摄像头帧理解、麦克风链路或视觉模型抽帧状态机，只通过 HTTP/WebSocket 接入外部服务。
 
 ## 推荐端口
 
 | 服务 | 推荐端口 | 说明 |
 | --- | --- | --- |
-| Project Mnemosyne | `8001` | 主项目、聊天、人格、记忆、接入 UI |
+| LING | `8001` | 主项目、唯一 companion、记忆与接入 UI |
 | Video Companion | `8782` | 外部实时视频服务，避免抢主项目的 `8001` |
 
 ## 主项目配置
@@ -38,7 +38,7 @@ server:
 legacy_bridge:
   enabled: true
   api_base: "http://127.0.0.1:8001"
-  api_key_env: "MNEMOSYNE_API_KEY"
+  api_key_env: "LING_VIDEO_BRIDGE_API_KEY"
   timeout: 10
   retries: 2
 ```
@@ -51,7 +51,7 @@ legacy_bridge:
 - `POST /api/video/consent`
 - `POST /api/video/turn`
 
-如果环境变量 `MNEMOSYNE_API_KEY` 已设置，主项目会要求这些 `/api/video/*` 回调带 `Authorization: Bearer <MNEMOSYNE_API_KEY>`。Video Companion 的 `legacy_bridge.api_key_env` 默认也是 `MNEMOSYNE_API_KEY`，所以两边用同一个环境变量即可。未设置该变量时，本机开发模式允许无 token 回调。
+推荐两边设置同一个 `LING_VIDEO_BRIDGE_API_KEY`，主项目会要求 `/api/video/*` 回调带 `Authorization: Bearer <token>`。为兼容既有外部配置，主项目仍接受旧环境变量名 `MNEMOSYNE_API_KEY`，但新配置使用 LING 名称。两者都未设置时只允许 localhost 无 token 回调，远程请求不会放行。
 
 ## 启动
 
@@ -76,14 +76,14 @@ cd "E:\澪\project-mnemosyne"
 
 启动脚本不会修改长期 `config.yaml`。它会在启动主项目进程时设置：
 
-- `MNEMOSYNE_VIDEO_COMPANION_ENABLED=true`
-- `MNEMOSYNE_VIDEO_COMPANION_BASE_URL=http://127.0.0.1:<VideoPort>`
-- `MNEMOSYNE_VIDEO_COMPANION_WS_URL=ws://127.0.0.1:<VideoPort>/ws`
+- `LING_VIDEO_COMPANION_ENABLED=true`
+- `LING_VIDEO_COMPANION_BASE_URL=http://127.0.0.1:<VideoPort>`
+- `LING_VIDEO_COMPANION_WS_URL=ws://127.0.0.1:<VideoPort>/ws`
 
 脚本默认查找顺序：
 
 - 显式 `-VideoPath` 参数
-- `MNEMOSYNE_VIDEO_COMPANION_PROJECT_PATH`
+- `LING_VIDEO_COMPANION_PROJECT_PATH`（旧 `MNEMOSYNE_VIDEO_COMPANION_PROJECT_PATH` 仍兼容）
 - 当前盘根目录的 `E:\视觉\video-companion`
 - 工作区旁边的 `视觉\video-companion`
 
@@ -118,7 +118,7 @@ cd "E:\澪\project-mnemosyne"
 py scripts\verify_all.py --video-e2e
 ```
 
-这个脚本会在临时端口启动 Project Mnemosyne 和 `E:\视觉\video-companion`，用临时 SQLite 验证：主项目可提供人格上下文、Video Companion 可启动/停止会话、授权允许时 summary 能回写为“视频会话摘要”聊天记录和 `world_observations`。
+这个脚本会在临时端口启动 LING 和 `E:\视觉\video-companion`，用临时 SQLite 验证：主项目可提供 companion 上下文、Video Companion 可启动/停止会话、授权允许时 summary 能回写为“视频会话摘要”记录和 `world_observations`。
 
 Video Companion：
 
@@ -152,6 +152,7 @@ Invoke-WebRequest -Method POST http://127.0.0.1:8782/api/consent/save_summary/re
 ## 落地边界
 
 - 主项目负责人格、长期记忆、聊天记录、用户账号、资料页入口和会话摘要落库。
-- Video Companion 负责摄像头、麦克风、ASR/TTS、实时视觉理解、视频会话状态和低延迟互动。
+- 主项目 `/api/voice/*` 只负责普通文字回复的非实时朗读和 Live2D 播放状态联动。
+- Video Companion 负责摄像头、麦克风、ASR、视频会话中的 TTS、可打断播放、实时视觉理解、会话状态和低延迟互动。
 - 会话结束后，主项目会把 Video Companion 返回的摘要保存为一条“视频会话摘要”聊天记录，并写入 `world_observations` 作为外部会话观察。
 - 视觉观察只有在 payload 带 `persona_id` 时才会落到主项目，避免无法归属的数据污染记忆。

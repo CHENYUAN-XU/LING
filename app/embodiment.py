@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from .expression_assets import expression_asset
@@ -7,6 +8,11 @@ from .live2d import Live2DConnection, load_live2d_config, live2d_enabled
 
 
 _live2d_connection: Live2DConnection | None = None
+_live2d_autoconnect_thread: threading.Thread | None = None
+_live2d_autoconnect_lock = threading.Lock()
+_live2d_autoconnect_stop = threading.Event()
+_live2d_autoconnect_paused = False
+LIVE2D_RECONNECT_DELAYS = (0.0, 2.0, 5.0, 10.0, 20.0)
 
 
 def get_live2d_connection() -> Live2DConnection:
@@ -14,6 +20,53 @@ def get_live2d_connection() -> Live2DConnection:
     if _live2d_connection is None:
         _live2d_connection = Live2DConnection()
     return _live2d_connection
+
+
+def start_live2d_autoconnect(*, force: bool = False) -> dict[str, Any]:
+    global _live2d_autoconnect_paused, _live2d_autoconnect_thread
+    if not live2d_enabled():
+        return {"started": False, "reason": "live2d_disabled"}
+
+    connection = get_live2d_connection()
+    if connection.is_connected:
+        return {"started": False, "reason": "already_connected"}
+    with _live2d_autoconnect_lock:
+        if force:
+            _live2d_autoconnect_paused = False
+        if _live2d_autoconnect_paused:
+            return {"started": False, "reason": "manually_paused"}
+        thread = _live2d_autoconnect_thread
+        if connection.is_connecting or (thread and thread.is_alive()):
+            return {"started": False, "reason": "already_connecting"}
+        _live2d_autoconnect_stop.clear()
+
+        def connect_in_background() -> None:
+            for delay in LIVE2D_RECONNECT_DELAYS:
+                if delay and _live2d_autoconnect_stop.wait(delay):
+                    return
+                if _live2d_autoconnect_stop.is_set() or _live2d_autoconnect_paused or not live2d_enabled():
+                    return
+                if connection.is_connected or connection.connect():
+                    return
+
+        thread = threading.Thread(
+            target=connect_in_background,
+            name="ling-live2d-autoconnect",
+            daemon=True,
+        )
+        _live2d_autoconnect_thread = thread
+        thread.start()
+    return {"started": True, "reason": "startup_autoconnect"}
+
+
+def stop_live2d_connection(*, pause_autoconnect: bool = True) -> dict[str, Any]:
+    global _live2d_autoconnect_paused
+    with _live2d_autoconnect_lock:
+        _live2d_autoconnect_paused = bool(pause_autoconnect)
+        _live2d_autoconnect_stop.set()
+    connection = get_live2d_connection()
+    connection.disconnect()
+    return connection.get_connection_status()
 
 
 def expression_to_live2d(expression_label: str, expression_type: str = "") -> str | None:
@@ -76,9 +129,12 @@ def apply_expression_to_live2d(expression_label: str, expression_type: str = "")
 
     conn = get_live2d_connection()
     if not conn.is_connected:
+        start_live2d_autoconnect()
         return {"applied": False, "reason": "not_connected", "expression": live2d_expr}
 
     applied = conn.set_expression(live2d_expr)
+    if not applied and not conn.is_connected:
+        start_live2d_autoconnect()
     return {
         "applied": applied,
         "expression": live2d_expr,
@@ -105,9 +161,12 @@ def apply_runtime_state_to_live2d(state: str) -> dict[str, Any]:
 
     conn = get_live2d_connection()
     if not conn.is_connected:
+        start_live2d_autoconnect()
         return {"applied": False, "reason": "not_connected", "state": normalized, "expression": expression}
 
     applied = conn.set_expression(expression)
+    if not applied and not conn.is_connected:
+        start_live2d_autoconnect()
     return {
         "applied": applied,
         "state": normalized,
@@ -117,6 +176,8 @@ def apply_runtime_state_to_live2d(state: str) -> dict[str, Any]:
 
 def live2d_connection_status() -> dict:
     conn = get_live2d_connection()
+    if live2d_enabled() and not conn.is_connected and not conn.is_connecting:
+        start_live2d_autoconnect()
     status = conn.get_connection_status()
     status["config_expression_map"] = load_live2d_config().get("expression_map", {})
     return status

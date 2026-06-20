@@ -26,12 +26,33 @@ def main() -> None:
     assert "normalizeSelfUseUiState();" in app_js
     assert 'state.view === "forge" || state.view === "group" || state.view === "home"' in app_js
     assert "state.groupCreateOpen = false;" in app_js
+    assert "if (!selfUseMode() && state.groupCreateOpen) children.push(renderGroupCreateModal());" in app_js
     assert "if (selfUseMode()) {\n    normalizeSelfUseUiState();" in app_js
     assert "return renderSelfUseWorkspace(state.activePersona);" in app_js
     assert "const selfUse = selfUseMode();" in app_js
     assert 'selfUse ? Promise.resolve({ options: {} }) : api("/api/persona-options")' in app_js
     assert 'selfUse ? Promise.resolve({ personas: [] }) : api("/api/personas/deleted")' in app_js
     assert 'selfUse ? Promise.resolve({ group_conversations: [] }) : api("/api/group-conversations?status=active")' in app_js
+    assert 'selfUseMode() ? renderVideoCompanionCameraConsentRow() : renderAwarenessConsentRow("camera")' in app_js
+    assert 'text: "摄像头采集、预览和连续视觉理解都在外部 Video Companion 中运行。"' in app_js
+    assert 'if (s.connecting) return "正在连接 VTube Studio";' in app_js
+    assert 'api("/api/live2d/refresh", { method: "POST" })' in app_js
+    assert 'text: "刷新 VTS 能力"' in app_js
+    assert 'h("h3", { text: "我的资料" })' in app_js
+    assert 'selfUse ? null : renderAccountDangerZone()' in app_js
+    assert '...(!selfUse ? [' in app_js
+    assert 'companionStatusPollTimer = setInterval(pollCompanionStatus, 8000);' in app_js
+    assert "function bindCompanionLifecycleRefresh()" in app_js
+    assert 'document.addEventListener("visibilitychange", refreshWhenVisible);' in app_js
+    assert 'window.addEventListener("pageshow", refreshWhenVisible);' in app_js
+    assert 'window.addEventListener("online", refreshWhenVisible);' in app_js
+    assert 'window.addEventListener("focus", refreshWhenVisible);' in app_js
+    assert "live2d.capabilities_stale" in app_js
+    assert "video.recent_summary?.id" in app_js
+    assert 'loadCompanionStatus({ preserveOnError: true })' in app_js
+    assert 'if (companion.live2d) state.live2dStatus = companion.live2d;' in app_js
+    assert 'let avatarValue = selfUseMode() ? persona.avatar_url || "" : avatarUrl.value;' in app_js
+    assert 'selfUseMode() ? "Live2D 身体方向" : "期望形象"' in app_js
     assert "function companionRuntimeState()" in app_js
     assert "function renderSelfUseReadinessPanel(persona)" in app_js
     assert "function selfUseApiReadiness()" in app_js
@@ -52,7 +73,10 @@ def main() -> None:
     assert "function integrationConfigFeedback(key)" in app_js
     assert "function setIntegrationConfigFeedback(key, text, tone = \"\")" in app_js
     assert "function integrationConfigFeedbackKey(values)" in app_js
+    assert "function applySelfUseState(data)" in app_js
     assert "function applyCompanionStatus(data)" in app_js
+    assert "applySelfUseState(data);" in app_js
+    assert "const companion = data?.companion_status || (data?.readiness && data?.chat_gate ? data : null);" in app_js
     assert "async function saveLive2dConfigAndConnect(vtsWsUrl)" in app_js
     assert "async function saveVideoCompanionConfigAndCheck(values)" in app_js
     assert "保存并连接" in app_js
@@ -62,6 +86,27 @@ def main() -> None:
     assert 'api("/api/self-use/integration-flag"' in app_js
     assert 'api("/api/self-use/integration-config"' in app_js
     assert '"live2d.vts_ws_url"' in app_js
+    assert '"live2d.idle_expression"' in app_js
+    assert '"live2d.listening_expression"' in app_js
+    assert '"live2d.thinking_expression"' in app_js
+    assert '"live2d.speaking_expression"' in app_js
+    assert '"live2d.lip_sync_enabled"' in app_js
+    assert '"live2d.lip_sync_parameter"' in app_js
+    assert '"live2d.lip_sync_gain"' in app_js
+    assert "function live2dLipSyncReady()" in app_js
+    assert "async function startLive2dLipSync(audio, playback)" in app_js
+    assert 'api("/api/live2d/lip-sync"' in app_js
+    assert "createMediaElementSource(audio)" in app_js
+    assert "getByteTimeDomainData(samples)" in app_js
+    assert "consecutiveFailures >= 3" in app_js
+    assert "await sendLive2dLipSyncValue(0);" in app_js
+    assert '@app.post("/api/live2d/lip-sync")' in server_py
+    assert "async function setPresenceQuietMode(quiet)" in app_js
+    assert '"/api/presence/quiet-mode"' in app_js
+    assert '"/api/presence/normal-mode"' in app_js
+    assert "presenceRuntime().quiet_mode ? \"恢复在场\" : \"安静模式\"" in app_js
+    assert "保存动作" in app_js
+    assert "保存嘴型" in app_js
     assert '"video_companion.base_url"' in app_js
     assert '"video_companion.ws_url"' in app_js
     assert '"video_companion.project_path"' in app_js
@@ -71,6 +116,7 @@ def main() -> None:
     assert "function renderSelfUseApiSetupCard()" in app_js
     assert "function renderSelfUseLive2dSetupCard()" in app_js
     assert "function renderSelfUseVoiceSetupCard()" in app_js
+    assert "编辑声音绑定" in app_js
     assert "function renderSelfUseVideoSetupCard()" in app_js
     assert "self-use-integration-modal" in app_js
     assert "self-use-integration-card" in app_js
@@ -82,36 +128,67 @@ def main() -> None:
     assert '["可手动开启", apiState.canEnable ? "可以" : "暂不可以"]' in app_js
     assert '"base_url": base_url' in read("app/llm_client.py")
     assert '"chat_gate": chat_gate' in server_py
+    assert '"companion_status": companion_status(user)' in server_py
+    assert "visual_ready = bool(embodiment.get(\"visual_ready\"))" in server_py
+    assert '"key": "visual"' in server_py
+    assert "def _companion_visual_readiness_text" in server_py
     assert '@app.post("/api/self-use/chat-gate")' in server_py
+    assert '@app.post("/api/self-use/llm-probe")' in server_py
     assert '@app.post("/api/self-use/integration-flag")' in server_py
     assert '@app.post("/api/self-use/integration-config")' in server_py
     assert "set_self_use_chat_enabled(bool(req.enabled))" in server_py
     assert "set_config_section_bool(section, config_key, bool(req.enabled))" in server_py
     assert "set_config_section_value(section, config_key, value)" in server_py
+    assert "def _validate_live2d_action_name" in server_py
+    assert '"live2d.idle_expression": ("live2d", "idle_expression", _validate_live2d_action_name)' in server_py
+    assert '"voice": ("voice", "enabled")' in server_py
+    assert '"voice.tts_provider": ("voice", "tts_provider", _validate_voice_provider)' in server_py
+    assert "def _validate_env_name" in server_py
+    assert '"voice.tts_provider": providerInput.value' in app_js
+    assert 'value: "elevenlabs"' not in app_js
+    assert "function live2dAvailableActions()" in app_js
+    assert "if (status.capabilities_stale === true) return [];" in app_js
+    assert "function live2dBindingMatchesCurrent" in app_js
+    assert "if (state.live2dStatus?.capabilities_stale === true) return false;" in app_js
+    assert "function enqueueLive2dAction" in app_js
+    assert "function scheduleLive2dExpressionReset" in app_js
+    assert 'await applyLive2dRuntimeState("thinking")' in app_js
+    assert 'await applyLive2dRuntimeState("speaking")' in app_js
+    assert "function voiceAutoPlayEnabled" in app_js
+    assert "function probeSelfUseLlm" in app_js
+    assert "llm_unverified" in app_js
+    assert "function interruptVoicePlayback" in app_js
+    assert "function voicePlaybackIsCurrent(playback)" in app_js
+    assert "signal: playback.controller.signal" in app_js
+    assert '"voice.auto_play": autoPlayInput.checked' in app_js
+    assert "persona_id: state.activePersona?.id || null" in app_js
+    assert "def _voice_profile_for_request" in server_py
+    assert 'text: "绑定到澪"' in app_js
+    assert '"Provider voice ID", fields.voiceProfile' in app_js
+    assert '[h("option", { value: "mp3", text: "mp3" })]' in app_js
+    assert "def _voice_media_type" in server_py
+    assert "available_expressions" in app_js
+    assert "available_hotkeys" in app_js
+    assert 'text: "Save voice"' in app_js
     assert "def _companion_chat_gate" in server_py
     assert "renderSelfUseApiGate()" in app_js
     assert "self-use-api-gate" in app_js
     assert "保持关闭，避免未接 API 时误触发模型调用" in app_js
-    assert "function renderSelfUseVideoCompanionControl()" in app_js
-    assert "renderSelfUseVideoCompanionControl()" in app_js
     assert "function videoCompanionRecentObservation()" in app_js
     assert "recent_observation" in app_js
-    assert "最近回写" in app_js
-    assert "function renderVideoCompanionPresenceGrid(status, stateInfo, pathState)" in app_js
-    assert "self-use-video-presence-grid" in app_js
-    assert "self-use-video-presence-item" in app_js
-    assert "Presence channel" in app_js
+    assert "function videoCompanionActivityText(item, emptyText = \"none\")" in app_js
+    assert '"Summary writeback"' in app_js
+    assert '"Consent sync"' in app_js
+    assert '["Observation", recent.text]' in app_js
     assert "function videoCompanionPathState(config)" in app_js
     assert "config.project_path_exists === false" in app_js
-    assert "self-use-video-path" in app_js
-    assert "self-use-video-recent" in app_js
-    assert "function companionActionSummary()" in app_js
-    assert "function companionVoiceSummary(embodiment)" in app_js
-    assert '["Voice", companionVoiceSummary(embodiment)]' in app_js
     assert "state.companionStatus?.live2d_actions" in app_js
-    assert '["Actions", companionActionSummary()]' in app_js
     assert "function renderSelfUseActionControls()" in app_js
     assert "renderSelfUseActionControls()" in app_js
+    assert "function renderSelfUseCompanionDock" not in app_js
+    assert "function renderSelfUseVideoCompanionControl" not in app_js
+    assert '!selfUseMode() && !isUser && !isNotice ? avatar(' in app_js
+    assert '!selfUseMode() && isUser ? avatar(' in app_js
     assert "function live2dConnected()" in app_js
     assert "const canTrigger = configured && connected;" in app_js
     assert "live2dActionDisabledReason()" in app_js
@@ -124,6 +201,11 @@ def main() -> None:
     assert "actions.speaking_expression" in app_js
     assert "function renderSelfUseEmbodimentEditor(persona, fields)" in app_js
     assert "renderSelfUseEmbodimentEditor(persona" in app_js
+    assert "function renderSelfUseEmbodimentImageUpload(label, kind, urlField, statusEl)" in app_js
+    assert 'uploadImageFile(`/api/uploads/embodiment-image?kind=${encodeURIComponent(kind)}`, file)' in app_js
+    assert 'h("span", { class: "ghost compact upload-label", text: `上传${label}` })' in app_js
+    assert '@app.post("/api/uploads/embodiment-image")' in server_py
+    assert 'EMBODIMENT_IMAGE_KINDS = {"preview", "fallback"}' in server_py
     assert "function live2dCurrentModelBinding()" in app_js
     assert "function renderSelfUseLive2dModelPicker(live2dModelIdField, statusEl = null)" in app_js
     assert "renderSelfUseLive2dModelPicker(fields.live2dModelId, bindingStatus)" in app_js
@@ -131,8 +213,13 @@ def main() -> None:
     assert '["fallback_image_url", fallbackImageUrl, "Fallback image", "fallback"]' in app_js
     assert '["avatar_url", avatarUrl, "Legacy fallback", "legacy"]' in app_js
     assert "function renderCompanionVisual(persona, embodiment)" in app_js
+    assert "state.companionStatus?.embodiment" in app_js
     assert "companion-visual-empty" in app_js
     assert "companion-visual-source" in app_js
+    assert "live2dCurrentModelBinding()" in app_js
+    assert "Body pending" in app_js
+    assert "Bind body" in app_js
+    assert ".companion-visual.missing" in style_css
     assert "Live2D pending" in app_js
     assert "使用并保存当前模型" in app_js
     assert "保存形象绑定" in app_js
@@ -147,7 +234,7 @@ def main() -> None:
     assert "self-use-mapping-preview" in app_js
     assert "Embodiment binding" in app_js
     assert "...(!selfUseMode() ? [" in app_js
-    assert "async function loadCompanionStatus()" in app_js
+    assert "async function loadCompanionStatus(options = {})" in app_js
     assert 'const local = await api("/api/auth/local", { method: "POST" });' in app_js
     assert "function renderLocalStartupError(err)" in app_js
     assert "localSelfUseUnavailable(localErr)" in app_js
@@ -163,6 +250,10 @@ def main() -> None:
     assert '"live2d_actions": live2d_actions' in server_py
     assert 'FastAPI(title="LING")' in server_py
     assert "state.companionStatus?.readiness?.length" in app_js
+    assert "function readinessActionFor(item)" in app_js
+    assert "function renderSelfUseReadinessItem(item)" in app_js
+    assert "function openSelfUseIntegration()" in app_js
+    assert "renderSelfUseReadinessItem(item)" in app_js
     assert "state.companionStatus?.runtime" in app_js
     assert "async function openPersonaEditor()" in app_js
     assert "class: `companion-visual ${embodiment.visualTone}`" in app_js
@@ -180,8 +271,13 @@ def main() -> None:
     assert "video.status?.session_active" in app_js
     assert "state.sending" in app_js
     assert "state.voicePlaying" in app_js
+    assert 'state.voicePlaybackPhase = "preparing"' in app_js
+    assert 'state.voicePlaybackPhase = "playing"' in app_js
+    assert 'await applyLive2dRuntimeState("thinking")' in app_js
     assert "state.voicePlan" in app_js
     assert "state.voicePlanMessageId" in app_js
+    assert "let voicePlaybackCompleted = false;" in app_js
+    assert "voicePlaybackCompleted = !playback.interrupted;" in app_js
     assert "composerFocused" in app_js
     assert "composerDraft" in app_js
     assert "if (selfUseMode()) state.composerDraft = input.value.trim();" in app_js
@@ -191,25 +287,30 @@ def main() -> None:
     assert 'key: "listening"' in app_js
     assert "function runtimeToLive2dState(runtime)" in app_js
     assert "function voicePlaybackDetail()" in app_js
-    assert "function companionSpeechSummary()" in app_js
     assert "function messageExpressionLabels(message)" in app_js
-    assert "async function loadVoiceSpeechPlan(text, expressionLabels, messageId)" in app_js
+    assert "async function loadVoiceSpeechPlan(text, expressionLabels, messageId, playback = null)" in app_js
+    assert "await loadVoiceSpeechPlan(text, expressionLabels, messageId, playback);" in app_js
+    assert app_js.count("if (!voicePlaybackIsCurrent(playback)) return;") >= 5
     assert 'api("/api/voice/speech-plan"' in app_js
-    assert '["Speech", companionSpeechSummary()]' in app_js
     assert "async function syncCompanionRuntime(options = {})" in app_js
     assert "refreshRuntimeIndicators()" in app_js
     assert "await syncCompanionRuntime({ applyLive2d: true });" in app_js
     assert "await syncCompanionRuntime({ reload: true, applyLive2d: true });" in app_js
     assert "await applyLive2dRuntimeState(runtimeToLive2dState(runtime));" in app_js
-    assert ".self-use-dock-cell.runtime-state strong" in app_js
+    assert ".self-use-stage-panel {\n  display: grid;\n  grid-template-rows: minmax(0, 1fr);" in style_css
+    assert "@media (max-width: 620px)" in style_css
+    assert "grid-template-rows: minmax(540px, 68vh) minmax(0, 1fr);" in style_css
     assert "chatInputBlocked()" in app_js
     assert "function applyMessageExpressionsToLive2d(expressions)" in app_js
     assert '"/api/live2d/apply-expression"' in app_js
-    assert "applyMessageExpressionsToLive2d(data.expressions || [])" in app_js
+    assert "appliedReplyExpression = await applyMessageExpressionsToLive2d(data.expressions || [])" in app_js
+    assert "await syncCompanionRuntime({ applyLive2d: !appliedReplyExpression });" in app_js
+    assert "return !!result.applied;" in app_js
     assert "function applyLive2dRuntimeState(runtimeState, options = {})" in app_js
     assert '"/api/live2d/apply-runtime-state"' in app_js
     assert 'applyLive2dRuntimeState("speaking")' in app_js
     assert 'applyLive2dRuntimeState("idle")' in app_js
+    assert 'await syncCompanionRuntime({ applyLive2d: false });' in app_js
     assert 'applyLive2dRuntimeState("thinking")' in app_js
     assert 'trigger("listening")' in app_js
     assert "actions.listening_expression" in app_js
@@ -240,19 +341,15 @@ def main() -> None:
     assert ".companion-stage-action-status" in style_css
     assert ".companion-runtime-badge.listening" in style_css
     assert ".self-use-readiness" in style_css
-    assert ".self-use-video-control" in style_css
-    assert ".self-use-video-path" in style_css
-    assert ".self-use-video-presence-grid" in style_css
-    assert ".self-use-video-presence-item" in style_css
+    assert ".self-use-readiness-copy" in style_css
+    assert ".self-use-readiness-item button" in style_css
     assert ".self-use-action-control" in style_css
     assert ".self-use-action-buttons" in style_css
-    assert ".self-use-video-actions" in style_css
     assert ".self-use-embodiment-editor" in style_css
     assert ".self-use-embodiment-grid" in style_css
     assert ".self-use-embodiment-actions" in style_css
     assert ".self-use-live2d-model-picker" in style_css
     assert ".self-use-embodiment-preview-visual" in style_css
-    assert ".self-use-video-recent" in style_css
     assert ".self-use-mapping-preview" in style_css
     assert ".self-use-runtime-map" in style_css
     assert ".self-use-expression-map" in style_css
@@ -274,6 +371,7 @@ def main() -> None:
     assert "Video Companion is external" in roadmap
     assert "integration panel" in roadmap
     assert "legacy avatar fallback" in roadmap
+    assert "Visual readiness" in roadmap
     assert "old Project Mnemosyne UI paths no longer dominate" in roadmap
 
     print("LING self-use shell verification passed")

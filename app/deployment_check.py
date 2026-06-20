@@ -7,7 +7,12 @@ from .config import BASE_DIR, load_config
 from .environment_check import inspect_environment
 
 
-def deployment_report(config: dict[str, Any] | None = None, *, production: bool = False) -> dict[str, Any]:
+def deployment_report(
+    config: dict[str, Any] | None = None,
+    *,
+    production: bool = False,
+    self_use: bool = False,
+) -> dict[str, Any]:
     cfg = config or load_config()
     checks: list[dict[str, str]] = []
     env = inspect_environment(cfg)
@@ -15,7 +20,7 @@ def deployment_report(config: dict[str, Any] | None = None, *, production: bool 
     _add(
         checks,
         "api_keys",
-        "pass" if not env["missing"] else ("fail" if production else "warn"),
+        "pass" if not env["missing"] else ("fail" if production and not self_use else "warn"),
         "all configured API key environment variables are present"
         if not env["missing"]
         else "missing API key environment variables: " + ", ".join(env["missing"]),
@@ -33,7 +38,7 @@ def deployment_report(config: dict[str, Any] | None = None, *, production: bool 
     _add(
         checks,
         "rate_limit",
-        "pass" if rate_limit.get("enabled", False) else ("fail" if production else "warn"),
+        "pass" if rate_limit.get("enabled", False) else ("fail" if production and not self_use else "warn"),
         "rate_limit.enabled is true" if rate_limit.get("enabled", False) else "rate_limit.enabled is false",
     )
 
@@ -42,19 +47,40 @@ def deployment_report(config: dict[str, Any] | None = None, *, production: bool 
     _add(
         checks,
         "request_logging",
-        "pass" if logging_enabled else ("fail" if production else "warn"),
+        "pass" if logging_enabled else ("fail" if production and not self_use else "warn"),
         "request logging is enabled" if logging_enabled else "request logging is disabled",
     )
 
     security = cfg.get("security", {}) if isinstance(cfg.get("security"), dict) else {}
     secure_cookies = bool(security.get("secure_cookies", False))
+    if self_use:
+        _add(
+            checks,
+            "secure_cookies",
+            "fail" if secure_cookies else "pass",
+            "secure cookies must stay disabled for the local HTTP self-use workspace"
+            if secure_cookies
+            else "secure cookies disabled for local HTTP self-use",
+        )
+    else:
+        _add(
+            checks,
+            "secure_cookies",
+            "pass" if secure_cookies or not production else "fail",
+            "secure cookies enabled"
+            if secure_cookies
+            else "secure cookies disabled; acceptable only for local HTTP development",
+        )
+
+    self_use_cfg = cfg.get("self_use", {}) if isinstance(cfg.get("self_use"), dict) else {}
+    local_self_use = bool(self_use_cfg.get("enabled", False) and self_use_cfg.get("require_localhost", True))
     _add(
         checks,
-        "secure_cookies",
-        "pass" if secure_cookies or not production else "fail",
-        "secure cookies enabled"
-        if secure_cookies
-        else "secure cookies disabled; acceptable only for local HTTP development",
+        "self_use_boundary",
+        "pass" if not self_use or local_self_use else "fail",
+        "LING self-use is enabled and restricted to localhost"
+        if local_self_use
+        else ("self_use.enabled and self_use.require_localhost must be true" if self_use else "self-use mode not requested"),
     )
 
     data_parent = (BASE_DIR / "data").parent
@@ -100,6 +126,7 @@ def deployment_report(config: dict[str, Any] | None = None, *, production: bool 
     return {
         "ok": not failed,
         "production": production,
+        "self_use": self_use,
         "checks": checks,
         "summary": {
             "failed": len(failed),
@@ -116,7 +143,7 @@ def _add(checks: list[dict[str, str]], name: str, status: str, detail: str) -> N
 def _writable_directory(path: Path) -> tuple[bool, str]:
     try:
         path.mkdir(parents=True, exist_ok=True)
-        probe = path / ".mnemosyne-write-test"
+        probe = path / ".ling-write-test"
         probe.write_text("ok", encoding="utf-8")
         probe.unlink()
     except OSError as exc:

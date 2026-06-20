@@ -3,7 +3,7 @@ active_persona: ""
 self_use:
   enabled: true
   username: mio_owner
-  nickname: 澪的工作区
+  nickname: ""
   require_localhost: true
   seed_default_persona: true
   default_persona_name: 澪
@@ -82,10 +82,15 @@ memory:
 
 voice:
   enabled: false
+  auto_play: true
   # Realtime speech belongs to Video Companion or a higher-quality provider.
   # Edge TTS is intentionally disabled for LING.
   tts_provider: openai_tts
+  tts_model: gpt-4o-mini-tts
+  api_key_env: OPENAI_API_KEY
   voice_id: alloy
+  response_format: mp3
+  instructions: ""
   rate: 1.0
   pitch: 1.0
   split_long_replies: true
@@ -107,6 +112,10 @@ live2d:
   listening_expression: Listening
   speaking_expression: Talking
   thinking_expression: Thinking
+  # Browser TTS audio drives this VTube Studio input parameter while speaking.
+  lip_sync_enabled: true
+  lip_sync_parameter: MouthOpen
+  lip_sync_gain: 2.2
   expression_map:
     微笑: Smile
     轻笑: Smile
@@ -116,7 +125,7 @@ live2d:
     点头: Nod
 
 presence:
-  enabled: false
+  enabled: true
   idle_timeout_seconds: 30
   thinking_timeout_seconds: 15
   idle_actions:

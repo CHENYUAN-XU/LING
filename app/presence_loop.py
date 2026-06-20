@@ -93,6 +93,13 @@ def on_idle(user_id: int | None = None) -> dict[str, Any]:
         return {"transition": "disabled"}
 
     state = get_runtime_state(user_id)
+    if state.is_quiet:
+        state.set_quiet_mode(True)
+        return {
+            "state": "quiet",
+            "actions": [],
+            "seconds_since_last_interaction": state.time_since_last_interaction,
+        }
     if state.current_state != "idle":
         state.transition_to("idle")
 

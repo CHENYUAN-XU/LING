@@ -60,7 +60,7 @@ def seed_user_and_persona(database_module) -> tuple[int, int]:
     with database_module.get_db() as db:
         user_id = int(
             db.execute(
-                "INSERT INTO users (username, password_hash, created_at, updated_at) VALUES ('video-e2e', 'x', ?, ?)",
+                "INSERT INTO users (username, password_hash, created_at, updated_at) VALUES ('mio_owner', 'x', ?, ?)",
                 (ts, ts),
             ).lastrowid
         )
@@ -75,10 +75,17 @@ def seed_user_and_persona(database_module) -> tuple[int, int]:
                     user_id, name, summary, prompt, relationship, speaking_style,
                     boundaries_json, created_at, updated_at
                 )
-                VALUES (?, 'Mio E2E', 'Video bridge test persona.', 'Speak naturally.', 'friend', 'short', ?, ?, ?)
+                VALUES (?, '澪', '', 'Speak naturally.', '', '', ?, ?, ?)
                 """,
                 (user_id, '["do not invent camera facts"]', ts, ts),
             ).lastrowid
+        )
+        db.execute(
+            """
+            INSERT INTO self_use_companion_bindings (user_id, persona_id, bound_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (user_id, persona_id, ts, ts),
         )
     return user_id, persona_id
 
@@ -123,7 +130,7 @@ privacy:
 legacy_bridge:
   enabled: true
   api_base: "http://127.0.0.1:{main_port}"
-  api_key_env: "MNEMOSYNE_API_KEY"
+  api_key_env: "LING_VIDEO_BRIDGE_API_KEY"
   timeout: 5
   retries: 1
 """.strip(),
@@ -133,11 +140,11 @@ legacy_bridge:
         import app.database as database
 
         database.DB_PATH = db_path
-        os.environ["MNEMOSYNE_API_KEY"] = token
-        os.environ["MNEMOSYNE_VIDEO_COMPANION_ENABLED"] = "true"
-        os.environ["MNEMOSYNE_VIDEO_COMPANION_BASE_URL"] = f"http://127.0.0.1:{video_port}"
-        os.environ["MNEMOSYNE_VIDEO_COMPANION_WS_URL"] = f"ws://127.0.0.1:{video_port}/ws"
-        os.environ["MNEMOSYNE_VIDEO_COMPANION_PROJECT_PATH"] = str(video_path)
+        os.environ["LING_VIDEO_BRIDGE_API_KEY"] = token
+        os.environ["LING_VIDEO_COMPANION_ENABLED"] = "true"
+        os.environ["LING_VIDEO_COMPANION_BASE_URL"] = f"http://127.0.0.1:{video_port}"
+        os.environ["LING_VIDEO_COMPANION_WS_URL"] = f"ws://127.0.0.1:{video_port}/ws"
+        os.environ["LING_VIDEO_COMPANION_PROJECT_PATH"] = str(video_path)
 
         import uvicorn
         import app.server as main_server
@@ -157,7 +164,7 @@ legacy_bridge:
 
         video_env = os.environ.copy()
         video_env["VC_CONFIG"] = str(video_config)
-        video_env["MNEMOSYNE_API_KEY"] = token
+        video_env["LING_VIDEO_BRIDGE_API_KEY"] = token
         video_log_handle = video_log.open("w", encoding="utf-8", errors="replace")
         video_proc = subprocess.Popen(
             [sys.executable, "-m", "app.server"],
@@ -192,7 +199,7 @@ legacy_bridge:
                 headers={"Authorization": f"Bearer {token}"},
             )
             assert context["persona_id"] == str(persona_id)
-            assert context["persona_name"] == "Mio E2E"
+            assert context["persona_name"] == "澪"
 
             start = request_json(
                 "POST",
@@ -241,7 +248,9 @@ legacy_bridge:
         except Exception:
             if video_log.exists():
                 print("\n--- Video Companion log tail ---")
-                print(video_log.read_text(encoding="utf-8", errors="replace")[-6000:])
+                tail = video_log.read_text(encoding="utf-8", errors="replace")[-6000:]
+                encoding = sys.stdout.encoding or "utf-8"
+                print(tail.encode(encoding, errors="replace").decode(encoding, errors="replace"))
             raise
         finally:
             uvicorn_server.should_exit = True

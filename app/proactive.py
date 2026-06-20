@@ -612,7 +612,19 @@ def detect_quiet_request(user_text: str) -> bool:
 
 
 def get_proactive_status(user_id: int, persona_id: int) -> dict[str, Any]:
-    if not proactive_enabled(user_id):
-        return {"enabled": False}
+    from .user_consent import user_has_consent
+
+    config = load_proactive_config()
+    config_enabled = bool(config.get("enabled", False))
+    consent_granted = bool(user_has_consent(user_id, "proactive"))
+    enabled = config_enabled and consent_granted
+    base = {
+        "enabled": enabled,
+        "config_enabled": config_enabled,
+        "consent_granted": consent_granted,
+        "config": config,
+    }
+    if not enabled:
+        return base
     controller = get_proactive_controller(user_id, persona_id)
-    return controller.get_status()
+    return {**controller.get_status(), **base}

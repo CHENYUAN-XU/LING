@@ -71,7 +71,8 @@ class RuntimeState:
                 self._state = "quiet"
                 self._state_started_at = time.time()
             elif not quiet and self._state == "quiet":
-                self._state = self._previous_state
+                self._previous_state = "quiet"
+                self._state = "idle"
                 self._state_started_at = time.time()
 
     def get_snapshot(self) -> dict:

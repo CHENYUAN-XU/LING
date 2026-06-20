@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import urllib.error
+import urllib.request
 from typing import Any
 
 from .voice import load_voice_config, voice_enabled
@@ -9,6 +12,28 @@ from .speech_planner import build_tts_request_params, split_reply_into_utterance
 
 
 _LAST_TTS_ERROR: str | None = None
+OPENAI_TTS_ENDPOINT = "https://api.openai.com/v1/audio/speech"
+OPENAI_TTS_FORMATS = {"mp3", "opus", "aac", "flac", "wav", "pcm"}
+OPENAI_TTS_BUILTIN_VOICES = {
+    "alloy",
+    "ash",
+    "ballad",
+    "cedar",
+    "coral",
+    "echo",
+    "fable",
+    "marin",
+    "nova",
+    "onyx",
+    "sage",
+    "shimmer",
+    "verse",
+}
+OPENAI_TTS_STYLE_INSTRUCTIONS = {
+    "cheerful": "Speak with a warm, lightly upbeat tone.",
+    "concerned": "Speak gently, with quiet concern.",
+    "gentle": "Speak softly and calmly.",
+}
 
 
 def _set_tts_error(error: str | None) -> None:
@@ -18,6 +43,133 @@ def _set_tts_error(error: str | None) -> None:
 
 def get_last_tts_error() -> str | None:
     return _LAST_TTS_ERROR
+
+
+def _bounded_float(value: Any, default: float, minimum: float, maximum: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, parsed))
+
+
+def _clean_tts_text(text: str) -> str:
+    cleaned = str(text or "").strip()
+    return cleaned[:4096]
+
+
+def _openai_voice_value(voice_id: str) -> str | dict[str, str]:
+    voice = str(voice_id or "").strip() or "alloy"
+    if voice.startswith("voice_"):
+        return {"id": voice}
+    return voice
+
+
+def _openai_response_format(value: Any) -> str:
+    fmt = str(value or "mp3").strip().lower()
+    return fmt if fmt in OPENAI_TTS_FORMATS else "mp3"
+
+
+def _openai_instructions(config: dict[str, Any], style: str | None) -> str | None:
+    parts: list[str] = []
+    base = str(config.get("instructions") or "").strip()
+    if base:
+        parts.append(base)
+    style_hint = OPENAI_TTS_STYLE_INSTRUCTIONS.get(str(style or "").strip().lower())
+    if style_hint:
+        parts.append(style_hint)
+    instructions = " ".join(parts).strip()
+    return instructions[:4096] if instructions else None
+
+
+def _openai_tts_request(payload: dict[str, Any], api_key: str, timeout: float = 45.0) -> bytes:
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        OPENAI_TTS_ENDPOINT,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        return response.read()
+
+
+def _http_error_detail(error: urllib.error.HTTPError) -> str:
+    try:
+        raw = error.read().decode("utf-8", errors="replace")
+    except Exception:
+        raw = ""
+    if not raw:
+        return str(error)
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw[:300]
+    if isinstance(parsed, dict):
+        detail = parsed.get("error")
+        if isinstance(detail, dict):
+            message = detail.get("message")
+            if message:
+                return str(message)[:300]
+        if detail:
+            return str(detail)[:300]
+    return raw[:300]
+
+
+def _generate_openai_tts_audio(
+    text: str,
+    config: dict[str, Any],
+    voice_id: str | None,
+    rate: float,
+    style: str | None,
+) -> bytes | None:
+    cleaned = _clean_tts_text(text)
+    if not cleaned:
+        _set_tts_error("voice text is empty")
+        return None
+
+    api_key_env = str(config.get("api_key_env") or "OPENAI_API_KEY").strip() or "OPENAI_API_KEY"
+    api_key = os.environ.get(api_key_env)
+    if not api_key:
+        _set_tts_error(f"missing API key environment variable: {api_key_env}")
+        return None
+
+    model = str(config.get("tts_model") or config.get("model") or "gpt-4o-mini-tts").strip()
+    fmt = _openai_response_format(config.get("response_format"))
+    selected_voice = str(voice_id or config.get("voice_id") or "alloy").strip() or "alloy"
+    payload: dict[str, Any] = {
+        "model": model,
+        "input": cleaned,
+        "voice": _openai_voice_value(selected_voice),
+        "response_format": fmt,
+        "speed": _bounded_float(rate if rate is not None else config.get("rate"), 1.0, 0.25, 4.0),
+    }
+
+    instructions = _openai_instructions(config, style)
+    if instructions:
+        payload["instructions"] = instructions
+
+    timeout = _bounded_float(config.get("timeout_seconds"), 45.0, 1.0, 120.0)
+    try:
+        audio = _openai_tts_request(payload, api_key, timeout)
+    except urllib.error.HTTPError as exc:
+        _set_tts_error(f"OpenAI TTS HTTP {exc.code}: {_http_error_detail(exc)}")
+        return None
+    except urllib.error.URLError as exc:
+        _set_tts_error(f"OpenAI TTS network error: {exc.reason}")
+        return None
+    except Exception as exc:
+        _set_tts_error(f"OpenAI TTS error: {exc}")
+        return None
+
+    if not audio:
+        _set_tts_error("OpenAI TTS returned empty audio")
+        return None
+    _set_tts_error(None)
+    return audio
 
 
 def generate_tts_audio(text: str, voice_id: str | None = None, rate: float = 1.0, pitch: float = 1.0, style: str | None = None) -> bytes | None:
@@ -30,13 +182,10 @@ def generate_tts_audio(text: str, voice_id: str | None = None, rate: float = 1.0
     provider = str(config.get("tts_provider", "openai_tts") or "openai_tts").strip().lower()
 
     if provider == "edge":
-        _set_tts_error("edge TTS is disabled for LING; use Video Companion speech or a dedicated high-quality provider")
+        _set_tts_error("edge TTS is disabled for LING; use the main OpenAI TTS reply voice or Video Companion realtime speech")
         return None
-    if provider in {"openai_tts", "elevenlabs"}:
-        _set_tts_error(
-            f"{provider} is configured, but realtime speech is owned by Video Companion or a dedicated provider adapter"
-        )
-        return None
+    if provider == "openai_tts":
+        return _generate_openai_tts_audio(text, config, voice_id, rate, style)
     _set_tts_error(f"unsupported TTS provider: {provider}")
     return None
 
@@ -44,6 +193,7 @@ def generate_tts_audio(text: str, voice_id: str | None = None, rate: float = 1.0
 def generate_tts_reply_audio(
     reply_text: str,
     expression_labels: list[str] | None = None,
+    voice_id: str | None = None,
 ) -> dict[str, Any]:
     """Generate TTS audio for a full reply. Returns audio bytes and metadata.
 
@@ -69,7 +219,7 @@ def generate_tts_reply_audio(
     for i, param in enumerate(params):
         audio = generate_tts_audio(
             text=param["text"],
-            voice_id=param.get("voice_id"),
+            voice_id=voice_id or param.get("voice_id"),
             rate=float(param.get("rate", 1.0)),
             pitch=float(param.get("pitch", 1.0)),
             style=param.get("style"),
@@ -104,6 +254,7 @@ def generate_tts_single_chunk(
     reply_text: str,
     chunk_index: int,
     expression_labels: list[str] | None = None,
+    voice_id: str | None = None,
 ) -> tuple[bytes | None, dict[str, Any]]:
     """Generate TTS audio for a single utterance chunk by index.
 
@@ -121,7 +272,7 @@ def generate_tts_single_chunk(
 
     audio = generate_tts_audio(
         text=param["text"],
-        voice_id=param.get("voice_id"),
+        voice_id=voice_id or param.get("voice_id"),
         rate=float(param.get("rate", 1.0)),
         pitch=float(param.get("pitch", 1.0)),
         style=param.get("style"),
@@ -142,10 +293,14 @@ def generate_tts_single_chunk(
 def tts_health_check() -> dict:
     """Check if TTS provider is available."""
     config = load_voice_config()
+    provider = str(config.get("tts_provider", "openai_tts") or "openai_tts").strip().lower()
     result = {
         "enabled": voice_enabled(),
-        "provider": config.get("tts_provider", "openai_tts"),
+        "provider": provider,
+        "model": config.get("tts_model") or config.get("model") or "",
         "voice_id": config.get("voice_id", "alloy"),
+        "api_key_env": str(config.get("api_key_env") or "OPENAI_API_KEY"),
+        "response_format": _openai_response_format(config.get("response_format")),
         "available": False,
         "error": None,
     }
@@ -155,13 +310,14 @@ def tts_health_check() -> dict:
         result["error"] = "voice is disabled in config"
         return result
 
-    provider = str(config.get("tts_provider", "openai_tts") or "openai_tts").strip().lower()
     if provider == "edge":
-        result["error"] = "edge TTS is disabled for LING; use Video Companion speech or a dedicated high-quality provider"
-    elif provider in {"openai_tts", "elevenlabs"}:
-        result["error"] = (
-            f"{provider} is not implemented in the main project; use Video Companion speech configuration"
-        )
+        result["error"] = "edge TTS is disabled for LING; use the main OpenAI TTS reply voice or Video Companion realtime speech"
+    elif provider == "openai_tts":
+        api_key_env = str(config.get("api_key_env") or "OPENAI_API_KEY").strip() or "OPENAI_API_KEY"
+        if os.environ.get(api_key_env):
+            result["available"] = True
+        else:
+            result["error"] = f"missing API key environment variable: {api_key_env}"
     else:
         result["error"] = f"unsupported TTS provider: {provider}"
 

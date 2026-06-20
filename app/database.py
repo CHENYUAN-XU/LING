@@ -134,6 +134,15 @@ def init_db() -> None:
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS self_use_companion_bindings (
+                user_id INTEGER PRIMARY KEY,
+                persona_id INTEGER NOT NULL UNIQUE,
+                bound_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (persona_id) REFERENCES personas(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS persona_versions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 persona_id INTEGER NOT NULL,
@@ -665,6 +674,18 @@ def init_db() -> None:
                 created_at INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS llm_route_verifications (
+                route_key TEXT PRIMARY KEY,
+                provider TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                base_url TEXT NOT NULL DEFAULT '',
+                state TEXT NOT NULL DEFAULT 'unverified',
+                checked_at INTEGER NOT NULL DEFAULT 0,
+                status_code INTEGER,
+                model_available INTEGER,
+                error_text TEXT NOT NULL DEFAULT ''
+            );
+
             CREATE TABLE IF NOT EXISTS app_error_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 request_id TEXT NOT NULL DEFAULT '',
@@ -773,6 +794,8 @@ def init_db() -> None:
                 ON memory_eval_runs(user_id, persona_id, suite_name, created_at);
             CREATE INDEX IF NOT EXISTS idx_llm_call_logs_task
                 ON llm_call_logs(task, status, created_at);
+            CREATE INDEX IF NOT EXISTS idx_llm_route_verifications_checked
+                ON llm_route_verifications(checked_at);
             CREATE INDEX IF NOT EXISTS idx_app_error_events_created
                 ON app_error_events(created_at);
             CREATE INDEX IF NOT EXISTS idx_app_error_events_status

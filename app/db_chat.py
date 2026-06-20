@@ -625,10 +625,16 @@ def db_chat(
         reply = call_llm_api(messages, task="chat")
     except LLMProviderError as exc:
         _finish_context_trace(trace_id, status="degraded", error_text=str(exc))
-        return _failed_reply_payload(conversation, persona_id, user_message_id, trace_id, stored_memories, layered, semantic_memories)
+        return _failed_reply_payload(
+            conversation, persona_id, user_message_id, trace_id, stored_memories, layered, semantic_memories,
+            presence=_finish_presence_reply(user_id),
+        )
     except Exception as exc:
         _finish_context_trace(trace_id, status="degraded", error_text=str(exc))
-        return _failed_reply_payload(conversation, persona_id, user_message_id, trace_id, stored_memories, layered, semantic_memories)
+        return _failed_reply_payload(
+            conversation, persona_id, user_message_id, trace_id, stored_memories, layered, semantic_memories,
+            presence=_finish_presence_reply(user_id),
+        )
 
     presentation = _extract_reply_presentation(reply)
     reply = presentation["content"]
@@ -683,10 +689,7 @@ def db_chat(
     else:
         conversation_summary = {"skipped": True, "reason": "memory policy summary cadence"}
 
-    presence_state = None
-    if presence_is_enabled():
-        presence_state = _best_effort("PresenceEnd", lambda: on_reply_end(user_id), {})
-        presence_state = get_runtime_state(user_id).get_snapshot()
+    presence_state = _finish_presence_reply(user_id)
 
     return {
         "reply": reply,
@@ -713,6 +716,7 @@ def _failed_reply_payload(
     stored_memories: list,
     layered: list,
     semantic_memories: list,
+    presence: dict | None = None,
 ) -> dict:
     error_message = "回复暂时没有送达。可以稍后重试。"
     with get_db() as db:
@@ -734,7 +738,15 @@ def _failed_reply_payload(
         "layered_memory": layered,
         "degraded": True,
         "expressions": [],
+        "presence": presence,
     }
+
+
+def _finish_presence_reply(user_id: int) -> dict | None:
+    if not presence_is_enabled():
+        return None
+    _best_effort("PresenceEnd", lambda: on_reply_end(user_id), {})
+    return get_runtime_state(user_id).get_snapshot()
 
 
 def _pending_reply_payload(conversation: dict, persona_id: int, user_message_id: int) -> dict:

@@ -1,93 +1,111 @@
-# 生产部署运行手册
+# LING 本地运行手册
 
-这份手册面向 VPS、云服务器或 PaaS。当前项目仍以单实例 FastAPI + SQLite 为主，适合个人自用、小规模内测或直播展示；多人公开使用前再迁移 PostgreSQL/MySQL，并把限流移动到 Redis 或反向代理层。
+LING 当前面向作者本人使用。默认部署形态是 Windows 本机、单个 FastAPI 进程、SQLite、VTube Studio，以及可选的外部 Video Companion。它不是多人公网聊天服务，直播能力也不应改变这套默认边界。
 
-## 1. 部署前检查
+## 1. 本地预检
 
 ```powershell
-py scripts\check_environment.py --strict
-py scripts\check_deployment.py --production
+cd "E:\澪\project-mnemosyne"
+py scripts\check_environment.py
+py scripts\check_deployment.py --self-use
 py scripts\verify_all.py --video-e2e
 ```
 
-`check_deployment.py --production` 会把以下问题视为阻塞：
+若当前机器的 `py` 找不到解释器，使用实际 Python：
 
-- 配置引用的 API Key 环境变量缺失。
-- `config.yaml` 中出现疑似明文密钥。
-- `rate_limit.enabled` 未开启。
-- 请求日志未开启。
-- HTTPS 部署仍未启用 `security.secure_cookies`。
-- `data/`、`data/uploads/` 或 `data/backups/` 不可写。
-- 主项目启用 Video Companion 但外部项目路径不存在。
-
-## 2. HTTPS 与 Cookie
-
-正式域名必须走 HTTPS。反向代理确认只转发 HTTPS 后，把 `config.yaml` 改为：
-
-```yaml
-security:
-  secure_cookies: true
+```powershell
+& 'C:\Users\Yue\AppData\Local\Programs\Python\Python314\python.exe' scripts\check_deployment.py --self-use
 ```
 
-本地 `http://127.0.0.1` 开发时保持 `false`，否则浏览器不会发送 session cookie。
+`--self-use` 会确认 localhost 边界、cookie 模式、运行目录写权限和外部 Video Companion 路径。尚未配置的聊天或语音 API key 只会提示，不会把空白自用工作区误判为不可运行。
 
-## 3. 反向代理建议
+## 2. 启动
 
-FastAPI 进程建议只监听本机：
+```powershell
+scripts\start_local_server.ps1
+```
+
+或直接运行：
 
 ```powershell
 py -m uvicorn app.server:app --host 127.0.0.1 --port 8001
 ```
 
-公网入口交给 Nginx、Caddy 或云平台反向代理处理 TLS、压缩和访问日志。上传目录 `/uploads` 由应用静态挂载；生产前要确认反向代理请求体大小允许头像上传。
-头像上传后端只接受 jpg/png/webp/gif、5MB 以内文件，并校验文件头；手填头像链接只允许 `/uploads/...`、`http://...` 或 `https://...`；反向代理层也建议设置接近的请求体大小上限。
+- LING：`http://127.0.0.1:8001`
+- 调试管理台：`http://127.0.0.1:8001/admin`
+- 本地 HTTP 必须保持 `security.secure_cookies: false`。
+- `self_use.enabled` 与 `self_use.require_localhost` 应保持 `true`。
+- 不要为方便访问改成 `0.0.0.0`；远程访问不是当前默认产品边界。
 
-## 4. SQLite 与备份
+## 3. Live2D / VTube Studio
 
-默认 SQLite 配置：
+1. 先启动 VTube Studio 并开启 Plugin API。
+2. 在 LING“接入”面板启用 Live2D。
+3. 首次连接时在 VTube Studio 接受授权。
+4. 在“编辑形象”中读取并绑定当前模型。
+5. 用 Idle、Listen、Think、Talk 控件检查实际动作映射。
 
-```yaml
-database:
-  journal_mode: wal
-  busy_timeout_ms: 5000
-```
+LING 会在启动时进行有界重连。主动点击断开后，本进程不会立刻自动连回。切换 VTS 模型后刷新能力；模型、热键和表情快照必须整组刷新成功才会重新标记就绪。
 
-`GET /api/health` 会返回当前 SQLite `journal_mode`、`busy_timeout_ms` 和外键状态。个人/本机使用优先保持 SQLite；只有公开多人、多个 worker 或高并发写入时，再做 MySQL/PostgreSQL 迁移。
+## 4. 普通回复语音
 
-上线前先做一次备份：
+普通文字回复语音由主项目的 OpenAI TTS 适配器负责，默认关闭。启用前设置配置所引用的环境变量，并在澪的形象绑定中填写实际 provider voice ID。
+
+Edge TTS 不属于 LING 的语音方案。实时麦克风、ASR 和视频会话语音属于外部 Video Companion。
+
+## 5. 外部 Video Companion
+
+外部项目位于 `E:\视觉\video-companion`。主项目只负责启动代理、授权/状态展示、上下文提供、观察与摘要回写，不实现摄像头帧循环、麦克风状态机或视频会话 UI。
+
+集成启动：
 
 ```powershell
-py scripts\backup_data.py --label before-deploy
+scripts\start_integrated_video_companion.ps1
 ```
 
-备份 zip 默认写入 `data/backups/`，包含 SQLite 一致性快照、上传文件和 manifest。`data/`、日志、`.env*` 和下载工具目录不应提交到 Git。
+“接入”面板应分别显示：
 
-检查和旁路恢复：
+- 外部服务是否在线；
+- `session_state` 是否为 `active`；
+- 当前授权项；
+- 最近视觉观察及其 freshness；
+- 最近摘要回写；
+- 最近授权同步。
+
+## 6. SQLite 与备份
+
+本地单进程继续使用 WAL、busy timeout 和 foreign keys。`GET /api/health` 会报告实际 SQLite 状态。
 
 ```powershell
+py scripts\backup_data.py --label before-change
 py scripts\restore_data_backup.py data\backups\mnemosyne-backup-YYYYMMDD-HHMMSS.zip --inspect-only
 py scripts\restore_data_backup.py data\backups\mnemosyne-backup-YYYYMMDD-HHMMSS.zip --restore-dir data\restore-drill
 ```
 
-恢复脚本只接受新的空目录作为 `--restore-dir`，输出结构为 `data\restore-drill\data\app.db` 和 `data\restore-drill\data\uploads`。确认恢复结果后，再人工决定是否替换运行中的 `data/app.db` 与上传目录。
+备份包含 SQLite 一致性快照、上传的形象素材及 manifest。恢复只写入新的旁路目录；确认结果后再人工替换运行数据。
 
-## 5. 外部 Video Companion
+## 7. 日用与休眠检查
 
-实时摄像头视频陪伴在外部项目 `E:\视觉\video-companion` 内独立制作和运行。主项目只负责：
+每次较大改动或系统更新后观察：
 
-- 显示入口和授权状态。
-- 提供人格上下文。
-- 接收明确授权后的摘要回写。
-- 通过 `/api/video-companion/*` 检查外部服务状态。
+1. 启动 LING，确认首页直接进入澪的 embodied workspace。
+2. VTube Studio 晚启动时，确认 LING 能在有界重试内连接。
+3. 切换 VTS 模型，确认旧动作不会与新模型混用。
+4. 打断生成中和播放中的语音，确认旧播放不会覆盖新一轮状态。
+5. 启停外部 Video Companion，确认 8 秒状态轮询不会积压请求或清空正在编辑的表单。
+6. Windows 休眠再唤醒后，确认 Live2D/Video 状态会恢复或明确显示断开。
+7. 检查 `/api/health`、`logs/app.log`、SQLite 写入和最新备份。
 
-不要在主项目部署流程里重做连续摄像头帧理解、麦克风状态机、视觉模型成本路由或视频会话 UI。
+自动化通过不等于上述真机观察已经完成。
 
-## 6. 回滚
+## 8. 回滚
 
-如果部署后出现异常：
+1. 停止 FastAPI 与外部 Video Companion。
+2. 保留当前日志和数据库副本。
+3. 将最近备份恢复到新的旁路目录并检查。
+4. 人工切换确认过的数据库与上传目录。
+5. 重新运行 `check_deployment.py --self-use` 和 `verify_all.py --video-e2e`。
 
-1. 停止 FastAPI 进程。
-2. 保留当前 `logs/app.log` 和 `data/app.db` 副本用于排查。
-3. 使用 `restore_data_backup.py` 从最近的 `data/backups/*.zip` 恢复到新的旁路目录，确认数据库完整性和上传文件。
-4. 人工切换已确认的 `app.db` 与上传目录。
-5. 运行 `py scripts\check_deployment.py --production` 和 `py scripts\verify_all.py` 后再恢复流量。
+## 9. 非当前目标：公网部署
+
+若未来明确需要公网或多人访问，再单独设计 HTTPS、secure cookie、反向代理、集中限流、PostgreSQL/MySQL、Redis 和多 worker 一致性。现有 `--production` 预检仍保留这些公网约束，但它不代表当前 LING 自用完成标准。

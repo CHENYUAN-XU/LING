@@ -1,599 +1,185 @@
-# 忆界树 / Project Mnemosyne
+# LING
 
-一个以长期记忆为核心的多人格 AI 对话系统地基。
+LING 是一个面向作者本人使用的 AI VTB / 具身数字陪伴体项目。澪是唯一产品主体：Live2D / VTube Studio 形象、文本与语音回应、表情动作、长期记忆和外部实时感知围绕同一个 companion 状态组织。
 
-目标不是维护几个固定人格文件，而是让每个用户注册后，通过选项和自由描述创建自己的专属 AI 对话对象。人格会在后续对话中继续被记忆、反馈和关系状态塑造。
+它不是多人格聊天平台。仓库中仍保留部分 Project Mnemosyne 的账号、人格、群聊和记忆代码，用于数据兼容与调试；在默认自用模式中，这些旧结构不会驱动首页，也不会创建第二个 companion。
 
-2026-06-14 起，当前本地开发方向按 `LING` 收拢：第一界面应是以 Live2D/实时形象在场为主体的 AI companion，而不是继续扩张旧的“人格列表 + 聊天气泡 + 群聊成员”聊天产品。现有列表、记录、群聊和头像字段保留为兼容、账号、历史和调试能力；后续形象字段优先考虑 `live2d_model_id`、`live2d_preview_url`、`fallback_image_url`、`voice_profile` 和 expression/action mapping。实时摄像头视频陪伴仍在外部 `E:\视觉\video-companion`，主项目只做接入、授权、上下文提供和摘要回写。
+## 当前体验
 
-LING 后续主线见 `docs/LING_ROADMAP.md`：旧 P1/P2/P3 能力保留为底层和兼容能力，但当前第一体验必须转向“澪 / Live2D 形象在场”的自用 AI VTB 工作区。
-
-## 接力开发说明
-
-如果换一个聊天窗口继续开发，先阅读：
-
-```text
-SYSTEM_PLAN.md
-```
-
-它记录了当前项目定位、已完成改动、近期用户反馈、优先级、后阶段计划、启动命令和重要文件。`README.md` 保留较完整的系统说明，`SYSTEM_PLAN.md` 用来快速接上开发现场。
-
-## 阶段状态
-
-- 第一阶段“单人格文字聊天基础”已达到功能闭环：账号/游客、人格创建与命名、资料真实生效、主界面与聊天记录、未读、失败重试、删除恢复及普通端流程验证均已落地。手机实机布局和操作手感继续作为维护项随测随修，不阻塞后续主线。
-- 第二阶段“人格成长与反馈体验”已完成功能闭环并转入观测维护：用户能自然感知与反馈人格变化，管理员可审核、追踪证据链；稀疏画像探索、明确拒绝/重新邀请提问也已有第一版约束。
-- 第三阶段“表达系统”已推进第一版轻表达闭环：回复可携带至多一个白名单结构化轻表达标签，由程序单独展示，并已限制连续出现和近期同标签重复；用户可在聊天中直接要求关闭、克制或恢复轻表达，也可在联系人资料页选择关闭/克制/正常三档；表达标签已接入轻量资源目录，资源目录会同时驱动模型协议提示和前端文本徽标展示，暂不扩张到完整贴纸或形象资源。
-- 第四至第九阶段已具备最小可验证闭环：语音播放入口、Live2D 连接入口、Presence 状态、Camera/Screen 授权与一次性检查、Proactive 授权与发送前约束均已落地；这些能力仍默认关闭，且不代表真实设备、视觉识别、OCR 或长期后台调度已经达到生产级。
-
-## 验收纠偏
-
-2026-06-13 代码审查与修复结论：4-9 阶段已从“只有脚手架”推进到最小可验证闭环，但仍不等于完整生产级体验。后续开发不得只凭单个阶段脚本通过就宣称全部完成；至少运行 `py scripts\verify_all.py`，并按涉及功能补充真实设备或浏览器验收。
-
-- 明确边界：实时视频陪伴项目已由项目作者拿到外部独立制作并完成到 `E:\视觉\video-companion`。后续即使换到其他聊天窗口继续开发本仓库，也必须默认跳过该项目，不要在主项目内继续实现视频通话、连续摄像头理解或视觉模型抽帧链路。`docs/VIDEO_COMPANION_PROJECT_PLAN.md` 保留不删，只作为外部项目计划、接口契约和接回主项目的参考。
-- 实时视频陪伴已拆为独立项目：类似豆包视频的“摄像头 + 麦克风 + 视觉理解 + 低延迟语音对话”不继续塞进主项目硬做。主项目只保留授权、人格上下文、会话摘要回写和入口位置；当前通过 `app/video_companion.py` 与 `/api/video-companion/*` 适配外部服务，默认端口为 `8782`，避免和主项目开发端口 `8001` 冲突。
-- Video Companion 接入运行手册见 `docs/VIDEO_COMPANION_INTEGRATION_RUNBOOK.md`；开发期可用 `scripts/start_integrated_video_companion.ps1` 同时拉起主项目和外部视频服务。
-- 语音：主项目保留 `/api/voice/*` 的播放入口、分句和表达风格规划，但不再把 Edge TTS 当作 LING 主线；实时/高质量语音优先交给 Video Companion 或后续专用 TTS provider 接入。
-- Live2D：普通端资料面板提供 VTube Studio 连接、断开和测试表情入口；后端会按 VTube Studio 插件 API 申请/缓存授权 token，并加载当前模型热键与表情能力，失败原因会明示；真实模型动作仍需本机 VTube Studio 实机联调。
-- Presence：已接入聊天发送流程和前端状态展示，支持 idle/thinking/quiet 等最小状态，运行态按当前用户隔离，安静模式不会被回复结束冲掉；仍不是完整实时陪伴引擎。
-- Camera：默认关闭，需全局配置开启且用户显式授权；状态接口按当前用户授权计算，未授权不会误报 active；有 OpenCV 可用时可做一次性取帧、Haar 人脸存在检测和本机 MJPEG 预览。普通元数据接口不返回图像字节，本机预览只在用户点开时建立连接，不等于视频通话或连续视觉理解。
-- Screen：默认关闭，需全局配置开启且用户显式授权；资料弹窗有授权/撤销和一次性检查入口；当前可采集活动窗口标题，若显式开启截图也只返回尺寸等元数据，不保存像素，不做 OCR。
-- Proactive：默认关闭，需全局配置开启且用户显式授权；具备人格归属校验、频率限制、安静模式、反馈记录、发送前风险判断、单次主动消息 tick 和可选后台调度器；调度器默认关闭，避免未经确认持续消耗模型额度。
-
-## 后续计划清单
-
-- 第二阶段维护 - 观察真实聊天中的探索自然度、拒绝识别误触发、日期时区与跨端体验问题，发现回归再修正。
-- 第三阶段主线 - 在不破坏文字聊天克制感的前提下完善轻表达标签、频率控制和后续资源映射。
-- 主动联系系统：未来人格可以在合适时机主动给用户发消息。必须先有用户许可，并通过多模块/多 agent 排查机会、时机、记忆依据、风险边界和最终发送策略；主动消息要直接显示人格说的话，不做“有话想说”的系统提示。后续可用 contextual bandit 根据用户回复、忽略、反感或喜欢来学习频率和类型。
-- 多平台平行推进：桌面网页、手机网页/PWA、后续桌面壳和原生移动端要共享同一套主界面、未读状态、人格资料、聊天体验和后端数据能力，只按设备适配布局，不做割裂产品。
-- 移动端主界面：手机端已采用人格列表进入聊天、聊天页返回主界面的结构，并显示未读红点/数字；作为第一阶段维护项继续依据实机体验修正密度、按钮与资料面板，同时与第二阶段反馈入口平行推进。
-- PWA 地基：普通端已提供 `manifest.webmanifest`、`sw.js` 和 SVG 图标；service worker 只缓存应用 shell，明确跳过 `/api`、`/uploads` 和 `/admin`，避免离线缓存用户数据或管理台内容。验证脚本为 `py scripts\verify_pwa_assets.py`。
-- 聊天人格主体性底层：聊天人格只负责自然对话，不在口头上自称 AI、模型、机器人或程序；更深层要把“系统知道它是 AI”和“人格在对话中作为一个有自主性的对象行动”分层处理。
-- 输出净化与表达层：括号动作不直接进入聊天文本；当前支持经白名单校验的结构化轻表达标签并存入 `message_expressions`，用户明确说“以后别发表情了 / 表情少一点 / 现在可以发表情了”会写入 `expression_preferences` 的 `off` / `subtle` / `normal` 模式并从当轮生效，联系人资料页也能显式选择三档；表达标签先通过 `/api/expression-assets` 映射为文本徽标，且资源目录中的用途说明、分组、风险和强度会生成聊天 prompt 白名单，后续再由表情/动作调度决定是否映射贴纸、头像表情或动作。
-- 删除人格：第一版已实现软删除与恢复。资料编辑页底部的危险操作区要求输入人格名字确认；删除后普通端隐藏人格和相关会话，并禁止从旧会话继续读取或聊天；用户可从主界面/创建页的“已删除”面板恢复对象与保留聊天，记忆与版本历史仍保留。
-- 表情资源系统：建立表情包/动作资源库、人格专属表情映射、频率控制和管理员审查。
-- 形象、声音和实时陪伴：远期接入擅长生图的 AI，生成头像、立绘、表情或完整形象；声音合成、语音聊天和 Live2D 入口可在主项目保持轻量接入。实时摄像头视频陪伴另立项目推进，完成后再通过接口接回主项目。
-
-## 当前能力
-
-- FastAPI 后端
-- SQLite 本地数据库：`data/app.db`
-- 注册 / 登录 / 退出
-- 多账号并行测试：标准登录继续使用共享 Cookie；登录页勾选“此标签页独立登录”，或已登录后点击“切换账号（仅本页）”，即可在同一浏览器的不同标签页同时使用不同账号
-- 游客模式：登录页可直接进入“游客体验（3天）”，功能基本可用；三天后自动清除游客账号、人格、会话、消息、记忆和上传头像等数据；游客也可以在资料弹窗里转为正式账号并保留当前数据
-- 用户资料：昵称、生日、签名等；聊天运行时能在用户询问资料或提供可由资料解出的线索时使用这些字段作答，并提供中性的本地当前日期用于必要判断
-- 人格创建向导：选项 + 自由描述
-- 初始人格命名使用独立 `Name Crafter` 步骤：读取用户期待和 Forge 轮廓生成名称，并避开同一用户已有对象重名；不再使用固定随机名字池；命名失败时不会落库为“未命名”，用户可在原创建页重新生成或直接给出名字
-- 人格创建关系提示仅保留像朋友一样、稳定陪伴、给予引导等宽泛入口；用户可以不选择或在自由描述里写任意关系
-- 聊天界面：用户头像与人格头像的双边对话
-- 普通端对象状态层：聊天顶部和未开聊人格项会显示关系、说话方式和人格版本
-- 人格资料可编辑：名字、摘要、关系定位、说话方式、头像图片、外貌参考、期望形象；这些内容会重建人格 prompt 并进入人格版本历史
-- 删除人格支持软删除、输入名字二次确认与普通端恢复；彻底清除和数据导出策略留待后续完善
-- 人格资料页以联系人资料为主视图，形象、心理适配和成长方向等较深信息收进折叠区域
-- 聊天运行时会额外注入当前人格资料，确保用户编辑过的关系定位和说话方式立即反馈给聊天 AI
-- 聊天上下文末尾会用当前人格名和关系定位做最终锁定，旧历史自称不再优先
-- 人格改名后，聊天上下文会把旧 assistant 自称和旧上下文里的旧名临时改写为当前名，避免资料页和聊天主体脱节；原始聊天记录保留不变
-- 第一版主界面：电脑端和手机端默认进入人格列表，同一人格只显示一张卡片并汇总最近消息与未读；点击人格进入聊天，聊天页有返回主界面的按钮
-- 普通端视觉主题已调整为白底浅色界面：主界面、聊天、登录与资料弹窗统一使用白色卡片和浅灰层次，以克制的灰蓝色表达可操作项和选中状态，不再使用大面积深绿配色
-- 聊天页的“记录”面板在桌面和手机端均可使用：可新开聊天段落、重命名、置顶、移到历史并恢复历史聊天
-- 轻表达标签：单聊和群聊人格回复在确有情绪承接需要时可附带至多一个白名单结构化标签（如轻声、微笑、点头），后端从正文剥离并持久化，普通端在气泡旁以克制的小标签展示；上一条回复已显示表达时本轮抑制展示，同标签会按资源目录的冷却轮数避免重复，中风险资源在近期已经有轻表达时会额外抑制，模型协议中也会标出资源风险、强度和冷却；用户在聊天中明确要求不再发表情/动作标签时会关闭该人格的轻表达，说“表情少一点”会进入更低频的克制模式，明确恢复后再回到正常模式；联系人资料页也提供关闭/克制/正常三档；管理台可查看当前资源目录、启用/禁用单个资源、编辑资源备注和冷却轮数、查看当前模式、最近单聊/群聊表达记录、窗口统计、标签计数和调参提示，并在历史记录旁显示资源当前启用状态、风险级别、分组和冷却；轻表达资源目录包含展示文案、图标、分组、风险级别、强度、冷却、兼容别名和模型用途说明，禁用后会从普通端资源接口、模型白名单提示、后端结构化解析、对应括号兼容提取和普通端历史展示中同步移除，但管理台仍保留历史使用记录用于审查；括号动作继续只作为兼容清理路径，且只会按启用资源别名归一到白名单标签
-- 模型未能回复时显示独立状态提示，不让人格说“服务不稳定”；失败状态保存在原用户消息上，刷新或重新进入聊天后仍可点击重试；每次发言带有客户端消息 ID，网络在响应返回前中断后的再次尝试也会复用同一句，不造成重复发言或重复记忆
-- 用户发言落库后会立刻更新会话最近活动时间；即使回复失败，主界面最近消息顺序也不会落后，卡片与聊天记录预览会标明“回复未送达”
-- 未读状态地基：会话记录 `last_read_message_id` / `last_read_at`，列表返回 `unread_count`，主界面可显示未读红点或数字；如果用户发完消息后返回主界面，assistant 回复完成后应显示未读，进入聊天后再清零
-- 会话列表标题默认显示人格名，不再用第一句用户消息作为标题
-- 人格关系不默认是恋人或陪伴者；只有用户选中或正向明确写出的关系才会进入初始人格，只写气质/性别或写“不要像恋人”会保持中性关系，界面自然显示为“刚刚认识”
-- 身份污染清理：人格 prompt、历史消息、上下文追踪和人格修订建议会清除“模型/机器人/虚拟人格/默认恋人”等污染表达；新用户后续创建、编辑、记忆、用户画像、会话摘要和人格修订也会走清理链路
-- 用户和人格头像支持本地图片上传；图片保存在 `data/uploads`，URL 只作为可选图片链接方式；后端限制头像为 jpg/png/webp/gif、5MB 以内，并校验文件头；手填图片链接只允许 `/uploads/...`、`http://...` 或 `https://...`，验证脚本为 `py scripts\verify_avatar_upload.py` 和 `py scripts\verify_avatar_url.py`
-- 记忆档案员（内部模块 `Archivist`）：从用户消息提取长期记忆
-- Layered Memory 分层记忆：event / episode / fact / relation / summary / state
-- 用户画像器（内部模块 `Mirror`）：整理用户画像、话题偏好/避雷、聊天策略指令
-- 人格记忆侧写：只影响“主动召回风格”，不删除后台完整记忆
-- 独立管理员控制台：普通用户前端不包含记忆审查代码
-- 记忆注入追踪：记录每次聊天前实际注入给模型的状态变量、摘要、召回记忆、探索防重复/维度覆盖策略与资料按需使用策略
-- 动态状态变量：固定核心字段之外，自动从高重要度事实/关系生成 `dynamic.*` 状态
-- 会话滚动摘要：先结合状态变量预提取关键点，再把长聊压缩成可追踪摘要；刷新在答复返回后后台执行，不再让用户等摘要模型
-- Memory RAG：将长期记忆生成 embedding，按语义相似度召回相关记忆
-- 记忆审校员（内部模块 `Memory Judge`）：对新写入记忆进行质量、风险和建议动作审校
-- 记忆冲突处理器（内部模块 `Memory Conflict Resolver`）：记录记忆替代、偏好冲突、称呼变化与边界撤销；用户明确改口的兴趣偏好或首选称呼、明确放开的旧话题限制或禁用称呼自动按最新表达生效并保留已解决审计，模糊冲突才留给管理员核对
-- Memory Evaluation Suite：生成测试用户和测试记忆，自动评测召回、状态变量、摘要、冲突和聊天上下文注入
-- 人格调整器（内部模块 `Sculptor`）：根据记忆和反馈保留可追踪的人格变化记录；明确的回应方式要求可由受限自动审核代理应用，用户在聊天中明确设置名字或关系时也会直接形成可追踪版本，不再变成管理员日常工单
-- 普通端第一阶段流程验证：`py scripts/verify_phase1_flows.py` 使用临时数据库且不调用真实模型，检查关系生成、命名兜底、删除恢复、回复失败状态、消息幂等和标签页独立账号会话
-- 第二阶段第一轮已接入普通端“相处痕迹”：资料页按依据轻量显示记忆线索、正在留意的状态/边界和经过审核的人格变化，并提示用户可在聊天中直接表达相处偏好；最近审核变化会根据公开人格字段显示概括摘要和确认时间，不暴露后台原始审查细节，也不做等级条或弹窗
-- 人格版本证据链已结构化：新版本记录变化类型、人格调整建议来源与变化摘要；管理台可从已应用建议看到对应版本，并在版本历史中查看审核关联
-- 人格调整建议新增基线版本锁：管理台展示候选版本相对基线的字段差异与依据概览；若建议生成后人格已被用户编辑或其他审核改动更新，旧建议会标为过期且不能覆盖新版本
-- 用户在聊天中明确提出“回复短一点”“不要说教”等相处方式反馈时，会立即形成当前回应指导，并可自动形成一条保守的人格变化记录；若差异仅限回应方式和成长备注，自动审核代理会立即应用并让当前这一轮回复使用更新后的回应方式，同时留下审计记录。用户后来在聊天中明确改口为“可以多问我一点”“回复详细一点”等反向要求时，新指导当轮起生效，旧聊天指导及对应有效记忆自动退出运行时，已经写入人格说话方式的旧依据也会自动形成一条可审计回正版本后移除；明确说“回复详细一点这条不用了，多问我一点照旧”会只停止前者，保留仍想继续的要求。“我不想让你回复短一点”或“你为什么总说回复短一点”这类否定、讨论语句不会被误存成指导。用户明确说“把我们的关系改成恋人”“以后你就是我的女朋友吧”或“我以后叫你阿澄吧”时，核心资料会直接更新并保留版本证据；已经设定关系后，明确说“我们分手吧”“以后你别再当我的女朋友了”或“我们先不要定义关系了”会直接回到中性的“关系未定”，而不是由系统擅自猜测新的关系。即使否定句包含完整设置片段，如“不要把我们的关系改成朋友”，也不会误改核心资料
-- 管理员对人格调整候选的“应用 / 忽略”现在会保存审核人、审核时间与可选审核备注；管理台可回看最终决定理由，使未采纳建议同样具备审计证据
-- 管理台在应用人格候选等刷新动作后会保持仍存在的当前人格选择，便于连续审核同一对象的建议与版本结果
-- 管理台保留审计与异常观察入口：用户列表、人格选择框和顶部工具区可显示历史候选、旧积压和过期记录；日常资料页偏好以及有具体描述的“还想调整”已直接成为运行时回应指导，不再形成你的审批队列。旧版遗留的低风险聊天候选仍可由自动代理补处理
-- 已确认变化新增克制的入口提示：只有 `sculptor_review` 已应用且用户尚未查看资料时，主界面人格卡与聊天顶部才提示变化；提示本身可直接打开资料中的“相处痕迹”，用户查看后记录已读并自然消退，不对普通记忆或后台审计记录弹通知
-- 用户可以在“相处痕迹”中查看最近 5 次已记录变化，并对最近一次变化选择“这样更合适”或“还想调整”；历史仅展示公开摘要与本人反馈。用户为“还想调整”写出具体方式后，该文字会立即成为一条回应指导，下一轮聊天直接使用，管理台仅可回看记录而无需人工跟进
-- 普通端“相处痕迹”提供主动偏好入口：即使还没有足够聊天数据，用户也可直接写下“难过时不要马上分析原因”等相处要求；聊天中明确说出的回应偏好也会自动出现在指导历史中。系统按来源保存主动填写、变化反馈和聊天明确提出的指导，兼容的要求同时生效；如果用户后来明确把“少追问 / 回复短一点”改成“可以多问 / 回复详细一点”等反向要求，旧指导会自动标为已被更新偏好替代并退出当前提示，用户在聊天里明确说某项要求“不用了”也会立即移除对应部分而保留同条未取消内容，不需要管理员裁决。这个偏好入口只调整回复方式和支持方式；名字或关系需要用户在聊天中明确下指令，或在资料编辑中设置
-- 稀疏画像探索策略已继续推进：像“喜欢饭团”这样单条偏好仍可记住，但不能成为无关话题的固定入口或亲近感表演素材；用户若先说“喜欢原神”、后来明确说“不喜欢了”、之后又说“现在又喜欢了”，`Mirror` 与当前记忆会按最近一次明确说法自动更新，旧方向退出当前召回而只保留审计证据。用户说“喜欢原神，但别主动提原神”时，喜欢与主动话题边界会分别保留；后来明确说“原神可以聊了”或“以后可以主动聊原神了”，旧边界会自动退出并留下已解决记录，但若用户仍明确不喜欢该话题，避开约束不会被错误移除。称呼边界也采用同一原则：`“现在可以叫我宝宝了”`只释放旧禁称，不擅自设置默认称呼；`“你可以叫我主人”`或 `“以后叫我小禾”`会作为明确首选称呼生效，同时解除同名禁称并让旧首选称呼退出当前召回，避免两种叫法同时注入聊天。`Mirror` 还会持久化已经由用户明确透露的探索维度（兴趣、日常节奏、价值/在意之事、安慰方式、边界、计划期待、相处期待），管理台可查看覆盖概览，聊天上下文在合适时优先自然触及仍不清楚的方向，但不把它当成提问清单。用户明确表示“别问我这些”一类探索拒绝时，系统会持久化为谨慎状态并停止主动个人提问；用户之后明确表示“你可以问我”时才恢复为可自然询问，且仍一次至多一个问题、可跳过、不得越过已有边界。若最近几轮回复已经使用某个已知喜好，而用户本轮没有重新提及，聊天上下文会要求本轮不要再次硬带回该话题
-- 用户资料使用策略已修正：真实追踪证明 `nickname`、`gender`、`birthday` 等资料原本就会进入主聊天；问题在于人格没有在用户要求核对资料或给出可推断线索时可靠使用它们。现在运行时提供中性本地日期及通用“按需核对资料”规则，只在当前问题需要时使用相关字段并简短作答；用户查资料时只答被问字段或解开线索所需事实，不附带未询问的记忆、兴趣或纪念日，也不为了展示熟悉或亲密主动反复提及个人资料。资料页会保存用户时区，聊天资料使用策略按该时区计算 `current_local_date`；未设置时才回退到服务器本地时区。
-- 管理台新增资料使用隔离评测：`资料上下文评测` 不调用聊天模型，核查昵称/签名是否进入上下文以及普通对话不会主动突出资料；`资料实时评测` 可按需调用真实聊天模型，要求只回答测试账号的昵称和签名，并检查没有把无关兴趣或避雷话题扯进答案
-- 管理台新增可清理的人格成长演示沙盒：点击`载入成长演示`会生成专用演示账号与人格“栖夏”，预置由自动审核代理应用的聊天变化、可由代理安全关闭的旧积压、已自动采用的反馈和当前即时偏好指导；管理台会显示普通端演练账号，点击`清除演示`即可级联移除该样本，不污染真实人格数据
-- 第二阶段成长链路验证：`py scripts/verify_phase2_growth.py` 使用临时数据库检查版本证据、低风险聊天反馈立即应用并进入当前指导、聊天改口自动替代旧指导与旧记忆并回正人格残留、聊天中停止整条或局部指导且保留未取消内容、明确兴趣喜欢/不喜欢来回改口自动覆盖旧画像与记忆、明确话题边界和禁用称呼的自然放开、首选称呼替换旧召回且不误覆盖仍有效约束、否定/讨论语句不误触发指导、自然明确的改名/改关系与明确关系结束自动生效且否定或模糊表达不越权、资料页偏好即时注入/更新/停止、兼容指导并存与反向指导自动替代、具体调整反馈自动采用、自动审计记录、普通端公开变化摘要，以及探索和资料核对约束
-- 第三阶段轻表达验证：`py scripts/verify_phase3_expression.py` 使用临时数据库检查表达资源目录、结构化标签白名单、无效标签清理、括号兼容提取、资源别名归一、程序标签不泄漏到正文、持久化回读、连续展示冷却、资源级同标签冷却、中风险资源额外抑制，以及聊天中和资料页关闭/克制/恢复轻表达偏好
-
-## 模型配置
-
-当前 `config.yaml` 默认使用 Kimi K2.6：
-
-```yaml
-llm:
-  provider: kimi
-  model: kimi-k2.6
-  base_url: https://api.moonshot.ai/v1
-  api_key_env: MOONSHOT_API_KEY
-  temperature: 0.75
-```
-
-`config.yaml` 的 `llm_routes.namer` 可单独为 Name Crafter 指定模型。它与 `forge` 分开，是为了让“人格结构生成”和“是否起了一个真正合适的名字”分别可追踪、可替换。
-
-Windows 用户变量需要配置：
-
-```text
-变量名：MOONSHOT_API_KEY
-变量值：你的 Kimi / Moonshot API Key
-```
-
-配置后重新打开 PowerShell / VS Code 终端，让新环境变量生效。
-
-## 仓库与数据安全
-
-- 对外项目名称统一为 `忆界树 / Project Mnemosyne`，GitHub 仓库名称使用 `project-mnemosyne`。
-- `data/` 包含本地 SQLite 数据库、聊天数据和上传图片，不进入版本控制。
-- `*.log`、`tools/` 下的临时隧道工具以及 `.env*` 本地密钥文件不进入版本控制。
-- `config.yaml` 只保存模型路由和环境变量名，不应写入真实 API Key。
-- 本地备份使用 SQLite backup API 生成一致性快照，并把 `data/uploads` 和 `manifest.json` 打包到 zip：
-
-```powershell
-py scripts\backup_data.py
-py scripts\backup_data.py --label before-big-change
-py scripts\backup_data.py --no-uploads
-```
-
-默认输出到 `data/backups/`。验证脚本为 `py scripts\verify_data_backup.py`，也已纳入 `py scripts\verify_all.py`。
-备份恢复采用旁路目录演练，默认不会覆盖当前 `data/app.db`：
-
-```powershell
-py scripts\restore_data_backup.py data\backups\mnemosyne-backup-YYYYMMDD-HHMMSS.zip --inspect-only
-py scripts\restore_data_backup.py data\backups\mnemosyne-backup-YYYYMMDD-HHMMSS.zip --restore-dir data\restore-drill
-py scripts\verify_backup_restore.py
-```
-
-`restore_data_backup.py` 只允许恢复到新的空目录，并把数据库放到 `data\restore-drill\data\app.db`、上传文件放到 `data\restore-drill\data\uploads`，避免误覆盖真实运行数据。
-- 用户数据导出第一版已落地：登录用户可调用 `GET /api/account/export` 导出自己的 JSON 数据；本地维护可用：
-
-```powershell
-py scripts\export_user_data.py --user-id 1 --output data\exports\user-1.json
-```
-
-导出会排除 session token 和 password hash，并只列出该用户 `data/uploads/<user_id>` 下的上传文件清单。文件字节请配合完整本地备份 zip 保存。
-- 安全基础第一版：
-  - `rate_limit` 配置已启用本地内存固定窗口限流，覆盖登录/注册、聊天、上传、账号导出/删除和人格写操作。多进程或正式公网部署前应迁移到 Redis 或反向代理限流。
-  - `logging` 配置已启用请求日志，默认写入 `logs/app.log`，包含 request id、路径、状态码、耗时和 5xx 异常类型，不记录请求正文；5xx 还会写入 `app_error_events`，管理员可通过 `GET /api/admin/error-events` 查看最近错误。
-  - 数据与隐私说明已有第一版：`GET /api/privacy`、登录页/资料弹窗的“数据与隐私”入口和 `docs/PRIVACY_AND_DATA.md` 使用同一套边界，明确游客保留期、导出/删除能力、设备授权和独立 Video Companion 项目边界。
-  - 部署预检已有第一版：`py scripts\check_deployment.py --production` 检查 API Key 环境变量、明文密钥、限流、日志、Secure cookie、运行数据/上传/备份目录写入权限、Video Companion 外部路径和主动调度风险；部署手册见 `docs/DEPLOYMENT_RUNBOOK.md`。
-  - 游客模式治理已有第一版：登录页和游客资料弹窗提示临时数据范围与 3 天清理规则；后台 `GET /api/admin/guests` 可查看活跃游客、24 小时内到期数量和清理审计日志。
-  - SQLite 本机长期使用已加固：默认 `journal_mode: wal`、`busy_timeout_ms: 5000`、连接固定开启外键；`GET /api/health` 会返回当前 SQLite 运行状态。验证脚本为 `py scripts\verify_sqlite_runtime.py`。
-  - 已删除的人格可在“已删除”面板中永久删除；必须先软删除，再输入人格名确认。
-  - 资料面板提供账号彻底删除入口；正式账号必须输入账号名和当前密码，游客账号输入账号名即可。删除会级联账号数据并清理 `data/uploads/<user_id>`。
-  - 头像上传入口只接受 jpg/png/webp/gif、5MB 以内文件，并做文件头校验；手填头像链接只允许 `/uploads/...`、`http://...` 或 `https://...`，避免把非图片内容或危险协议伪装成头像。
-  - 环境检查脚本：`py scripts\check_environment.py` 会列出 `config.yaml` 引用的 API Key 环境变量、当前缺失项，并检查配置里是否误写了疑似密钥；`--strict` 会在缺少变量时失败。
+- 本地打开后直接进入澪的具身 workspace，不经过登录或人格生成向导。
+- 第一屏以 Live2D 身体和在场状态为主，文字 session、资料、历史和接入工具是辅助层。
+- 本地 Presence 默认开启；第一屏可切换“安静模式 / 恢复在场”，这不会自动开启主动消息。
+- 澪的基础资料默认空白，不会用系统生成的人设替作者填写。
+- 聊天 API 默认关闭，并要求作者显式检测路由后才能启用。
+- Live2D 默认关闭；启用后应用启动会尝试非阻塞连接 VTube Studio。
+- 普通文字回复 TTS 默认关闭，使用 OpenAI TTS 适配器，不使用 Edge TTS。
+- 实时摄像头、麦克风、ASR、连续视觉理解和视频会话语音由外部 Video Companion 负责。
 
 ## 启动
 
+环境：Python 3.11+，Node.js 仅用于前端语法验证。
+
 ```powershell
-git clone https://github.com/thefoolsparkle-oss/project-mnemosyne.git
-cd project-mnemosyne
-py -m uvicorn app.server:app --host 127.0.0.1 --port 8000
+cd "E:\澪\project-mnemosyne"
+py -m pip install -r requirements.txt
+py -m uvicorn app.server:app --host 127.0.0.1 --port 8001
 ```
 
-普通用户页面：
+打开：
 
 ```text
-http://127.0.0.1:8000
+LING workspace: http://127.0.0.1:8001
+维护调试台:      http://127.0.0.1:8001/admin
 ```
 
-管理员页面：
-
-```text
-http://127.0.0.1:8000/admin
-```
-
-管理员台当前可以做三件事：
-
-- 查看用户的状态变量、摘要、事实、关系
-- 查看用户画像、话题避雷和聊天策略
-- 手动校正用户画像，例如喜欢/讨厌话题、避开话题和聊天禁忌
-- 查看每个会话的滚动摘要和关键点
-- 通过 RAG 同步和语义搜索检查记忆是否能被相似问题召回
-- 查看记忆审校员对新记忆的质量评分、风险评分、建议动作和原因
-- 查看记忆冲突处理器记录的当前/历史冲突，并标记已解决 / 忽略
-- 运行 Memory Evaluation Suite，在没有真实数据时生成可控样本并检查记忆系统
-- 展开最近聊天的上下文注入记录，排查“失忆”到底发生在哪一层
-- 生成、应用或忽略人格调整建议
-
-## 用户画像器（Mirror）
-
-用户画像器会在每次用户发言后更新 `user_insights`：
-
-```text
-profile_summary        用户总体互动画像
-interaction_style      用户偏好的回复风格
-emotional_patterns     非诊断式的支持方式线索
-topic_model_json       喜欢、不喜欢、应避开、可安全使用的话题
-guidance_json          给聊天 AI 的语气、话题、支持和禁忌规则
-discovery_dimensions_json  已有明确用户线索覆盖的了解维度与最近更新时间
-curiosity_feedback_json     用户明确拒绝或邀请探索提问的累计反馈状态
-```
-
-例如用户说“不喜欢原神”，用户画像器会把它沉淀为：
-
-```text
-dislikes: ["原神"]
-avoid_topics: ["原神"]
-do_not: ["Do not proactively bring up 原神."]
-```
-
-这些内容会进入聊天前的用户画像上下文，用来约束聊天 AI 的话题选择。聊天链路还会在靠近最终回复的位置加入探索策略：已知喜好只在相关时使用，不将单一线索循环包装成所有话题；当画像信号很少时，允许人格自然了解新的兴趣、节奏、边界或在意的事情，并参考已经明确覆盖与仍未了解的维度来减少原地打转；近期回复已使用而用户没有重新提及的话题会被临时压低。维度覆盖只来源于用户已提供的线索，不代表系统可凭空推断；探索提问态度也只根据用户明确的拒绝或邀请调整，不从沉默或普通转题臆测。直接一些的问题并非禁区，但必须轻量、可拒绝、不追逼。
-
-## 会话滚动摘要
-
-长聊不会只依赖最近几条消息。每次需要刷新时，系统在 AI 回复已经返回给用户后，于后台更新 `conversation_summaries`；摘要服务变慢或超时不会继续挡住这一轮回复。
-
-它不是简单压缩前文，而是先结合当前状态变量和用户画像做关键点预提取，再生成摘要：
-
-```text
-memory_state / dynamic.* 状态变量
-用户画像
-新消息中的承诺、计划、称呼、偏好、避雷、关系变化
--> pre_extracted_key_points
--> rolling summary
-```
-
-```text
-summary_text          当前会话的压缩摘要
-key_points_json       关键连续性要点，包含预提取状态信号
-covered_message_id    摘要已经覆盖到哪条消息
-source_message_count  已参与摘要的消息数量
-```
-
-下一轮聊天时，摘要会作为 `Conversation rolling summary` 注入给聊天 AI。最近消息仍然保留，摘要负责补足更早的上下文；如果摘要和最新状态变量冲突，聊天 AI 应优先服从状态变量。
-
-## 动态状态变量
-
-固定状态变量只覆盖最核心的少数项，例如称呼、喜欢、讨厌、禁用称呼、互动风格。除此之外，系统会通过状态策展器（内部模块 `State Curator`）从高重要度事实和关系中自动生成动态状态：
-
-```text
-memory_facts / memory_relations
--> importance / priority / locked 判断是否 stateworthy
--> kind / label / value / urgency / stability / recall_weight / tags
--> lifecycle / expires_at / injection_policy
--> memory_state.dynamic_state
--> memory_state.dynamic.<semantic_kind>
--> State prompt
-```
-
-例如用户说“我明天要准备简历项目展示，提醒我别忘了讲记忆系统”，如果被抽取成 `plan` 记忆，它会进入类似：
-
-```text
-dynamic.plan
-dynamic.plans.upcoming
-dynamic.reminders.active
-dynamic.projects.active
-```
-
-这让系统不必在第一天枚举所有状态变量类型，也能在对话过程中逐步发现“什么东西应该被当作当前状态”。后台完整记忆仍然保留，动态状态只是更强的当前工作集。
-
-动态状态现在带生命周期：
-
-```text
-long_term              长期边界、沟通规则、关系期待
-time_bound             今天、明天、下周这类有时间边界的状态
-active_until_resolved  计划、提醒，默认保留到解决或过期
-session_scoped         当前情境状态
-working                默认工作状态
-resolved               已完成/已取消的状态，不再作为当前任务强注入
-```
-
-同时带注入策略：
-
-```text
-always_inject          高优先级边界、沟通规则、紧急提醒
-inject_when_relevant   相关时注入
-recall_only            只作为召回候选
-```
-
-如果用户后续说“已经完成”“展示完了”“不用提醒了”，状态策展器会把匹配到的 `plans.upcoming` / `reminders.active` / `projects.active` 从当前强注入里移出，同时把完成事实保留到：
-
-```text
-dynamic.resolutions.completed
-```
-
-这保证系统不会把过期任务一直当成当前任务，也不会把完成历史直接删掉。
-
-时间状态的过期基于原始记忆写入时间计算，而不是每次刷新时重新从当前时间起算。例如“明天提醒我”会按那条记忆的 `updated_at / valid_from` 推算过期时间，过期后从当前强状态里移除；长期边界和沟通规则不会因此过期。
-
-## Memory Cost Mode
-
-记忆系统支持成本模式，避免为了省额度牺牲状态完整度：
+默认 `config.yaml` 使用本地自用模式：
 
 ```yaml
-memory:
-  mode: balanced   # eco / balanced / deep
+self_use:
+  enabled: true
+  username: mio_owner
+  default_persona_name: 澪
+  chat_enabled: false
 ```
 
-三种模式：
+本地自用身份由应用自动建立并持久化。唯一 companion 使用 SQLite ID 绑定，因此改名不会切换到历史人格数据。
+
+## 模型接入
+
+聊天路由只读取环境变量中的 API key。不要把密钥写入 `config.yaml`、网页输入框或 Git。
+
+默认示例：
+
+```yaml
+llm_routes:
+  chat:
+    provider: kimi
+    model: moonshot-v1-auto
+    base_url: https://api.moonshot.cn/v1
+    api_key_env: MOONSHOT_API_KEY
+```
+
+设置环境变量并重启终端后，在 LING 的“接入”面板执行“检测连接”。检测模型目录不会生成聊天文本。只有检测成功后，聊天闸门才允许手动开启；环境变量存在本身不等于 API 已连接。
+
+## Live2D / VTube Studio
+
+LING 通过 VTube Studio Public API 驱动外部 Live2D 身体，本仓库不在网页中重新实现 Live2D 渲染器。
+
+1. 启动 VTube Studio 并开启插件 API。
+2. 在 LING“接入”面板设置 VTS WebSocket 地址，默认 `ws://127.0.0.1:8002`。
+3. 启用 Live2D，接受 VTube Studio 的首次授权。
+4. 将当前 VTS 模型绑定给澪。
+5. 从 VTS 实际发现的 expression / hotkey 中设置 Idle、Listen、Think 和 Talk 动作。
+6. 确认嘴型输入参数（默认 `MouthOpen`）在接入面板显示 ready；普通回复音频播放时会驱动该参数，结束或打断后归零。
+
+连接就绪要求：
+
+- Live2D 配置已启用；
+- WebSocket 已连接并认证；
+- VTube Studio 当前加载了模型；
+- 当前模型 ID 或名称与澪的 `live2d_model_id` 一致。
+- 配置的嘴型输入参数存在于当前 VTube Studio 参数列表中。
+
+应用重启时会后台尝试自动连接，不会因 VTube Studio 未启动而阻塞 LING。静态资源只按以下顺序回退：
 
 ```text
-eco       不跑记忆侧 LLM；规则提取、State Curator、生命周期、冲突检测照常运行
-balanced 只在消息有强记忆信号时用 LLM 精修；默认模式
-deep      尽量启用 LLM 抽取、Mirror 精修、Memory Judge、Semantic RAG
+Live2D -> live2d_preview_url -> fallback_image_url -> legacy avatar_url
 ```
 
-无论哪种模式，下面这些结构层都会运行：
+本地自用界面的预览图和 fallback 图通过独立的形象素材上传入口保存；旧头像上传只服务兼容模式，不是 LING 的形象主路径。
+
+## 普通回复语音
+
+主项目只负责文字回复的普通 TTS 播放：
+
+```yaml
+voice:
+  enabled: false
+  tts_provider: openai_tts
+  tts_model: gpt-4o-mini-tts
+  api_key_env: OPENAI_API_KEY
+  voice_id: alloy
+  response_format: mp3
+  auto_play: true
+```
+
+在“接入”面板配置 provider voice ID，并可将当前 voice ID 绑定到澪的 `voice_profile`。语音真正开始播放后才触发 Live2D Talk，结束或被新输入打断后回到 Idle。
+
+实时麦克风、ASR、低延迟可打断语音和视频会话状态机不在这里实现。
+
+## 外部 Video Companion
+
+外部项目固定边界：
 
 ```text
-规则记忆提取
-Layered Memory
-State Curator
-dynamic.*
-生命周期 / 完成 / 过期
-冲突检测
-状态 prompt 注入
+E:\视觉\video-companion
 ```
 
-因此低消耗模式不是“少记”，而是“先用结构算法保证状态连续，再把昂贵模型调用变成可选精修”。
+主项目通过 `app/video_companion.py` 与 `app/video_bridge.py` 负责：
 
-## Memory RAG
+- 外部服务配置与健康状态；
+- 会话启动/停止代理；
+- 澪、用户、记忆和授权上下文；
+- 授权后的 observation / summary 回写；
+- 把外部 session 反映到 LING 的统一在场状态。
 
-系统已经具备第一版语义检索层：
+主项目自用模式拒绝旧内部 MJPEG camera API。摄像头采集、预览、麦克风和连续理解全部留在外部项目。完整边界见：
 
-```text
-memory_facts / memory_relations / memory_summaries
--> memory_embeddings
--> semantic_memory_recall
--> Semantic memory retrieval prompt
-```
+- `docs/VIDEO_COMPANION_PROJECT_PLAN.md`
+- `docs/VIDEO_COMPANION_INTEGRATION_RUNBOOK.md`
 
-开发阶段仍然使用 SQLite 存储 embedding JSON，不需要额外安装向量数据库。后续生产部署可以迁移到 PostgreSQL + pgvector。
+## 数据与安全
 
-默认 embedding 模型：
+- 本地数据库：`data/app.db`
+- SQLite：WAL、`busy_timeout`、foreign keys
+- 上传：`data/uploads/`
+- 备份：`data/backups/`
+- 日志：`logs/app.log`
 
-```text
-text-embedding-3-small
-```
-
-管理员接口：
-
-```text
-POST /api/admin/rag/sync
-GET  /api/admin/rag/search?q=...
-```
-
-聊天时会同时使用：
-
-```text
-状态变量强制注入
-关键词/优先级召回
-分层记忆召回
-Semantic RAG 语义召回
-会话滚动摘要
-```
-
-## 记忆审校员（Memory Judge）
-
-记忆审校员当前采用旁路审查，不阻塞聊天：
-
-```text
-记忆档案员写入记忆
--> 记忆审校员审查质量和风险
--> 写入 memory_judgements
--> 管理员在审查台处理 accepted / dismissed
-```
-
-审校字段：
-
-```text
-quality_score   记忆质量
-risk_score      敏感/误判风险
-action          keep / revise / archive / lock
-reasons         审校原因
-flags           duplicate / too_vague / sensitive / unsupported / conflict / important
-```
-
-后续稳定后，可以把旁路审查升级成写入前拦截或自动降权。
-
-## 记忆冲突处理器（Memory Conflict Resolver）
-
-记忆冲突处理器负责把“新记忆和旧记忆不一致”的地方显式记录下来。明确的兴趣偏好改口，例如从“喜欢原神”变为“不喜欢原神”，以及明确的首选称呼改口，例如从“叫我主人”变为“以后叫我小禾”，都会自动以最新表达作为当前事实、让旧方向退出当前召回，并将冲突记录为已自动解决；明确撤回话题边界，例如从“别主动提原神”变为“原神可以聊了”，以及明确撤回禁用称呼，例如从“别叫我宝宝”变为“现在可以叫我宝宝了”，也会自动停止旧边界并保留解决记录。模糊或需要判断的冲突仍保留给审查台。
-
-当前会记录三类情况：
-
-```text
-fact/relation superseded   新事实或关系替代旧事实或关系
-preference_conflict        喜欢/不喜欢一类偏好发生正反冲突
-address/preference drift   称呼、关系、偏好这类会随时间变化的状态被更新
-```
-
-数据库表：
-
-```text
-memory_conflicts
-current_uid / previous_uid     当前记忆和历史记忆编号
-current_text / previous_text   当前文本和历史文本
-conflict_type                  冲突类型
-resolution                     系统建议，例如 prefer_current / needs_review
-status                         open / resolved / dismissed
-```
-
-管理员审查台会显示仍为 `open` 的模糊冲突，管理员可以确认已解决，也可以忽略误报；明确的喜欢/不喜欢改口、话题边界放开和禁用称呼放开不再积压为人工任务，其已解决记录仍可供追踪。
-
-## Memory Evaluation Suite
-
-Memory Evaluation Suite 用来解决开发阶段“没有真实数据可测”的问题。管理员可以一键生成一个隔离的测试用户：
-
-```text
-__mnemosyne_memory_eval__
-```
-
-评测会写入一组确定样本，例如：
-
-```text
-用户希望被称为阿月
-不要称呼用户为主人
-用户喜欢青柠苏打
-用户先喜欢原神，后来讨厌原神
-用户希望回复短一点，不要说教，不要一直追问
-```
-
-然后自动检查：
-
-```text
-状态变量是否正确：preferred_address / likes / dislikes / forbidden_addresses
-分层记忆是否能按关键词召回
-稳定摘要是否生成
-聊天 prompt 注入是否包含关键记忆
-偏好正反变化是否生成 preference_polarity 冲突
-可选：Semantic RAG 是否能召回相关记忆
-```
-
-其中 `chat_context_v1` 会模拟用户提问：
-
-```text
-我喜欢喝什么？你应该怎么称呼我？可以主动聊原神吗？
-```
-
-它不消耗大模型额度，只检查真正准备交给聊天 AI 的上下文包，确认状态变量、Mirror 用户画像、稳定摘要、分层记忆和旧版记忆都把关键信息注入进去了。
-
-`live_answer_v1` 会在 API 可用时真正调用聊天流程，并检查模型回答是否：
-
-```text
-回答用户喜欢青柠苏打
-回答应该称呼用户为阿月
-说明不会主动聊原神
-没有错误地称呼用户为主人
-保持简短
-```
-
-如果当前 OpenAI / Ollama 不可用或额度不足，这组评测会标记为 `skipped`，不会误判记忆系统失败。
-
-`profile_context_v1` 与 `profile_live_answer_v1` 专门验证“资料存在但人格不会用”的问题：前者不调用模型，检查测试账号的昵称/签名已经进入聊天资料上下文，并且只有用户要求核对资料时才触发使用策略；后者可调用真实聊天模型，要求它只回答昵称和签名，不借题发挥到生日、兴趣或其他无关线索。
-
-管理员接口：
-
-```text
-POST /api/admin/evaluations/memory/seed
-POST /api/admin/evaluations/memory/run
-POST /api/admin/evaluations/chat-context/run
-POST /api/admin/evaluations/live-answer/run
-POST /api/admin/evaluations/profile-context/run
-POST /api/admin/evaluations/profile-live-answer/run
-POST /api/admin/evaluations/state-resolution/run
-POST /api/admin/evaluations/state-expiry/run
-POST /api/admin/evaluations/memory-policy/run
-GET  /api/admin/evaluations/memory/runs
-POST /api/personas/{persona_id}/growth/requests
-POST /api/personas/{persona_id}/growth/requests/{request_id}/retry
-POST /api/personas/{persona_id}/growth/requests/{request_id}/withdraw
-POST /api/admin/persona-revisions/stale/dismiss
-POST /api/admin/demos/persona-growth/seed
-DELETE /api/admin/demos/persona-growth
-```
-
-每次评测结果会保存到 `memory_eval_runs`，方便后续做回归测试。人格成长演示使用专用账号，仅用于手动体验普通端“有变化 / 相处痕迹 / 还想调整 / 主动提交相处偏好”和管理台审核跟进流程；重新载入会重置该演示账号，清除不会影响真实用户数据。
-
-第一个注册用户会自动成为管理员。后续可以用本地命令调整角色：
+这些运行数据不会进入 Git。完整备份与旁路恢复：
 
 ```powershell
-py -m app.admin set-admin 用户名
-py -m app.admin set-user 用户名
+py scripts\backup_data.py --label before-change
+py scripts\restore_data_backup.py data\backups\mnemosyne-backup-YYYYMMDD-HHMMSS.zip --inspect-only
+py scripts\restore_data_backup.py data\backups\mnemosyne-backup-YYYYMMDD-HHMMSS.zip --restore-dir data\restore-drill
 ```
 
-## 远程访问、部署和打包路线
+本地长期运行与恢复流程见 `docs/DEPLOYMENT_RUNBOOK.md`。当前 SQLite 方案适合个人单实例；公开多人或多 worker 部署不属于当前产品目标。
 
-短期优先级：
+## 验证
 
-- 本机开发：`127.0.0.1:8001`。
-- 跨城市/跨省测试：用临时隧道工具把本机 `8001` 暴露成一个临时 HTTPS 地址，例如 Cloudflare Tunnel / ngrok / frp 这类方案。
-- 当前项目已提供临时隧道脚本：
+每次代码改动必须运行：
 
 ```powershell
-.\scripts\start_remote_tunnel.ps1
+py scripts\verify_all.py --video-e2e
+git diff --check
 ```
 
-脚本会自动下载 `tools\cloudflared.exe`，并把当前本机服务暴露成一个 `https://*.trycloudflare.com` 地址。
+`--video-e2e` 会临时启动主项目与外部 Video Companion，验证上下文、会话代理、授权观察和摘要回写。全绿只表示自动化覆盖通过，不等于真实 Live2D 模型、真实 TTS 或真实摄像头设备已经完成日用验收。
 
-- 临时隧道只适合小范围测试，不适合当正式产品入口。
-- 不要把开发服务器裸露到公网。
+全量验证还包含本地自用并发 soak：状态轮询与资料写入并行运行后检查唯一澪绑定和 SQLite 完整性。它不替代 Windows 休眠唤醒或真实硬件长时间运行观察。
 
-中期如果要让所有人都能稳定打开网页：
+部署预检：
 
-- 部署到 VPS / 云服务器 / PaaS。
-- 绑定正式域名和 HTTPS。
-- 使用 Nginx / Caddy / 云平台反向代理。
-- 个人/本机使用继续 SQLite；公开多人前再迁移到 PostgreSQL 或 MySQL。若后续向量检索加深，PostgreSQL + pgvector 更合适。
-- 补齐生产能力：本地 zip 备份、用户 JSON 数据导出、基础限流、请求日志、错误监控、隐私说明、部署预检、人格永久删除、账号删除、管理员路由保护扫描和环境配置检查已具备第一版；正式多人生产仍需 PostgreSQL/Redis 级别改造。
+```powershell
+py scripts\check_environment.py
+py scripts\check_deployment.py --self-use
+```
 
-打包方向：
+`--production` 只用于未来明确的 HTTPS 公网部署，不是当前 LING 自用完成标准。
 
-- 桌面端可以考虑 Tauri 或 Electron，但不建议现在优先做。
-- 手机端可以先做 PWA / 响应式网页；当前已有最小 PWA shell，成熟后再考虑 React Native / Flutter。
-- 打包程序本身不能解决“两省之间访问同一套数据”的问题；如果要多设备同步，仍然需要远程服务器作为统一后端。
-- 当前阶段更适合先把网页体验、账号、人格、聊天和部署地基做稳，再决定是否打包。
-
-手机端产品路线：
-
-- 第一版先做响应式网页和真正的移动端主界面。
-- 主界面显示人格卡片：头像、名字、关系/最近一句、时间、置顶状态、未读红点/数字。
-- 聊天页提供明确返回按钮，不依赖浏览器返回。
-- 未读状态先用普通数据字段实现，例如 `last_read_message_id` 或 `last_seen_at`；进入聊天并看到底部后清零。
-- 如果未来人格会在用户离线后主动发消息，再考虑通知/主动联系 agent。仅显示未读红点不需要 agent。
-
-## 管理隔离
-
-普通用户页面只加载：
-
-- `web/index.html`
-- `web/app.js`
-- `web/style.css`
-
-管理员页面单独加载：
-
-- `admin_web/index.html`
-- `admin_web/admin.js`
-- `admin_web/admin.css`
-
-管理台页面外壳可加载，以便使用“此标签页独立登录”的管理员打开管理台；实际数据读取和全部管理操作 API 仍由后端 `current_admin` 保护，未登录或非管理员请求会被拒绝。
-
-## 人格版本
-
-人格调整器（内部模块 `Sculptor`）保留版本证据而不是任意漂移人格。用户在聊天中明确提出表达/相处方式调整时，系统用规则提取本轮反馈形成保守记录，不额外调用人格调整模型。若只改变说话方式和成长备注，受限自动审核代理会立即应用，并让当前回复直接使用新方式；若用户明确说“把我们的关系改成恋人”“以后你就是我的女朋友吧”“我们分手吧”或“我以后叫你阿澄吧”，系统同样立即更新核心资料并写入审计版本，其中明确退出既有关系会回到中性的“关系未定”。模糊提法、否定比较，以及“不要把关系改成朋友”这类否定命令不会暗改名字或关系。变化记录会依据上下文、基线版本、来源和执行方写入 `persona_revision_suggestions` 以供审计：
+## 目录
 
 ```text
-pending -> applied
-pending -> dismissed
+app/       FastAPI、记忆、Live2D、语音和外部桥接
+web/       LING 具身 workspace 与 PWA shell
+admin_web/ 维护与历史调试台
+docs/      路线、部署、隐私和 Video Companion 边界
+scripts/   回归验证、备份、恢复和部署检查
 ```
 
-自动审核代理通过低风险候选、聊天中接到明确核心设置指令，或用户直接编辑核心资料后，才会形成对应的人格版本变化：
+当前完成定义与剩余真实门槛见 `SYSTEM_PLAN.md` 和 `docs/LING_ROADMAP.md`。
 
-- 更新 `personas` 当前人格
-- 写入 `persona_versions` 新版本
-- 标记建议为 `applied`
+## Git 约定
 
-管理台展示聊天变化记录、证据、字段差异、版本历史和执行方，定位是审计与排障而非用户日常偏好的审批站。服务启动时会按当前自动规则补处理仍可执行的旧聊天积压，按钮只作为可见的人工触发补救入口。资料页写下的回应偏好、有具体文字的“还想调整”，以及聊天中明确提出的回应要求，都会作为 `Active user companionship preferences` 直接进入聊天上下文。明确相反的新指导会自动停用旧指导及对应有效记忆并保留替代记录；用户在聊天中明确表示某条指导“不用了”时，也会直接停止该活跃指导及记忆；对于已由自动审核写入人格版本的失效聊天指导，系统会追加一条“指导失效同步”审计版本移除陈旧回应依据，避免提示移除了、人格本身仍照旧执行。兼容指导才会并存。最新活跃指导在回应方式上优先于旧人格版本备注。关系身份和名字不由相处偏好暗改，但用户在聊天中清晰设置它们时会自动落地并留档。
-
-## 验证命令
-
-```powershell
-py scripts\verify_all.py
-```
-
-如果需要同时验正在运行的本地服务：
-
-```powershell
-py scripts\verify_all.py --http-smoke http://127.0.0.1:8001
-```
-
-涉及真实设备或外部服务时，还需要补人工验收：例如 Voice 的真实音频播放、Live2D 的 VTube Studio 实机动作、Camera 设备可用性、Screen 隐私边界和 Proactive 常驻调度策略/额度边界。
+目标仓库为 [thefoolsparkle-oss/LING](https://github.com/thefoolsparkle-oss/LING)。除非作者当前明确要求，否则不要 commit、push 或上传。

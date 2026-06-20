@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -26,6 +27,16 @@ def seed_user() -> int:
             "INSERT INTO user_profiles (user_id, nickname, created_at, updated_at) VALUES (?, 'voice_test', ?, ?)",
             (user_id, ts, ts),
         )
+        db.execute(
+            """
+            INSERT INTO personas (
+                user_id, name, summary, prompt, traits_json, relationship,
+                speaking_style, boundaries_json, voice_profile, created_at, updated_at
+            )
+            VALUES (?, '澪', '', '', '[]', '', '', '[]', 'marin', ?, ?)
+            """,
+            (user_id, ts, ts),
+        )
     return user_id
 
 
@@ -34,8 +45,13 @@ def verify_voice_config() -> None:
 
     assert voice_mod.voice_enabled() is False
     config = voice_mod.load_voice_config()
+    assert config["auto_play"] is True
     assert config["tts_provider"] == "openai_tts"
+    assert config["tts_model"] == "gpt-4o-mini-tts"
+    assert config["api_key_env"] == "OPENAI_API_KEY"
     assert config["voice_id"] == "alloy"
+    assert config["response_format"] == "mp3"
+    assert config["instructions"] == ""
     assert config["split_long_replies"] is True
     assert config["max_chunk_length"] == 80
     assert isinstance(config["expression_style_map"], dict)
@@ -97,16 +113,72 @@ def verify_tts_failure_metadata_and_cleanup() -> None:
         tts_svc.load_voice_config = lambda: {
             "enabled": True,
             "tts_provider": "openai_tts",
+            "tts_model": "gpt-4o-mini-tts",
+            "api_key_env": "LING_MISSING_OPENAI_TTS_TEST_KEY",
             "voice_id": "alloy",
+            "response_format": "mp3",
             "rate": 1.0,
             "pitch": 1.0,
         }
         audio = tts_svc.generate_tts_audio("测试")
         assert audio is None
-        assert "Video Companion" in (tts_svc.get_last_tts_error() or "")
+        assert "missing API key environment variable" in (tts_svc.get_last_tts_error() or "")
+        health = tts_svc.tts_health_check()
+        assert health["available"] is False
+        assert health["api_key_env"] == "LING_MISSING_OPENAI_TTS_TEST_KEY"
     finally:
         tts_svc.voice_enabled = original_enabled
         tts_svc.load_voice_config = original_config
+
+    original_enabled = tts_svc.voice_enabled
+    original_config = tts_svc.load_voice_config
+    original_request = tts_svc._openai_tts_request
+    original_env = os.environ.get("LING_OPENAI_TTS_TEST_KEY")
+    captured: dict = {}
+    try:
+        os.environ["LING_OPENAI_TTS_TEST_KEY"] = "test-key"
+        tts_svc.voice_enabled = lambda: True
+        tts_svc.load_voice_config = lambda: {
+            "enabled": True,
+            "tts_provider": "openai_tts",
+            "tts_model": "gpt-4o-mini-tts",
+            "api_key_env": "LING_OPENAI_TTS_TEST_KEY",
+            "voice_id": "marin",
+            "response_format": "mp3",
+            "instructions": "Speak naturally.",
+            "rate": 1.0,
+            "pitch": 1.0,
+        }
+
+        def fake_request(payload, api_key, timeout=45.0):
+            captured["payload"] = payload
+            captured["api_key"] = api_key
+            captured["timeout"] = timeout
+            return b"fake-mp3"
+
+        tts_svc._openai_tts_request = fake_request
+        health = tts_svc.tts_health_check()
+        assert health["available"] is True
+        assert health["provider"] == "openai_tts"
+        audio = tts_svc.generate_tts_audio("娴嬭瘯", rate=1.25, style="gentle")
+        assert audio == b"fake-mp3"
+        assert tts_svc.get_last_tts_error() is None
+        assert captured["api_key"] == "test-key"
+        assert captured["payload"]["model"] == "gpt-4o-mini-tts"
+        assert captured["payload"]["voice"] == "marin"
+        assert captured["payload"]["input"] == "娴嬭瘯"
+        assert captured["payload"]["response_format"] == "mp3"
+        assert captured["payload"]["speed"] == 1.25
+        assert "Speak naturally." in captured["payload"]["instructions"]
+        assert "softly" in captured["payload"]["instructions"]
+    finally:
+        if original_env is None:
+            os.environ.pop("LING_OPENAI_TTS_TEST_KEY", None)
+        else:
+            os.environ["LING_OPENAI_TTS_TEST_KEY"] = original_env
+        tts_svc.voice_enabled = original_enabled
+        tts_svc.load_voice_config = original_config
+        tts_svc._openai_tts_request = original_request
 
     original_enabled = tts_svc.voice_enabled
     original_config = tts_svc.load_voice_config
@@ -151,12 +223,34 @@ def verify_tts_failure_metadata_and_cleanup() -> None:
         tts_svc.generate_tts_audio = original_generate
 
 
+def verify_bound_voice_profile_routing() -> None:
+    import app.tts_service as tts_svc
+
+    original_enabled = tts_svc.voice_enabled
+    original_generate = tts_svc.generate_tts_audio
+    calls: list[dict] = []
+    try:
+        tts_svc.voice_enabled = lambda: True
+        tts_svc.generate_tts_audio = lambda **kwargs: calls.append(kwargs) or b"audio"
+        result = tts_svc.generate_tts_reply_audio("你好。", voice_id="voice_mio")
+        assert result["success"] is True
+        assert calls[0]["voice_id"] == "voice_mio"
+    finally:
+        tts_svc.voice_enabled = original_enabled
+        tts_svc.generate_tts_audio = original_generate
+
+
 def verify_server_endpoints(user_id: int) -> None:
     user = {"id": user_id}
 
     voice_cfg = server.voice_config(user)
     assert "voice" in voice_cfg
     assert voice_cfg["voice"]["enabled"] is False
+    assert voice_cfg["voice"]["auto_play"] is True
+    assert voice_cfg["voice"]["tts_model"] == "gpt-4o-mini-tts"
+    assert voice_cfg["voice"]["api_key_env"] == "OPENAI_API_KEY"
+    assert voice_cfg["voice"]["response_format"] == "mp3"
+    assert "instructions" in voice_cfg["voice"]
 
     health = server.voice_health(user)
     assert health["enabled"] is False
@@ -227,6 +321,38 @@ def verify_server_voice_error_detail(user_id: int) -> None:
         server.get_last_tts_error = original_last_error
 
 
+def verify_server_bound_voice_profile(user_id: int) -> None:
+    user = {"id": user_id}
+    with database.get_db() as db:
+        persona_id = int(db.execute("SELECT id FROM personas WHERE user_id = ?", (user_id,)).fetchone()["id"])
+    original_enabled = server.voice_enabled
+    original_generate = server.generate_tts_reply_audio
+    calls: list[dict] = []
+    try:
+        server.voice_enabled = lambda: True
+
+        def fake_generate(reply_text, expression_labels=None, voice_id=None):
+            calls.append({"reply_text": reply_text, "voice_id": voice_id})
+            return {
+                "success": True,
+                "audio": b"audio",
+                "chunks": [{"audio_available": True}],
+                "utterances": [reply_text],
+                "error": None,
+            }
+
+        server.generate_tts_reply_audio = fake_generate
+        response = server.voice_tts_reply(
+            server.VoiceTTSReplyRequest(reply_text="你好。", persona_id=persona_id),
+            user,
+        )
+        assert response.body == b"audio"
+        assert calls == [{"reply_text": "你好。", "voice_id": "marin"}]
+    finally:
+        server.voice_enabled = original_enabled
+        server.generate_tts_reply_audio = original_generate
+
+
 def verify_server_voice_chunk_bad_request(user_id: int) -> None:
     from fastapi import HTTPException
 
@@ -235,7 +361,7 @@ def verify_server_voice_chunk_bad_request(user_id: int) -> None:
     original_chunk = server.generate_tts_single_chunk
     try:
         server.voice_enabled = lambda: True
-        server.generate_tts_single_chunk = lambda reply_text, chunk_index, expression_labels=None: (
+        server.generate_tts_single_chunk = lambda reply_text, chunk_index, expression_labels=None, voice_id=None: (
             None,
             {"error": f"chunk_index {chunk_index} out of range (0-0)"},
         )
@@ -259,8 +385,10 @@ def main() -> None:
         verify_speech_planner()
         verify_tts_service_disabled()
         verify_tts_failure_metadata_and_cleanup()
+        verify_bound_voice_profile_routing()
         verify_server_endpoints(user_id)
         verify_server_voice_error_detail(user_id)
+        verify_server_bound_voice_profile(user_id)
         verify_server_voice_chunk_bad_request(user_id)
     print("Phase 4 TTS voice personality verification passed")
 

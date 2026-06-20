@@ -99,7 +99,7 @@ def get_or_create_local_user(username: str, nickname: str | None = None) -> dict
     username = (username or "").strip() or "mio_owner"
     if len(username) < 3:
         username = "mio_owner"
-    display_name = (nickname or "").strip() or username
+    display_name = (nickname or "").strip()
     ts = now_ts()
 
     try:
@@ -115,12 +115,7 @@ def get_or_create_local_user(username: str, nickname: str | None = None) -> dict
                     (ts, existing["id"]),
                 )
                 profile = db.execute("SELECT user_id FROM user_profiles WHERE user_id = ?", (existing["id"],)).fetchone()
-                if profile:
-                    db.execute(
-                        "UPDATE user_profiles SET nickname = ?, updated_at = ? WHERE user_id = ?",
-                        (display_name, ts, existing["id"]),
-                    )
-                else:
+                if not profile:
                     db.execute(
                         "INSERT INTO user_profiles (user_id, nickname, created_at, updated_at) VALUES (?, ?, ?, ?)",
                         (existing["id"], display_name, ts, ts),

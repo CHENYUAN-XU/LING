@@ -40,16 +40,20 @@ def load_video_companion_config() -> dict[str, Any]:
 
 def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
     result = dict(config)
-    enabled = os.environ.get("MNEMOSYNE_VIDEO_COMPANION_ENABLED")
+    enabled = os.environ.get("LING_VIDEO_COMPANION_ENABLED")
+    if enabled is None:
+        enabled = os.environ.get("MNEMOSYNE_VIDEO_COMPANION_ENABLED")
     if enabled is not None:
         result["enabled"] = enabled.strip().lower() in {"1", "true", "yes", "on"}
-    for env_name, key in (
-        ("MNEMOSYNE_VIDEO_COMPANION_BASE_URL", "base_url"),
-        ("MNEMOSYNE_VIDEO_COMPANION_WS_URL", "ws_url"),
-        ("MNEMOSYNE_VIDEO_COMPANION_PROJECT_PATH", "project_path"),
-        ("MNEMOSYNE_VIDEO_COMPANION_TIMEOUT_SECONDS", "timeout_seconds"),
+    for primary_env, legacy_env, key in (
+        ("LING_VIDEO_COMPANION_BASE_URL", "MNEMOSYNE_VIDEO_COMPANION_BASE_URL", "base_url"),
+        ("LING_VIDEO_COMPANION_WS_URL", "MNEMOSYNE_VIDEO_COMPANION_WS_URL", "ws_url"),
+        ("LING_VIDEO_COMPANION_PROJECT_PATH", "MNEMOSYNE_VIDEO_COMPANION_PROJECT_PATH", "project_path"),
+        ("LING_VIDEO_COMPANION_TIMEOUT_SECONDS", "MNEMOSYNE_VIDEO_COMPANION_TIMEOUT_SECONDS", "timeout_seconds"),
     ):
-        value = os.environ.get(env_name)
+        value = os.environ.get(primary_env)
+        if value is None:
+            value = os.environ.get(legacy_env)
         if value is not None and value.strip():
             result[key] = value.strip()
     return result
@@ -92,6 +96,11 @@ def get_video_companion_status() -> dict[str, Any]:
             "error": str(exc),
             "config": public_video_companion_config(),
         }
+
+    session_state = str(status.get("session_state") or "").strip().lower()
+    status["session_active"] = bool(status.get("session_active")) or session_state == "active"
+    if not session_state:
+        status["session_state"] = "active" if status["session_active"] else "idle"
 
     return {
         "enabled": True,
