@@ -47,16 +47,20 @@ def find_secret_like_config_values(config: dict[str, Any], *, include_values: bo
 def _api_key_env_names(config: dict[str, Any]) -> set[str]:
     names: set[str] = set()
 
-    def visit(value: Any) -> None:
+    def visit(value: Any, path: tuple[str, ...] = ()) -> None:
         if isinstance(value, dict):
             env_name = value.get("api_key_env")
+            section = path[-1] if path else ""
+            section_enabled = bool(value.get("enabled", False)) if "enabled" in value else True
+            if section == "voice" and not section_enabled:
+                env_name = ""
             if isinstance(env_name, str) and env_name.strip():
                 names.add(env_name.strip())
-            for child in value.values():
-                visit(child)
+            for key, child in value.items():
+                visit(child, (*path, str(key)))
         elif isinstance(value, list):
             for child in value:
-                visit(child)
+                visit(child, path)
 
     visit(config)
     return names

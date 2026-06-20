@@ -215,6 +215,25 @@ def verify_server_endpoints(user_id: int) -> None:
         assert exc.status_code == 400
 
 
+def verify_self_use_camera_boundary(user_id: int) -> None:
+    from fastapi import HTTPException
+
+    user = {"id": user_id, "username": "mio_owner"}
+    for endpoint in (
+        server.camera_config,
+        server.camera_status,
+        server.camera_stream,
+        server.perception_summary,
+        server.perception_cycle,
+    ):
+        try:
+            endpoint(user)
+            raise AssertionError("LING self-use mode must not expose the internal camera pipeline")
+        except HTTPException as exc:
+            assert exc.status_code == 404
+            assert "external Video Companion" in str(exc.detail)
+
+
 def verify_camera_stream_endpoint(user_id: int) -> None:
     user = {"id": user_id}
     original_enabled = server.camera_enabled
@@ -319,6 +338,7 @@ def main() -> None:
         verify_consent_labels(user_id)
         verify_world_state(user_id)
         verify_server_endpoints(user_id)
+        verify_self_use_camera_boundary(user_id)
         verify_camera_stream_endpoint(user_id)
         verify_camera_stream_stops_after_consent_revoked(user_id)
     print("Phase 7 Camera Perception verification passed")

@@ -213,6 +213,8 @@ def verify_chat_defers_summary_refresh(chat, server, user_id: int, persona_id: i
 
 
 def verify_tab_scoped_login(server, auth) -> None:
+    original_load_config = server.load_config
+    server.load_config = lambda: {"self_use": {"enabled": False}}
     auth.create_user("cookie_user", "password-cookie", "普通页")
     auth.create_user("tab_user", "password-tab", "独立页")
 
@@ -246,6 +248,7 @@ def verify_tab_scoped_login(server, auth) -> None:
     except HTTPException as exc:
         assert exc.status_code == 401
     assert auth.current_user(session_token=cookie_token, authorization=None)["username"] == "cookie_user"
+    server.load_config = original_load_config
 
 
 def main() -> None:

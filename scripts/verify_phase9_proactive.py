@@ -275,9 +275,17 @@ def verify_proactive_config_and_consent(user_id: int, persona_id: int) -> None:
 
         assert pm.proactive_enabled(user_id) is False
         assert pm.get_proactive_controller(user_id, persona_id).can_send_proactive()["reason"] == "proactive_disabled"
+        disabled_status = pm.get_proactive_status(user_id, persona_id)
+        assert disabled_status["enabled"] is False
+        assert disabled_status["config_enabled"] is True
+        assert disabled_status["consent_granted"] is False
 
         consent_mod.grant_consent(user_id, "proactive")
         assert pm.proactive_enabled(user_id) is True
+        enabled_status = pm.get_proactive_status(user_id, persona_id)
+        assert enabled_status["enabled"] is True
+        assert enabled_status["config_enabled"] is True
+        assert enabled_status["consent_granted"] is True
         can_send = pm.get_proactive_controller(user_id, persona_id).can_send_proactive()
         assert can_send["allowed"] is True
 
@@ -475,6 +483,65 @@ def verify_proactive_rechecks_consent_before_write(user_id: int, persona_id: int
         llm_client.call_llm_api = original_llm
 
 
+def verify_self_use_companion_boundary(user_id: int, persona_id: int) -> None:
+    from fastapi import HTTPException
+
+    ts = database.now_ts() + 10
+    with database.get_db() as db:
+        legacy_persona_id = int(
+            db.execute(
+                """
+                INSERT INTO personas (user_id, name, summary, prompt, relationship, speaking_style, created_at, updated_at)
+                VALUES (?, 'Legacy Proactive', 'legacy', 'legacy', '', '', ?, ?)
+                """,
+                (user_id, ts, ts),
+            ).lastrowid
+        )
+        server._set_self_use_companion_binding(db, user_id, persona_id)
+
+    original_load_config = server.load_config
+    original_get_status = server.get_proactive_status
+    original_run_tick = server.run_proactive_tick
+    original_enabled = server.proactive_enabled
+    try:
+        server.load_config = lambda: {
+            "self_use": {
+                "enabled": True,
+                "username": "phase9",
+                "seed_default_persona": True,
+                "default_persona_name": "澪",
+            }
+        }
+        server.get_proactive_status = lambda checked_user_id, checked_persona_id: {
+            "user_id": checked_user_id,
+            "persona_id": checked_persona_id,
+        }
+        server.run_proactive_tick = lambda **kwargs: kwargs
+        server.proactive_enabled = lambda *_args, **_kwargs: True
+        user = {"id": user_id, "username": "phase9"}
+
+        assert server.proactive_status(user)["persona_id"] == persona_id
+        tick = server.proactive_tick(server.ProactiveTickRequest(dry_run=True), user)
+        assert tick["persona_id"] == persona_id
+
+        for call in (
+            lambda: server.proactive_status(user, legacy_persona_id),
+            lambda: server.proactive_can_send(server.ProactiveCheckRequest(persona_id=legacy_persona_id), user),
+            lambda: server.proactive_tick(server.ProactiveTickRequest(persona_id=legacy_persona_id, dry_run=True), user),
+        ):
+            try:
+                call()
+                raise AssertionError("LING self-use proactive must reject legacy same-owner personas")
+            except HTTPException as exc:
+                assert exc.status_code == 404
+                assert "self-use mode" in str(exc.detail)
+    finally:
+        server.load_config = original_load_config
+        server.get_proactive_status = original_get_status
+        server.run_proactive_tick = original_run_tick
+        server.proactive_enabled = original_enabled
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         database.DB_PATH = Path(tmp) / "phase9_proactive.db"
@@ -492,6 +559,7 @@ def main() -> None:
         verify_proactive_config_and_consent(user_id, persona_id)
         verify_proactive_tick_generates_message(user_id, persona_id)
         verify_proactive_rechecks_consent_before_write(user_id, persona_id)
+        verify_self_use_companion_boundary(user_id, persona_id)
     print("Phase 9 Proactive Companion verification passed")
 
 

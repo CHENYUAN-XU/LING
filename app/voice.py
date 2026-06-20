@@ -7,8 +7,13 @@ from .config import load_config
 
 DEFAULT_VOICE_CONFIG: dict[str, Any] = {
     "enabled": False,
+    "auto_play": True,
     "tts_provider": "openai_tts",
+    "tts_model": "gpt-4o-mini-tts",
+    "api_key_env": "OPENAI_API_KEY",
     "voice_id": "alloy",
+    "response_format": "mp3",
+    "instructions": "",
     "rate": 1.0,
     "pitch": 1.0,
     "split_long_replies": True,

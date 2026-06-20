@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -82,6 +83,11 @@ def verify_env_overrides() -> None:
     import app.video_companion as vc
 
     keys = [
+        "LING_VIDEO_COMPANION_ENABLED",
+        "LING_VIDEO_COMPANION_BASE_URL",
+        "LING_VIDEO_COMPANION_WS_URL",
+        "LING_VIDEO_COMPANION_PROJECT_PATH",
+        "LING_VIDEO_COMPANION_TIMEOUT_SECONDS",
         "MNEMOSYNE_VIDEO_COMPANION_ENABLED",
         "MNEMOSYNE_VIDEO_COMPANION_BASE_URL",
         "MNEMOSYNE_VIDEO_COMPANION_WS_URL",
@@ -90,11 +96,11 @@ def verify_env_overrides() -> None:
     ]
     original_env = {key: os.environ.get(key) for key in keys}
     try:
-        os.environ["MNEMOSYNE_VIDEO_COMPANION_ENABLED"] = "true"
-        os.environ["MNEMOSYNE_VIDEO_COMPANION_BASE_URL"] = "http://127.0.0.1:8892"
-        os.environ["MNEMOSYNE_VIDEO_COMPANION_WS_URL"] = "ws://127.0.0.1:8892/ws"
-        os.environ["MNEMOSYNE_VIDEO_COMPANION_PROJECT_PATH"] = r"E:\visual-test\video-companion"
-        os.environ["MNEMOSYNE_VIDEO_COMPANION_TIMEOUT_SECONDS"] = "7"
+        os.environ["LING_VIDEO_COMPANION_ENABLED"] = "true"
+        os.environ["LING_VIDEO_COMPANION_BASE_URL"] = "http://127.0.0.1:8892"
+        os.environ["LING_VIDEO_COMPANION_WS_URL"] = "ws://127.0.0.1:8892/ws"
+        os.environ["LING_VIDEO_COMPANION_PROJECT_PATH"] = r"E:\visual-test\video-companion"
+        os.environ["LING_VIDEO_COMPANION_TIMEOUT_SECONDS"] = "7"
 
         cfg = vc.load_video_companion_config()
         assert cfg["enabled"] is True
@@ -133,7 +139,11 @@ def verify_enabled_adapter_flow(user_id: int) -> None:
         if path == "/api/health":
             return {"ok": True}
         if path == "/api/status":
-            return {"session_active": False, "service": "video-companion"}
+            return {
+                "session_state": "active",
+                "service": "video-companion",
+                "consent": {"camera": True, "microphone": False, "save_summary": True},
+            }
         if path == "/api/session/start?persona_id=456":
             return {"session_id": "session-1", "persona_id": "456"}
         if path == "/api/session/stop":
@@ -151,6 +161,8 @@ def verify_enabled_adapter_flow(user_id: int) -> None:
         assert status["connected"] is True
         assert status["health"]["ok"] is True
         assert status["status"]["service"] == "video-companion"
+        assert status["status"]["session_state"] == "active"
+        assert status["status"]["session_active"] is True
 
         start = server.video_companion_start(server.VideoCompanionSessionRequest(persona_id=456), user)
         assert start["enabled"] is True
@@ -231,6 +243,9 @@ def verify_video_bridge_endpoints(user_id: int, persona_id: int) -> None:
     status = server.video_companion_status({"id": user_id})
     assert status["recent_observation"]["observation_type"] == "video_observation"
     assert "visible and smiling" in status["recent_observation"]["content"]
+    assert status["recent_observation"]["fresh"] is True
+    assert status["recent_summary"]["observation_type"] == "session_summary"
+    assert status["recent_consent_sync"] is None
 
     companion = server.companion_status({"id": user_id})
     assert companion["video_companion"]["recent_observation"]["observation_type"] == "video_observation"
@@ -244,6 +259,19 @@ def verify_video_bridge_endpoints(user_id: int, persona_id: int) -> None:
         }
     )
     assert consent["synced"] is True
+    status_after_consent = server.video_companion_status({"id": user_id})
+    assert status_after_consent["recent_observation"]["observation_type"] == "video_observation"
+    assert status_after_consent["recent_summary"]["observation_type"] == "session_summary"
+    assert status_after_consent["recent_consent_sync"]["observation_type"] == "consent_sync"
+
+    stale = server._video_activity_public({
+        "id": 99,
+        "observation_type": "video_observation",
+        "content": "old",
+        "confidence": 0.5,
+        "created_at": database.now_ts() - 301,
+    }, fresh_seconds=300)
+    assert stale is not None and stale["fresh"] is False
 
     turn = server.video_turn({"persona_id": str(persona_id), "user_text": "hello"})
     assert turn["reply_text"] == ""
@@ -324,30 +352,127 @@ def verify_stop_summary_respects_consent(user_id: int, persona_id: int) -> None:
 def verify_video_bridge_auth() -> None:
     from fastapi import HTTPException
 
-    original = os.environ.get("MNEMOSYNE_API_KEY")
+    original_legacy = os.environ.get("MNEMOSYNE_API_KEY")
+    original_ling = os.environ.get("LING_VIDEO_BRIDGE_API_KEY")
+    local_request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"))
+    remote_request = SimpleNamespace(client=SimpleNamespace(host="198.51.100.25"))
     try:
         os.environ.pop("MNEMOSYNE_API_KEY", None)
-        assert server._require_video_bridge_auth(None) is None
+        os.environ.pop("LING_VIDEO_BRIDGE_API_KEY", None)
+        assert server._require_video_bridge_auth(local_request, None) is None
+        try:
+            server._require_video_bridge_auth(remote_request, None)
+            raise AssertionError("tokenless bridge callbacks must stay on localhost")
+        except HTTPException as exc:
+            assert exc.status_code == 403
 
         os.environ["MNEMOSYNE_API_KEY"] = "secret-token"
         try:
-            server._require_video_bridge_auth(None)
+            server._require_video_bridge_auth(local_request, None)
             raise AssertionError("bridge auth should require bearer token")
         except HTTPException as exc:
             assert exc.status_code == 401
 
         try:
-            server._require_video_bridge_auth("Bearer wrong")
+            server._require_video_bridge_auth(local_request, "Bearer wrong")
             raise AssertionError("bridge auth should reject wrong token")
         except HTTPException as exc:
             assert exc.status_code == 403
 
-        assert server._require_video_bridge_auth("Bearer secret-token") is None
+        assert server._require_video_bridge_auth(local_request, "Bearer secret-token") is None
+        os.environ["LING_VIDEO_BRIDGE_API_KEY"] = "ling-token"
+        try:
+            server._require_video_bridge_auth(local_request, "Bearer secret-token")
+            raise AssertionError("LING bridge key should take precedence over the legacy key")
+        except HTTPException as exc:
+            assert exc.status_code == 403
+        assert server._require_video_bridge_auth(remote_request, "Bearer ling-token") is None
     finally:
-        if original is None:
+        if original_legacy is None:
             os.environ.pop("MNEMOSYNE_API_KEY", None)
         else:
-            os.environ["MNEMOSYNE_API_KEY"] = original
+            os.environ["MNEMOSYNE_API_KEY"] = original_legacy
+        if original_ling is None:
+            os.environ.pop("LING_VIDEO_BRIDGE_API_KEY", None)
+        else:
+            os.environ["LING_VIDEO_BRIDGE_API_KEY"] = original_ling
+
+
+def verify_self_use_video_binding_boundary() -> None:
+    from fastapi import HTTPException
+
+    ts = database.now_ts()
+    with database.get_db() as db:
+        owner_id = int(
+            db.execute(
+                "INSERT INTO users (username, password_hash, created_at, updated_at) VALUES ('mio_owner', 'x', ?, ?)",
+                (ts, ts),
+            ).lastrowid
+        )
+        db.execute(
+            "INSERT INTO user_profiles (user_id, nickname, created_at, updated_at) VALUES (?, 'owner', ?, ?)",
+            (owner_id, ts, ts),
+        )
+        bound_id = int(
+            db.execute(
+                """
+                INSERT INTO personas (user_id, name, summary, prompt, created_at, updated_at)
+                VALUES (?, '澪', '', 'prompt', ?, ?)
+                """,
+                (owner_id, ts, ts),
+            ).lastrowid
+        )
+        legacy_id = int(
+            db.execute(
+                """
+                INSERT INTO personas (user_id, name, summary, prompt, created_at, updated_at)
+                VALUES (?, 'Legacy', 'old', 'old prompt', ?, ?)
+                """,
+                (owner_id, ts + 1, ts + 1),
+            ).lastrowid
+        )
+        db.execute(
+            """
+            INSERT INTO self_use_companion_bindings (user_id, persona_id, bound_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (owner_id, bound_id, ts, ts),
+        )
+
+    original_load_config = server.load_config
+    original_start = server.start_video_companion_session
+    captured: list[int | str | None] = []
+    try:
+        server.load_config = lambda: {
+            "self_use": {
+                "enabled": True,
+                "username": "mio_owner",
+                "seed_default_persona": True,
+                "default_persona_name": "澪",
+            }
+        }
+        server.start_video_companion_session = lambda persona_id=None: captured.append(persona_id) or {
+            "enabled": True,
+            "started": True,
+        }
+        owner = {"id": owner_id, "username": "mio_owner"}
+        started = server.video_companion_start(server.VideoCompanionSessionRequest(persona_id=None), owner)
+        assert started["started"] is True
+        assert captured == [bound_id]
+        assert server._require_self_use_video_persona(bound_id) is None
+        try:
+            server._require_self_use_video_persona(legacy_id)
+            raise AssertionError("video callbacks must not target a legacy persona in self-use mode")
+        except HTTPException as exc:
+            assert exc.status_code == 404
+        try:
+            server.video_companion_start(server.VideoCompanionSessionRequest(persona_id=legacy_id), owner)
+            raise AssertionError("external sessions must start with the bound LING companion")
+        except HTTPException as exc:
+            assert exc.status_code == 404
+    finally:
+        server.load_config = original_load_config
+        server.start_video_companion_session = original_start
 
 
 def main() -> None:
@@ -359,9 +484,15 @@ def main() -> None:
         verify_disabled_defaults(user_id)
         verify_env_overrides()
         verify_enabled_adapter_flow(user_id)
-        verify_video_bridge_endpoints(user_id, persona_id)
-        verify_stop_summary_respects_consent(user_id, persona_id)
+        original_load_config = server.load_config
+        try:
+            server.load_config = lambda: {"self_use": {"enabled": False}}
+            verify_video_bridge_endpoints(user_id, persona_id)
+            verify_stop_summary_respects_consent(user_id, persona_id)
+        finally:
+            server.load_config = original_load_config
         verify_video_bridge_auth()
+        verify_self_use_video_binding_boundary()
     print("Video Companion adapter verification passed")
 
 

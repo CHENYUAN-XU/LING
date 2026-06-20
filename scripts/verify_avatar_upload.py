@@ -24,6 +24,8 @@ def main() -> None:
 
         server.UPLOAD_DIR = root / "uploads"
         server.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        original_load_config = server.load_config
+        server.load_config = lambda: {"self_use": {"enabled": False}}
 
         client = TestClient(server.app)
         registered = client.post(
@@ -63,6 +65,64 @@ def main() -> None:
         )
         assert oversized.status_code == 400
         assert "5MB" in oversized.json()["detail"]
+
+        compatibility_user = client.post(
+            "/api/uploads/embodiment-image?kind=preview",
+            files={"file": ("preview.png", png_bytes, "image/png")},
+        )
+        assert compatibility_user.status_code == 404
+
+        try:
+            server.load_config = lambda: {
+                "self_use": {
+                    "enabled": True,
+                    "username": "avatar-user",
+                    "require_localhost": False,
+                }
+            }
+            blocked_avatar = client.post(
+                "/api/uploads/avatar",
+                files={"file": ("avatar.png", png_bytes, "image/png")},
+            )
+            assert blocked_avatar.status_code == 404
+
+            blocked_generation = client.post(
+                "/api/personas/999/avatar/generate",
+                json={"desired_image": "legacy avatar request"},
+            )
+            assert blocked_generation.status_code == 404
+
+            preview = client.post(
+                "/api/uploads/embodiment-image?kind=preview",
+                files={"file": ("preview.png", png_bytes, "image/png")},
+            )
+            assert preview.status_code == 200
+            preview_payload = preview.json()
+            assert preview_payload["kind"] == "preview"
+            assert preview_payload["url"].startswith(f"/uploads/{user_id}/embodiment/preview/")
+            preview_path = server.UPLOAD_DIR / str(user_id) / "embodiment" / "preview" / Path(preview_payload["url"]).name
+            assert preview_path.read_bytes() == png_bytes
+
+            fallback = client.post(
+                "/api/uploads/embodiment-image?kind=fallback",
+                files={"file": ("fallback.png", png_bytes, "image/png")},
+            )
+            assert fallback.status_code == 200
+            assert fallback.json()["url"].startswith(f"/uploads/{user_id}/embodiment/fallback/")
+
+            invalid_kind = client.post(
+                "/api/uploads/embodiment-image?kind=avatar",
+                files={"file": ("avatar.png", png_bytes, "image/png")},
+            )
+            assert invalid_kind.status_code == 400
+
+            spoofed_preview = client.post(
+                "/api/uploads/embodiment-image?kind=preview",
+                files={"file": ("fake.png", b"not really an image", "image/png")},
+            )
+            assert spoofed_preview.status_code == 400
+        finally:
+            server.load_config = original_load_config
 
     print("Avatar upload verification passed")
 

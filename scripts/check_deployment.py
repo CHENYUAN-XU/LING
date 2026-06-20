@@ -16,10 +16,13 @@ from app.deployment_check import deployment_report
 def main() -> None:
     parser = argparse.ArgumentParser(description="Check deployment readiness.")
     parser.add_argument("--production", action="store_true", help="Treat production blockers as failures.")
+    parser.add_argument("--self-use", action="store_true", help="Validate the localhost-only personal LING workspace.")
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     args = parser.parse_args()
 
-    report = deployment_report(production=args.production)
+    if args.production and args.self_use:
+        parser.error("--production and --self-use are separate deployment modes")
+    report = deployment_report(production=args.production, self_use=args.self_use)
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:

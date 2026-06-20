@@ -36,7 +36,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "self_use": {
         "enabled": False,
         "username": "mio_owner",
-        "nickname": "澪的工作区",
+        "nickname": "",
         "require_localhost": True,
         "seed_default_persona": True,
         "default_persona_name": "澪",
@@ -44,8 +44,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "voice": {
         "enabled": False,
+        "auto_play": True,
         "tts_provider": "openai_tts",
+        "tts_model": "gpt-4o-mini-tts",
+        "api_key_env": "OPENAI_API_KEY",
         "voice_id": "alloy",
+        "response_format": "mp3",
+        "instructions": "",
         "rate": 1.0,
         "pitch": 1.0,
         "split_long_replies": True,

@@ -21,7 +21,7 @@ def main() -> None:
         import app.auth as auth
         import app.server as server
 
-        first = auth.get_or_create_local_user("mio_owner", "Mio")
+        first = auth.get_or_create_local_user("mio_owner", "")
         second = auth.get_or_create_local_user("mio_owner", "澪的工作区")
 
         assert first["id"] == second["id"]
@@ -34,7 +34,18 @@ def main() -> None:
             assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
             profile = db.execute("SELECT * FROM user_profiles WHERE user_id = ?", (second["id"],)).fetchone()
             assert profile is not None
-            assert profile["nickname"] == "澪的工作区"
+            assert profile["nickname"] == ""
+            db.execute("UPDATE user_profiles SET nickname = 'Yue' WHERE user_id = ?", (second["id"],))
+
+        auth.get_or_create_local_user("mio_owner", "system default must not overwrite")
+        with database.get_db() as db:
+            profile = db.execute("SELECT * FROM user_profiles WHERE user_id = ?", (second["id"],)).fetchone()
+            assert profile["nickname"] == "Yue"
+            db.execute("UPDATE user_profiles SET nickname = '澪的工作区' WHERE user_id = ?", (second["id"],))
+        server._clear_generated_self_use_profile(int(second["id"]))
+        with database.get_db() as db:
+            profile = db.execute("SELECT * FROM user_profiles WHERE user_id = ?", (second["id"],)).fetchone()
+            assert profile["nickname"] == ""
 
         config = {
             "seed_default_persona": True,
@@ -47,8 +58,8 @@ def main() -> None:
         assert repeated is not None
         assert persona["id"] == repeated["id"]
         assert persona["name"] == "澪"
-        assert persona["summary"] == "基础设定待填写。"
-        assert persona["relationship"] == "未设定"
+        assert persona["summary"] == ""
+        assert persona["relationship"] == ""
         assert persona["speaking_style"] == ""
         assert persona["appearance_description"] == ""
         assert persona["desired_image"] == ""
@@ -62,6 +73,12 @@ def main() -> None:
 
         with database.get_db() as db:
             assert db.execute("SELECT COUNT(*) FROM personas WHERE user_id = ?", (second["id"],)).fetchone()[0] == 1
+            binding = db.execute(
+                "SELECT persona_id FROM self_use_companion_bindings WHERE user_id = ?",
+                (second["id"],),
+            ).fetchone()
+            assert binding is not None
+            assert int(binding["persona_id"]) == int(persona["id"])
             version = db.execute("SELECT * FROM persona_versions WHERE persona_id = ?", (persona["id"],)).fetchone()
             assert version is not None
             assert version["change_type"] == "self_use_default"
@@ -97,6 +114,12 @@ def main() -> None:
         assert multi_companion["id"] != first_legacy_id
         with database.get_db() as db:
             assert db.execute("SELECT COUNT(*) FROM personas WHERE user_id = ?", (multi["id"],)).fetchone()[0] == 3
+            db.execute("UPDATE personas SET name = 'Mio Renamed' WHERE id = ?", (multi_companion["id"],))
+
+        renamed_companion = server._ensure_self_use_default_persona(int(multi["id"]), config)
+        assert renamed_companion is not None
+        assert renamed_companion["id"] == multi_companion["id"]
+        assert renamed_companion["name"] == "Mio Renamed"
 
         original_load_config = server.load_config
         try:
@@ -141,10 +164,14 @@ def main() -> None:
             )
         cleared = server._ensure_self_use_default_persona(int(second["id"]), config)
         assert cleared is not None
-        assert cleared["summary"] == "基础设定待填写。"
-        assert cleared["relationship"] == "未设定"
+        assert cleared["summary"] == ""
+        assert cleared["relationship"] == ""
         assert cleared["speaking_style"] == ""
         assert json.loads(cleared["traits_json"]) == []
+
+        repeated_blank = server._ensure_self_use_default_persona(int(second["id"]), config)
+        assert repeated_blank is not None
+        assert repeated_blank["version"] == cleared["version"]
 
         from fastapi import HTTPException
         from fastapi import BackgroundTasks
@@ -268,6 +295,26 @@ def main() -> None:
             assert exc.status_code == 403
             assert "single companion" in str(exc.detail)
 
+        try:
+            from fastapi import Response
+
+            server.account_delete(
+                server.AccountDeleteRequest(confirm_username="mio_owner", password="unknown"),
+                Response(),
+                second,
+            )
+            raise AssertionError("self-use mode should not expose account deletion for the internal owner")
+        except HTTPException as exc:
+            assert exc.status_code == 403
+            assert "export and backup" in str(exc.detail)
+
+        try:
+            server.restore_persona(int(extra_id), second)
+            raise AssertionError("self-use mode should reject restoring legacy personas")
+        except HTTPException as exc:
+            assert exc.status_code == 403
+            assert "legacy personas" in str(exc.detail)
+
         assert server.group_conversations(second)["group_conversations"] == []
 
         try:
@@ -316,6 +363,35 @@ def main() -> None:
                 me = client.get("/api/me")
                 assert me.status_code == 200
                 assert me.json()["self_use"]["enabled"] is True
+
+                legacy_auth_requests = [
+                    client.post(
+                        "/api/auth/register",
+                        json={"username": "legacy-new", "password": "password123"},
+                    ),
+                    client.post(
+                        "/api/auth/login",
+                        json={"username": "mio_owner", "password": "password123"},
+                    ),
+                    client.post("/api/auth/guest"),
+                    client.post(
+                        "/api/auth/guest/convert",
+                        json={"username": "legacy-convert", "password": "password123"},
+                    ),
+                ]
+                assert all(response.status_code == 404 for response in legacy_auth_requests)
+                assert all("local owner authentication" in response.json()["detail"] for response in legacy_auth_requests)
+
+                owner_avatar = client.put("/api/profile", json={"avatar_url": "https://example.com/owner.png"})
+                assert owner_avatar.status_code == 400
+                assert "owner avatar" in owner_avatar.json()["detail"]
+
+                companion_avatar = client.patch(
+                    f"/api/personas/{cleared['id']}",
+                    json={"avatar_url": "https://example.com/companion.png"},
+                )
+                assert companion_avatar.status_code == 400
+                assert "avatar_url" in companion_avatar.json()["detail"]
         finally:
             server._is_local_request = original_is_local_request
 
