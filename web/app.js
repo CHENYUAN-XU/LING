@@ -2433,38 +2433,51 @@ function selfUseReadinessItems(persona) {
       key: item.key || item.label,
       label: item.label || item.key || "",
       ready: !!item.ready,
+      required: item.required !== false,
       text: item.text || "",
     }));
   }
   const embodiment = personaEmbodimentProfile(persona);
   const items = [];
   items.push({
-    key: "llm",
+    key: "api",
     label: "API",
+    required: true,
     ready: llmConfigured(),
     text: llmConfigured() ? "模型已可用" : "未启用，接好 API 后再开放对话",
   });
   items.push({
+    key: "visual",
+    label: "Visual",
+    required: false,
+    ready: !!embodiment.visualUrl && embodiment.visualSource !== "avatar_url",
+    text: embodiment.visualUrl && embodiment.visualSource !== "avatar_url" ? embodiment.visualLabel : "未绑定 preview / fallback 图像",
+  });
+  items.push({
     key: "live2d",
     label: "Live2D",
+    required: true,
     ready: live2dBindingMatchesCurrent(embodiment),
     text: live2dStatusText(embodiment),
   });
   items.push({
     key: "voice",
     label: "Voice",
+    required: true,
     ready: !!embodiment.voiceProfile,
     text: embodiment.voiceProfile || "未绑定声音档案",
   });
   items.push({
     key: "lip_sync",
     label: "Lip sync",
+    required: true,
     ready: live2dLipSyncReady(),
     text: live2dLipSyncReady() ? `${state.live2dStatus?.lip_sync_parameter || "MouthOpen"} ready` : "等待 VTube Studio 嘴型参数",
   });
   items.push({
     key: "video",
     label: "Video",
+    required: false,
     ready: !!(state.videoCompanionStatus?.enabled && state.videoCompanionStatus?.connected),
     text: videoCompanionStatusText(),
   });
@@ -2532,14 +2545,15 @@ function readinessActionFor(item) {
 
 function renderSelfUseReadinessPanel(persona) {
   const items = selfUseReadinessItems(persona);
-  const completeCount = items.filter((item) => item.ready).length;
+  const requiredItems = items.filter((item) => item.required !== false);
+  const completeCount = requiredItems.filter((item) => item.ready).length;
   return h("section", { class: "self-use-readiness" }, [
     h("div", { class: "self-use-readiness-head" }, [
       h("div", {}, [
         h("p", { class: "eyebrow", text: "Readiness" }),
-        h("strong", { text: `${completeCount}/${items.length} 已就绪` }),
+        h("strong", { text: `${completeCount}/${requiredItems.length} 核心就绪` }),
       ]),
-      h("button", { type: "button", class: "ghost compact", text: "补形象资料", onclick: openPersonaEditor }),
+      h("button", { type: "button", class: "ghost compact", text: "编辑形象", onclick: openPersonaEditor }),
     ]),
     h("div", { class: "self-use-readiness-list" }, items.map((item) => (
       renderSelfUseReadinessItem(item)
@@ -2549,10 +2563,10 @@ function renderSelfUseReadinessPanel(persona) {
 
 function renderSelfUseReadinessItem(item) {
   const action = readinessActionFor(item);
-  return h("div", { class: `self-use-readiness-item ${item.ready ? "ready" : "missing"}` }, [
+  return h("div", { class: `self-use-readiness-item ${item.ready ? "ready" : "missing"} ${item.required === false ? "optional" : "required"}` }, [
     h("span", { class: "self-use-readiness-dot" }),
     h("div", { class: "self-use-readiness-copy" }, [
-      h("strong", { text: item.label }),
+      h("strong", { text: item.required === false ? `${item.label} · 可选` : item.label }),
       h("small", { text: item.text }),
     ]),
     h("button", {
@@ -3227,13 +3241,14 @@ function renderDeletedPersonaItem(persona) {
 
 function renderPersonaRail() {
   const persona = state.activePersona || {};
+  const selfUse = selfUseMode();
   if (state.editingPersona) {
     return h("div", { class: "profile-rail" }, [renderPersonaEditForm(persona)]);
   }
   return h("div", { class: "profile-rail" }, [
     h("section", { class: "rail-section" }, [
       h("div", { class: "section-head" }, [
-        h("p", { class: "eyebrow", text: "联系人资料" }),
+        h("p", { class: "eyebrow", text: selfUse ? "澪的状态档案" : "联系人资料" }),
         h("button", {
           type: "button",
           class: "ghost compact",
@@ -3245,19 +3260,19 @@ function renderPersonaRail() {
         }),
       ]),
       h("div", { class: "rail-identity" }, [
-        avatar(persona.name || "忆", persona.avatar_url),
+        selfUse ? null : avatar(persona.name || "忆", persona.avatar_url),
         h("div", {}, [
           h("h3", { text: persona.name || "未命名" }),
-          h("small", { text: persona.relationship || "未设定" }),
+          h("small", { text: persona.relationship || (selfUse ? "相处方式尚未定义" : "未设定") }),
         ]),
       ]), 
-      detailLine("说话方式", persona.speaking_style || "会在对话中逐步稳定"),
-      detailLine("摘要", persona.summary || "还在形成中"),
+      detailLine(selfUse ? "说话节奏" : "说话方式", persona.speaking_style || "会在对话中逐步稳定"),
+      detailLine(selfUse ? "当前状态" : "摘要", persona.summary || "还在形成中"),
       renderPersonaExpressionPreference(persona),
       renderLive2dPanel(persona),
       renderPersonaGrowth(persona),
       h("details", { class: "persona-more-details" }, [
-        h("summary", { text: "更多资料" }),
+        h("summary", { text: selfUse ? "形象与运行绑定" : "更多资料" }),
         detailLine("资料版本", `v${persona.version || 1}`),
         detailLine("Live2D 模型", persona.live2d_model_id || "未接入"),
         detailLine("Live2D 预览图", persona.live2d_preview_url || "未设置"),
@@ -3265,8 +3280,8 @@ function renderPersonaRail() {
         detailLine("声音档案", persona.voice_profile || "未设置"),
         detailLine("外貌参考", persona.appearance_description || "暂未确定"),
         detailLine("期望形象", persona.desired_image || "暂未确定"),
-        detailLine("心理适配", persona.psychological_fit_notes || "先从稳定倾听开始，再根据长期对话校准。"),
-        detailLine("成长方向", persona.growth_notes || profileList(persona.psychological_profile?.growth_direction) || "由聊天、记忆和关系状态逐步推动。"),
+        detailLine("适配记录", persona.psychological_fit_notes || "从真实对话和明确反馈中逐步校准。"),
+        detailLine("成长方向", persona.growth_notes || profileList(persona.psychological_profile?.growth_direction) || "由对话、记忆和明确反馈逐步形成。"),
       ]),
     ]),
   ]);
@@ -3345,6 +3360,7 @@ function renderPersonaExpressionPreference(persona) {
 }
 
 function renderPersonaGrowth(persona) {
+  const selfUse = selfUseMode();
   const personaId = Number(persona.id);
   const growth = state.personaGrowth[personaId];
   const loading = Number(state.loadingGrowthPersonaId) === personaId && !growth;
@@ -3354,10 +3370,10 @@ function renderPersonaGrowth(persona) {
   const preferenceRequests = Array.isArray(growth?.preference_requests) ? growth.preference_requests : [];
   return h("section", { class: "persona-growth-glimpse" }, [
     h("div", { class: "persona-growth-head" }, [
-      h("strong", { text: "相处痕迹" }),
+      h("strong", { text: selfUse ? "连续成长" : "相处痕迹" }),
       growth?.version ? h("small", { text: `v${growth.version}` }) : null,
     ]),
-    h("p", { class: "persona-growth-title", text: loading ? "正在整理最近的相处变化..." : growth?.headline || "你们的相处还在慢慢形成" }),
+    h("p", { class: "persona-growth-title", text: loading ? "正在整理最近的变化..." : growth?.headline || (selfUse ? "澪会从真实互动中慢慢形成连续性" : "你们的相处还在慢慢形成") }),
     !loading && signals.length
       ? h("div", { class: "persona-growth-signals" }, signals.map((signal) => h("div", { class: `persona-growth-signal ${signal.kind || ""}` }, [
         h("div", { class: "persona-growth-signal-head" }, [
@@ -3372,12 +3388,15 @@ function renderPersonaGrowth(persona) {
     reviewedChanges.length ? renderReviewedChangeHistory(reviewedChanges) : null,
     h("p", {
       class: "persona-growth-hint",
-      text: "想调整相处方式，可以直接说“回复短一点”或“少追问”；明确说“以后你就是我的女朋友”或“我以后叫你小舟”也会直接更新并留记录。",
+      text: selfUse
+        ? "可以直接说“回复短一点”“少追问”或“先听我说完”；明确反馈会进入连续记忆，不需要先给澪套关系或人格模板。"
+        : "想调整相处方式，可以直接说“回复短一点”“少追问”或“先听我说完”；明确反馈会更新并留记录。",
     }),
   ]);
 }
 
 function renderPreferenceRequest(personaId, requests, notice = "", errorText = "") {
+  const selfUse = selfUseMode();
   const editable = requests.find((request) => (
     request.status === "active_guidance" && request.can_withdraw && request.origin === "direct_entry"
   ));
@@ -3398,13 +3417,13 @@ function renderPreferenceRequest(personaId, requests, notice = "", errorText = "
     recorded: "已记下",
   };
   return h("section", { class: "persona-growth-request" }, [
-    h("strong", { text: "直接告诉 TA 怎么陪你" }),
-    h("p", { text: "你写下的主动偏好会立即影响 TA 的回应方式；与变化反馈形成的补充指导可同时生效，也可分别停止。" }),
+    h("strong", { text: selfUse ? "告诉澪你的边界或节奏" : "直接告诉 TA 怎么陪你" }),
+    h("p", { text: selfUse ? "这里记录明确反馈，不要求你预先设计澪的人格或关系。" : "你写下的主动偏好会立即影响 TA 的回应方式；与变化反馈形成的补充指导可同时生效，也可分别停止。" }),
     input,
     h("button", {
       type: "button",
       class: "ghost compact",
-      text: editable ? "更新当前偏好" : "让 TA 按这样回应",
+      text: editable ? "更新当前反馈" : (selfUse ? "交给澪记住" : "让 TA 按这样回应"),
       onclick: () => submitPreferenceRequest(personaId, input.value),
     }),
     notice ? h("small", { text: notice }) : null,
@@ -3827,24 +3846,25 @@ function renderSelfUseMappingPreview() {
 }
 
 function renderPersonaEditForm(persona) {
-  const name = h("input", { name: "name", value: persona.name || "", maxlength: "40", placeholder: "给 TA 起个名字" });
+  const selfUse = selfUseMode();
+  const name = h("input", { name: "name", value: persona.name || "", maxlength: "40", placeholder: selfUse ? "澪" : "给 TA 起个名字" });
   const summary = h("textarea", {
     name: "summary",
     rows: "3",
     maxlength: "1000",
-    placeholder: "TA 给你的整体感觉，或者你希望别人怎么理解 TA",
+    placeholder: selfUse ? "可留空；只写你已经确认的状态" : "TA 给你的整体感觉，或者你希望别人怎么理解 TA",
   }, persona.summary || "");
   const relationship = h("input", {
     name: "relationship",
     value: persona.relationship || "",
     maxlength: "120",
-    placeholder: "朋友、恋人、倾听者、搭档...",
+    placeholder: selfUse ? "可留空；只记录真实形成的相处方式" : "朋友、恋人、倾听者、搭档...",
   });
   const speakingStyle = h("textarea", {
     name: "speaking_style",
     rows: "3",
     maxlength: "300",
-    placeholder: "短句、少说教、会吐槽、温柔一点...",
+    placeholder: selfUse ? "可留空；也可以写短句、少追问等明确反馈" : "短句、少说教、会吐槽、温柔一点...",
   }, persona.speaking_style || "");
   const avatarFile = h("input", { name: "avatar_file", type: "file", accept: "image/png,image/jpeg,image/webp,image/gif" });
   const avatarUrl = h("input", { name: "avatar_url", value: persona.avatar_url || "", placeholder: "兼容旧头像：/uploads/... 或 https://..." });
@@ -3876,13 +3896,13 @@ function renderPersonaEditForm(persona) {
     name: "appearance_description",
     rows: "4",
     maxlength: "2000",
-    placeholder: "TA 目前给人的外貌或气质参考",
+    placeholder: selfUse ? "澪目前的形象气质参考" : "TA 目前给人的外貌或气质参考",
   }, persona.appearance_description || "");
   const desired = h("textarea", {
     name: "desired_image",
     rows: "4",
     maxlength: "2000",
-    placeholder: "你希望 TA 的头像/形象大概是什么感觉",
+    placeholder: selfUse ? "你希望澪的 Live2D 身体呈现什么方向" : "你希望 TA 的头像/形象大概是什么感觉",
   }, persona.desired_image || "");
   const status = h("small", { class: "save-status" });
   const deleteStatus = h("small", { class: "save-status danger-text" });
@@ -3988,11 +4008,11 @@ function renderPersonaEditForm(persona) {
           })
         : null,
       h("label", {}, ["名字", name]),
-      h("label", {}, ["关系定位", relationship]),
-      h("label", {}, ["说话方式", speakingStyle]),
-      h("label", {}, ["摘要", summary]),
+      h("label", {}, [selfUse ? "相处方式（可留空）" : "关系定位", relationship]),
+      h("label", {}, [selfUse ? "说话节奏（可留空）" : "说话方式", speakingStyle]),
+      h("label", {}, [selfUse ? "当前状态（可留空）" : "摘要", summary]),
       h("details", { class: "persona-edit-more" }, [
-        h("summary", { text: "形象与更多资料" }),
+        h("summary", { text: selfUse ? "形象补充" : "形象与更多资料" }),
         ...(!selfUseMode() ? [
           h("label", {}, ["Live2D 模型 ID", live2dModelId]),
           h("label", {}, ["Live2D 预览图", live2dPreviewUrl]),
@@ -5160,7 +5180,7 @@ function awarenessState(key) {
       ? state.screenStatus
       : state.proactiveStatus;
   const configEnabled = key === "proactive"
-    ? !!status?.enabled
+    ? !!(status?.config_enabled ?? status?.config?.enabled)
     : !!status?.config?.enabled;
   const active = key === "proactive" ? !!status?.enabled : !!status?.active;
 
@@ -5347,6 +5367,7 @@ function renderAwarenessConsentPanel() {
       renderAwarenessConsentRow("proactive"),
       renderVideoCompanionPanel(),
     ]),
+    state.integrationFlagError ? h("small", { class: "danger-text", text: state.integrationFlagError }) : null,
   ]);
 }
 
@@ -5386,7 +5407,7 @@ function renderAwarenessConsentRow(key) {
       ? state.screenStatus
       : state.proactiveStatus;
   const configEnabled = key === "proactive"
-    ? !!statusData?.enabled
+    ? !!(statusData?.config_enabled ?? statusData?.config?.enabled)
     : !!statusData?.config?.enabled;
   const granted = !!consent.granted;
   const canProbe = configEnabled && granted;
@@ -5400,6 +5421,18 @@ function renderAwarenessConsentRow(key) {
   checkbox.addEventListener("change", () => setAwarenessConsent(key, checkbox.checked, status));
 
   const actions = [];
+  if (selfUseMode() && (key === "screen" || key === "proactive")) {
+    actions.push(h("button", {
+      type: "button",
+      class: configEnabled ? "ghost compact" : "compact",
+      text: integrationFlagButtonText(key, configEnabled),
+      disabled: !!state.integrationFlagSaving,
+      title: key === "screen"
+        ? "只启用本机窗口标题/截图元数据边界；仍需单独授权"
+        : "只启用主动消息能力；授权与 scheduler 仍单独控制",
+      onclick: () => setSelfUseIntegrationFlag(key, !configEnabled),
+    }));
+  }
   if (key === "camera" || key === "screen") {
     actions.push(h("button", {
       type: "button",
@@ -5621,6 +5654,8 @@ function integrationFlagButtonText(key, enabled) {
   if (key === "live2d") return enabled ? "关闭 Live2D 配置" : "启用 Live2D 配置";
   if (key === "voice") return enabled ? "Disable voice" : "Enable voice";
   if (key === "video_companion") return enabled ? "关闭视频接入" : "启用视频接入";
+  if (key === "screen") return enabled ? "关闭屏幕感知" : "启用屏幕感知";
+  if (key === "proactive") return enabled ? "关闭主动能力" : "启用主动能力";
   return enabled ? "关闭" : "启用";
 }
 

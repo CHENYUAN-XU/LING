@@ -485,6 +485,11 @@ def verify_proactive_rechecks_consent_before_write(user_id: int, persona_id: int
 
 def verify_self_use_companion_boundary(user_id: int, persona_id: int) -> None:
     from fastapi import HTTPException
+    import app.db_chat as chat
+    import app.llm_client as llm_client
+    import app.proactive as pm
+    import app.runtime_state as runtime_state
+    import app.user_consent as consent_mod
 
     ts = database.now_ts() + 10
     with database.get_db() as db:
@@ -503,15 +508,24 @@ def verify_self_use_companion_boundary(user_id: int, persona_id: int) -> None:
     original_get_status = server.get_proactive_status
     original_run_tick = server.run_proactive_tick
     original_enabled = server.proactive_enabled
+    original_proactive_config = pm.load_config
+    original_llm = llm_client.call_llm_api
     try:
-        server.load_config = lambda: {
+        self_use_config = {
             "self_use": {
                 "enabled": True,
                 "username": "phase9",
                 "seed_default_persona": True,
                 "default_persona_name": "澪",
-            }
+            },
+            "proactive": {
+                "enabled": True,
+                "scheduler_enabled": True,
+                "max_candidate_personas": 10,
+            },
         }
+        server.load_config = lambda: self_use_config
+        pm.load_config = lambda: self_use_config
         server.get_proactive_status = lambda checked_user_id, checked_persona_id: {
             "user_id": checked_user_id,
             "persona_id": checked_persona_id,
@@ -519,10 +533,47 @@ def verify_self_use_companion_boundary(user_id: int, persona_id: int) -> None:
         server.run_proactive_tick = lambda **kwargs: kwargs
         server.proactive_enabled = lambda *_args, **_kwargs: True
         user = {"id": user_id, "username": "phase9"}
+        consent_mod.grant_consent(user_id, "proactive")
 
         assert server.proactive_status(user)["persona_id"] == persona_id
         tick = server.proactive_tick(server.ProactiveTickRequest(dry_run=True), user)
         assert tick["persona_id"] == persona_id
+        candidates = pm._proactive_candidates(user_id=user_id)
+        assert [int(item["persona_id"]) for item in candidates] == [persona_id]
+        assert candidates[0]["self_use_companion"] is True
+        captured_messages = []
+        llm_client.call_llm_api = lambda messages, task="chat": captured_messages.extend(messages) or "在呢。"
+        with database.get_db() as db:
+            conversation_id = int(
+                db.execute(
+                    "SELECT id FROM conversations WHERE user_id = ? AND persona_id = ? ORDER BY id LIMIT 1",
+                    (user_id, persona_id),
+                ).fetchone()["id"]
+            )
+        generated = pm._generate_proactive_reply(
+            candidates[0],
+            {"conversation_id": conversation_id, "summary": "", "history": []},
+        )
+        prompt_text = "\n".join(str(item.get("content") or "") for item in captured_messages)
+        assert generated["reply"] == "在呢。"
+        assert "LING 本地工作区中唯一、持续存在的 AI companion" in prompt_text
+        assert "single persistent companion" in prompt_text
+        assert "用户创建的长期对话对象" not in prompt_text
+
+        quiet_runtime = server.presence_quiet_mode(user)
+        assert quiet_runtime["quiet_mode"] is True
+        assert pm.get_proactive_controller(user_id, persona_id).is_quiet is True
+        runtime_state._runtime_states.pop(str(user_id), None)
+        restored_presence = server.presence_state(user)
+        assert restored_presence["runtime"]["state"] == "quiet"
+        assert restored_presence["runtime"]["quiet_mode"] is True
+
+        normal_runtime = server.presence_normal_mode(user)
+        assert normal_runtime["quiet_mode"] is False
+        assert pm.get_proactive_controller(user_id, persona_id).is_quiet is False
+        chat._persist_proactive_quiet(user_id, persona_id, True)
+        assert pm.get_proactive_controller(user_id, persona_id).is_quiet is True
+        chat._persist_proactive_quiet(user_id, persona_id, False)
 
         for call in (
             lambda: server.proactive_status(user, legacy_persona_id),
@@ -540,6 +591,8 @@ def verify_self_use_companion_boundary(user_id: int, persona_id: int) -> None:
         server.get_proactive_status = original_get_status
         server.run_proactive_tick = original_run_tick
         server.proactive_enabled = original_enabled
+        pm.load_config = original_proactive_config
+        llm_client.call_llm_api = original_llm
 
 
 def main() -> None:

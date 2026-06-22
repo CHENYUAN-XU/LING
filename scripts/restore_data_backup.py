@@ -14,7 +14,7 @@ from app.data_backup import inspect_data_backup, restore_data_backup
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Inspect or restore a Project Mnemosyne data backup.")
+    parser = argparse.ArgumentParser(description="Inspect or restore a LING data backup (legacy archives remain supported).")
     parser.add_argument("backup", type=Path, help="Backup zip path.")
     parser.add_argument(
         "--restore-dir",

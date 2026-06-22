@@ -14,7 +14,7 @@ from app.user_export import export_user_data, write_user_export
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Export one Project Mnemosyne user's local data as JSON.")
+    parser = argparse.ArgumentParser(description="Export one LING user's local data as JSON.")
     parser.add_argument("--user-id", type=int, required=True, help="User id to export.")
     parser.add_argument("--uploads", type=Path, default=None, help="Uploads root. Defaults to data/uploads.")
     parser.add_argument("--output", type=Path, default=None, help="Output JSON path. Defaults to stdout.")

@@ -41,7 +41,7 @@ def create_data_backup(
     if backup_path.exists():
         backup_path = backups_dir / f"{backup_path.stem}-{int(time.time() * 1000)}.zip"
 
-    with tempfile.TemporaryDirectory(prefix="mnemosyne-backup-", dir=str(backups_dir)) as tmp:
+    with tempfile.TemporaryDirectory(prefix="ling-backup-", dir=str(backups_dir)) as tmp:
         tmp_path = Path(tmp)
         snapshot_db = tmp_path / "app.db"
         _snapshot_sqlite(source_db, snapshot_db)
@@ -51,7 +51,7 @@ def create_data_backup(
 
         upload_files = _iter_upload_files(source_uploads) if include_uploads else []
         manifest = {
-            "project": "Project Mnemosyne",
+            "project": "LING",
             "created_at": _utc_timestamp(),
             "database": {
                 "source_path": str(source_db),
@@ -98,7 +98,7 @@ def inspect_data_backup(backup_path: Path | str) -> dict[str, Any]:
             raise ValueError("backup is missing database/app.db")
 
         upload_members = _upload_members(archive)
-        with tempfile.TemporaryDirectory(prefix="mnemosyne-backup-inspect-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="ling-backup-inspect-") as tmp:
             snapshot_db = Path(tmp) / "app.db"
             with archive.open("database/app.db") as source, snapshot_db.open("wb") as target:
                 shutil.copyfileobj(source, target)
@@ -227,7 +227,7 @@ def _safe_output_path(root: Path, relative_path: str) -> Path:
 def _backup_filename(label: str = "") -> str:
     suffix = _safe_label(label)
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
-    return f"mnemosyne-backup-{stamp}{('-' + suffix) if suffix else ''}.zip"
+    return f"ling-backup-{stamp}{('-' + suffix) if suffix else ''}.zip"
 
 
 def _safe_label(label: str) -> str:

@@ -147,7 +147,7 @@ from .memory_eval import (
 from .memory_rag import semantic_memory_recall, sync_memory_embeddings
 from .memory_policy import policy_snapshot
 from .mirror import get_user_insight, update_user_insight
-from .persona_forge import build_prompt, forge_persona
+from .persona_forge import build_ling_prompt, build_prompt, forge_persona
 from .privacy_policy import get_privacy_policy
 from .rate_limit import InMemoryRateLimiter, client_identifier, rate_limit_enabled
 from .error_monitor import list_error_events, record_error_event
@@ -536,41 +536,49 @@ def companion_status(user: dict = Depends(current_user), persona_id: int | None 
         {
             "key": "api",
             "label": "API",
+            "required": True,
             "ready": api_ready,
             "text": _companion_api_readiness_text(self_use, llm),
         },
         {
             "key": "visual",
             "label": "Visual",
+            "required": False,
             "ready": visual_ready,
             "text": _companion_visual_readiness_text(embodiment),
         },
         {
             "key": "live2d",
             "label": "Live2D",
+            "required": True,
             "ready": live2d_ready,
             "text": _companion_live2d_readiness_text(embodiment, live2d_config, live2d_status),
         },
         {
             "key": "voice",
             "label": "Voice",
+            "required": True,
             "ready": voice_ready,
             "text": _companion_voice_readiness_text(embodiment, voice_config, voice_health),
         },
         {
             "key": "lip_sync",
             "label": "Lip sync",
+            "required": True,
             "ready": lip_sync_ready,
             "text": _companion_lip_sync_readiness_text(live2d_config, live2d_status),
         },
         {
             "key": "video",
             "label": "Video",
+            "required": False,
             "ready": video_ready,
             "text": _companion_video_readiness_text(video),
         },
     ]
-    ready_count = sum(1 for item in readiness if item["ready"])
+    required_readiness = [item for item in readiness if item["required"]]
+    optional_readiness = [item for item in readiness if not item["required"]]
+    ready_count = sum(1 for item in required_readiness if item["ready"])
     return {
         "self_use": self_use,
         "persona_id": int(persona["id"]) if persona else None,
@@ -585,7 +593,9 @@ def companion_status(user: dict = Depends(current_user), persona_id: int | None 
         "runtime": runtime,
         "readiness": readiness,
         "ready_count": ready_count,
-        "total_count": len(readiness),
+        "total_count": len(required_readiness),
+        "optional_ready_count": sum(1 for item in optional_readiness if item["ready"]),
+        "optional_total_count": len(optional_readiness),
     }
 
 
@@ -1253,8 +1263,18 @@ def _default_self_use_persona(name: str) -> dict[str, Any]:
         "boundaries": [],
         "memory_profile": {},
     }
-    persona["prompt"] = build_prompt(persona)
+    persona["prompt"] = build_ling_prompt(persona)
     return persona
+
+
+def _refresh_self_use_prompt(db, persona: dict[str, Any]) -> dict[str, Any]:
+    prompt = build_ling_prompt(persona)
+    if str(persona.get("prompt") or "") == prompt:
+        return persona
+    db.execute("UPDATE personas SET prompt = ?, updated_at = ? WHERE id = ?", (prompt, now_ts(), persona["id"]))
+    refreshed = dict(persona)
+    refreshed["prompt"] = prompt
+    return refreshed
 
 
 def _set_self_use_companion_binding(db, user_id: int, persona_id: int) -> None:
@@ -1397,6 +1417,7 @@ def _ensure_self_use_default_persona(user_id: int, config: dict[str, Any]) -> di
             bound_persona = dict_from_row(bound_existing) or {}
             if _should_reset_legacy_self_use_persona(db, bound_persona):
                 bound_persona = _reset_self_use_persona_to_blank(db, bound_persona, config)
+            bound_persona = _refresh_self_use_prompt(db, bound_persona)
             _set_self_use_companion_binding(db, user_id, int(bound_persona["id"]))
             return bound_persona
 
@@ -1413,6 +1434,7 @@ def _ensure_self_use_default_persona(user_id: int, config: dict[str, Any]) -> di
             named_persona = dict_from_row(named_existing) or {}
             if _should_reset_legacy_self_use_persona(db, named_persona):
                 named_persona = _reset_self_use_persona_to_blank(db, named_persona, config)
+            named_persona = _refresh_self_use_prompt(db, named_persona)
             _set_self_use_companion_binding(db, user_id, int(named_persona["id"]))
             return named_persona
 
@@ -1424,6 +1446,7 @@ def _ensure_self_use_default_persona(user_id: int, config: dict[str, Any]) -> di
             existing_persona = dict_from_row(existing_rows[0]) or {}
             if _should_reset_legacy_self_use_persona(db, existing_persona):
                 existing_persona = _reset_self_use_persona_to_blank(db, existing_persona, config)
+            existing_persona = _refresh_self_use_prompt(db, existing_persona)
             _set_self_use_companion_binding(db, user_id, int(existing_persona["id"]))
             return existing_persona
 
@@ -2074,6 +2097,7 @@ def live2d_disconnect(user: dict = Depends(current_user)):
 
 @app.get("/api/presence/state")
 def presence_state(user: dict = Depends(current_user)):
+    _sync_self_use_presence_quiet(user)
     return get_presence_summary(int(user["id"]))
 
 
@@ -2109,14 +2133,31 @@ def presence_idle(user: dict = Depends(current_user)):
 def presence_quiet_mode(user: dict = Depends(current_user)):
     if not presence_enabled():
         return {"transition": "disabled"}
-    return on_quiet_mode_enter(int(user["id"]))
+    result = on_quiet_mode_enter(int(user["id"]))
+    _sync_self_use_presence_quiet(user, True)
+    return result
 
 
 @app.post("/api/presence/normal-mode")
 def presence_normal_mode(user: dict = Depends(current_user)):
     if not presence_enabled():
         return {"transition": "disabled"}
-    return on_quiet_mode_exit(int(user["id"]))
+    result = on_quiet_mode_exit(int(user["id"]))
+    _sync_self_use_presence_quiet(user, False)
+    return result
+
+
+def _sync_self_use_presence_quiet(user: dict[str, Any], quiet: bool | None = None) -> None:
+    if not _self_use_public(user).get("enabled"):
+        return
+    persona_id = _self_use_bound_persona_id(user)
+    if persona_id is None:
+        return
+    controller = get_proactive_controller(int(user["id"]), int(persona_id))
+    effective_quiet = controller.is_quiet if quiet is None else bool(quiet)
+    if quiet is not None and controller.is_quiet != effective_quiet:
+        controller.set_quiet_mode(effective_quiet)
+    get_runtime_state(int(user["id"])).set_quiet_mode(effective_quiet)
 
 
 class PresenceQuietCheckRequest(BaseModel):
@@ -2449,6 +2490,8 @@ def proactive_quiet_mode(req: ProactiveQuietRequest, user: dict = Depends(curren
     _require_active_persona_for_user(persona_id, user_id)
     controller = get_proactive_controller(user_id, persona_id)
     controller.set_quiet_mode(req.quiet)
+    if _self_use_public(user).get("enabled"):
+        get_runtime_state(user_id).set_quiet_mode(req.quiet)
     return controller.get_status()
 
 
@@ -4327,7 +4370,9 @@ def update_persona(persona_id: int, req: PersonaUpdateRequest, user: dict = Depe
     updated["fallback_image_url"] = fallback_image_url
     updated["voice_profile"] = voice_profile
     if content_changed:
-        updated["prompt"] = build_prompt(updated)
+        updated["prompt"] = (
+            build_ling_prompt(updated) if _self_use_public(user).get("enabled") else build_prompt(updated)
+        )
 
     with get_db() as db:
         db.execute(
@@ -5219,6 +5264,10 @@ def _normalize_existing_persona_identity() -> dict[str, int]:
         ]
 
     with get_db() as db:
+        bound_persona_ids = {
+            int(row["persona_id"])
+            for row in db.execute("SELECT persona_id FROM self_use_companion_bindings").fetchall()
+        }
         rows = db.execute("SELECT * FROM personas").fetchall()
         for row in rows:
             persona = _public_persona(dict_from_row(row))
@@ -5235,7 +5284,7 @@ def _normalize_existing_persona_identity() -> dict[str, int]:
                 persona[key] = scrub_identity_text(persona.get(key))
             persona["traits"] = scrub_list(persona.get("traits"))
             persona["boundaries"] = scrub_list(persona.get("boundaries"))
-            prompt = build_prompt(persona)
+            prompt = build_ling_prompt(persona) if int(persona["id"]) in bound_persona_ids else build_prompt(persona)
             db.execute(
                 """
                 UPDATE personas
@@ -5277,7 +5326,11 @@ def _normalize_existing_persona_identity() -> dict[str, int]:
                 version[key] = scrub_identity_text(version.get(key))
             version["traits"] = scrub_list(version.get("traits"))
             version["boundaries"] = scrub_list(version.get("boundaries"))
-            prompt = build_prompt(version)
+            prompt = (
+                build_ling_prompt(version)
+                if int(version.get("persona_id") or 0) in bound_persona_ids
+                else build_prompt(version)
+            )
             db.execute(
                 """
                 UPDATE persona_versions

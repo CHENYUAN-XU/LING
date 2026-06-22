@@ -19,13 +19,41 @@ py scripts\verify_all.py --video-e2e
 
 `--self-use` 会确认 localhost 边界、cookie 模式、运行目录写权限和外部 Video Companion 路径。尚未配置的聊天或语音 API key 只会提示，不会把空白自用工作区误判为不可运行。
 
+查看当前真实完成度而不触发外部模型调用：
+
+```powershell
+py scripts\check_acceptance.py
+```
+
+`READY` 表示自动条件成立，`PENDING` 表示尚未配置或未验证，`MANUAL` 表示自动前置已具备但仍需真实设备/日用观察，`OPTIONAL` 不阻塞核心自用。该报告不会把端口在线或脚本全绿当成真机验收完成。
+
+完成对应真机步骤后再显式记录，例如：
+
+```powershell
+py scripts\record_acceptance.py accept live2d --note "实际模型授权、重启重连和四个状态动作通过"
+py scripts\record_acceptance.py accept voice --note "真实音频、打断、Talk/Idle 时序通过"
+py scripts\record_acceptance.py accept daily_endurance --note "完成休眠唤醒和长时间 SQLite 观察"
+```
+
+可记录项为 `chat_model`、`live2d`、`voice`、`video_companion`、`daily_endurance`。若检查仍是 `PENDING`，记录命令会拒绝；更改相关配置后旧凭证会显示为 stale，需重新真机验收。
+
 ## 2. 启动
 
 ```powershell
-scripts\start_local_server.ps1
+scripts\start_local_server.ps1 -OpenBrowser
 ```
 
-或直接运行：
+脚本会先执行 `check_deployment.py --self-use`，确认端口上的既有监听确实是 LING，再用受管 runner 在后台启动。运行状态位于 `data/runtime/ling-server-8001.json`，启动日志位于 `logs/ling-server-8001.log`。
+
+日用关闭：
+
+```powershell
+scripts\stop_local_server.ps1
+```
+
+关闭脚本写入 stop request，等待 uvicorn 执行应用 shutdown hook；这样 Live2D 连接和 proactive scheduler 会按服务关闭流程释放。只有正常关闭超时并明确传入 `-Force` 时才强制终止。
+
+前台调试才直接运行：
 
 ```powershell
 py -m uvicorn app.server:app --host 127.0.0.1 --port 8001
@@ -36,6 +64,7 @@ py -m uvicorn app.server:app --host 127.0.0.1 --port 8001
 - 本地 HTTP 必须保持 `security.secure_cookies: false`。
 - `self_use.enabled` 与 `self_use.require_localhost` 应保持 `true`。
 - 不要为方便访问改成 `0.0.0.0`；远程访问不是当前默认产品边界。
+- 端口被其他程序占用时启动脚本会拒绝误认；不会因为“有人监听 8001”就声称 LING 已运行。
 
 ## 3. Live2D / VTube Studio
 
@@ -63,6 +92,8 @@ Edge TTS 不属于 LING 的语音方案。实时麦克风、ASR 和视频会话�
 scripts\start_integrated_video_companion.ps1
 ```
 
+该脚本让主项目继承 `LING_VIDEO_COMPANION_*` 环境后通过受管 local runner 启动，并优先选择外部项目 `.venv`。集成启动前必须先关闭已有 LING；外部 Video Companion 保持可见终端，由外部项目负责关闭。
+
 “接入”面板应分别显示：
 
 - 外部服务是否在线；
@@ -78,8 +109,8 @@ scripts\start_integrated_video_companion.ps1
 
 ```powershell
 py scripts\backup_data.py --label before-change
-py scripts\restore_data_backup.py data\backups\mnemosyne-backup-YYYYMMDD-HHMMSS.zip --inspect-only
-py scripts\restore_data_backup.py data\backups\mnemosyne-backup-YYYYMMDD-HHMMSS.zip --restore-dir data\restore-drill
+py scripts\restore_data_backup.py data\backups\ling-backup-YYYYMMDD-HHMMSS.zip --inspect-only
+py scripts\restore_data_backup.py data\backups\ling-backup-YYYYMMDD-HHMMSS.zip --restore-dir data\restore-drill
 ```
 
 备份包含 SQLite 一致性快照、上传的形象素材及 manifest。恢复只写入新的旁路目录；确认结果后再人工替换运行数据。

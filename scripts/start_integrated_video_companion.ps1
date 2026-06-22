@@ -2,13 +2,51 @@ param(
     [int]$MainPort = 8001,
     [int]$VideoPort = 8782,
     [string]$VideoPath = "",
+    [string]$MainPython = "",
+    [string]$VideoPython = "",
     [switch]$NoBridge,
     [switch]$DryRun,
     [switch]$SkipHealthCheck,
-    [int]$HealthTimeoutSeconds = 30
+    [int]$HealthTimeoutSeconds = 30,
+    [switch]$OpenBrowser
 )
 
 $ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding = [Console]::OutputEncoding
+$env:PYTHONIOENCODING = "utf-8"
+
+function Resolve-PythonExecutable {
+    param(
+        [string]$Requested,
+        [string]$SearchRoot
+    )
+
+    $candidates = @()
+    if (-not [string]::IsNullOrWhiteSpace($Requested)) { $candidates += $Requested }
+    if (-not [string]::IsNullOrWhiteSpace($SearchRoot)) {
+        $candidates += (Join-Path $SearchRoot ".venv\Scripts\python.exe")
+    }
+    foreach ($commandName in @("python", "py")) {
+        $command = Get-Command $commandName -ErrorAction SilentlyContinue
+        if ($command) { $candidates += $command.Source }
+    }
+    $candidates += Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA "Programs\Python") `
+        -Filter python.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+
+    foreach ($candidate in ($candidates | Where-Object { $_ } | Select-Object -Unique)) {
+        try {
+            $resolved = & $candidate -c "import sys; print(sys.executable)" 2>$null
+            if ($LASTEXITCODE -eq 0 -and $resolved) {
+                $path = [string]($resolved | Select-Object -Last 1)
+                if (Test-Path -LiteralPath $path) { return (Resolve-Path -LiteralPath $path).Path }
+            }
+        } catch {
+            continue
+        }
+    }
+    throw "No working Python interpreter was found. Pass an explicit Python path."
+}
 
 function Wait-HttpHealth {
     param(
@@ -32,11 +70,8 @@ function Wait-HttpHealth {
         }
         Start-Sleep -Milliseconds 750
     }
-
     Write-Warning "$Name health check failed after ${TimeoutSeconds}s: $Url"
-    if ($lastError) {
-        Write-Warning "Last error: $lastError"
-    }
+    if ($lastError) { Write-Warning "Last error: $lastError" }
     return $false
 }
 
@@ -55,13 +90,15 @@ if ([string]::IsNullOrWhiteSpace($VideoPath)) {
         (Join-Path $driveRoot (Join-Path $visualDirName "video-companion")),
         (Join-Path $workspaceRoot (Join-Path $visualDirName "video-companion"))
     ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-
     $VideoPath = $candidatePaths | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-    if ([string]::IsNullOrWhiteSpace($VideoPath)) {
-        $VideoPath = $candidatePaths | Select-Object -First 1
-    }
 }
-$VideoRoot = (Resolve-Path $VideoPath).Path
+if ([string]::IsNullOrWhiteSpace($VideoPath) -or -not (Test-Path -LiteralPath $VideoPath)) {
+    throw "Video Companion project was not found. Pass -VideoPath explicitly."
+}
+
+$VideoRoot = (Resolve-Path -LiteralPath $VideoPath).Path
+$MainPythonExe = Resolve-PythonExecutable -Requested $MainPython -SearchRoot $ProjectRoot
+$VideoPythonExe = Resolve-PythonExecutable -Requested $VideoPython -SearchRoot $VideoRoot
 $BridgeEnabled = if ($NoBridge) { "false" } else { "true" }
 $BridgeApiKeyEnv = if ($env:LING_VIDEO_BRIDGE_API_KEY) {
     "LING_VIDEO_BRIDGE_API_KEY"
@@ -88,61 +125,80 @@ legacy_bridge:
   retries: 2
 "@ | Set-Content -LiteralPath $VideoConfig -Encoding UTF8
 
-Write-Host "Starting LING on http://127.0.0.1:$MainPort"
 if ($DryRun) {
-    Write-Host "Dry run: not starting processes."
+    Write-Host "Integrated startup dry run passed."
+    Write-Host "LING Python:  $MainPythonExe"
+    Write-Host "Video Python: $VideoPythonExe"
     Write-Host "Project root: $ProjectRoot"
     Write-Host "Video root:   $VideoRoot"
     Write-Host "Video config: $VideoConfig"
-    Write-Host "Main env:     LING_VIDEO_COMPANION_ENABLED=true"
-    Write-Host "Bridge key:   $BridgeApiKeyEnv"
     Write-Host "Main health:  http://127.0.0.1:$MainPort/api/health"
     Write-Host "Video health: http://127.0.0.1:$VideoPort/api/health"
     exit 0
 }
 
-$EscapedVideoRoot = $VideoRoot.Replace("'", "''")
-$MainCommand = @"
-`$env:LING_VIDEO_COMPANION_ENABLED = 'true'
-`$env:LING_VIDEO_COMPANION_BASE_URL = 'http://127.0.0.1:$VideoPort'
-`$env:LING_VIDEO_COMPANION_WS_URL = 'ws://127.0.0.1:$VideoPort/ws'
-`$env:LING_VIDEO_COMPANION_PROJECT_PATH = '$EscapedVideoRoot'
-py -m uvicorn app.server:app --host 127.0.0.1 --port $MainPort
-"@
-$MainProcess = Start-Process -FilePath "powershell" `
-    -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $MainCommand `
-    -WorkingDirectory $ProjectRoot `
-    -PassThru
+$mainListener = Get-NetTCPConnection -LocalPort $MainPort -State Listen -ErrorAction SilentlyContinue
+if ($mainListener) {
+    throw "Stop the existing LING process first. Integrated startup must launch LING with the Video Companion bridge environment."
+}
 
-Start-Sleep -Seconds 1
+$env:LING_VIDEO_COMPANION_ENABLED = "true"
+$env:LING_VIDEO_COMPANION_BASE_URL = "http://127.0.0.1:$VideoPort"
+$env:LING_VIDEO_COMPANION_WS_URL = "ws://127.0.0.1:$VideoPort/ws"
+$env:LING_VIDEO_COMPANION_PROJECT_PATH = $VideoRoot
 
-Write-Host "Starting Video Companion on http://127.0.0.1:$VideoPort"
-Write-Host "Video Companion temp config: $VideoConfig"
-$VideoCommand = "`$env:VC_CONFIG = '$VideoConfig'; py -m app.server"
-$VideoProcess = Start-Process -FilePath "powershell" `
-    -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $VideoCommand `
-    -WorkingDirectory $VideoRoot `
-    -PassThru
+Write-Host "Starting managed LING on http://127.0.0.1:$MainPort"
+& (Join-Path $PSScriptRoot "start_local_server.ps1") -Port $MainPort -Python $MainPythonExe
+if ($LASTEXITCODE -ne 0) { throw "LING startup failed." }
+
+$MainStateFile = Join-Path $ProjectRoot "data\runtime\ling-server-$MainPort.json"
+$MainState = Get-Content -LiteralPath $MainStateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+
+$videoHealthy = $false
+try {
+    $videoProbe = Invoke-WebRequest -Uri "http://127.0.0.1:$VideoPort/api/health" -UseBasicParsing -TimeoutSec 2
+    $videoHealthy = $videoProbe.StatusCode -ge 200 -and $videoProbe.StatusCode -lt 300
+} catch {
+    $videoHealthy = $false
+}
+
+$VideoProcess = $null
+if ($videoHealthy) {
+    Write-Host "Video Companion is already healthy on port $VideoPort; reusing the external service."
+} else {
+    $videoListener = Get-NetTCPConnection -LocalPort $VideoPort -State Listen -ErrorAction SilentlyContinue
+    if ($videoListener) {
+        throw "Port $VideoPort is occupied, but Video Companion health is unavailable."
+    }
+    Write-Host "Starting external Video Companion on http://127.0.0.1:$VideoPort"
+    $EscapedVideoConfig = $VideoConfig.Replace("'", "''")
+    $EscapedVideoPython = $VideoPythonExe.Replace("'", "''")
+    $VideoCommand = "`$env:VC_CONFIG = '$EscapedVideoConfig'; & '$EscapedVideoPython' -m app.server"
+    $VideoProcess = Start-Process -FilePath "powershell" `
+        -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $VideoCommand `
+        -WorkingDirectory $VideoRoot `
+        -PassThru
+}
 
 Write-Host ""
 Write-Host "LING:            http://127.0.0.1:$MainPort"
 Write-Host "Video Companion: http://127.0.0.1:$VideoPort"
-Write-Host "LING PID:        $($MainProcess.Id)"
-Write-Host "Video PID:       $($VideoProcess.Id)"
-Write-Host "Main project video_companion is enabled through environment variables for this launched process."
+Write-Host "LING PID:        $($MainState.pid)"
+if ($VideoProcess) { Write-Host "Video shell PID:  $($VideoProcess.Id)" }
+Write-Host "Stop LING with:  scripts\stop_local_server.ps1 -Port $MainPort"
+Write-Host "Close the visible Video Companion terminal to stop the external service."
 
 if (-not $SkipHealthCheck) {
     Write-Host ""
-    Write-Host "Waiting for health checks..."
     $mainOk = Wait-HttpHealth -Name "LING" -Url "http://127.0.0.1:$MainPort/api/health" -TimeoutSeconds $HealthTimeoutSeconds
     $videoOk = Wait-HttpHealth -Name "Video Companion" -Url "http://127.0.0.1:$VideoPort/api/health" -TimeoutSeconds $HealthTimeoutSeconds
-
     if (-not ($mainOk -and $videoOk)) {
-        Write-Warning "One or more services did not become healthy. The launched windows were left open so you can inspect their logs."
+        Write-Warning "One or more services did not become healthy. LING can be stopped with stop_local_server.ps1; inspect the visible external terminal for Video Companion logs."
         exit 1
     }
-
     Write-Host "Integrated startup is healthy."
-} else {
-    Write-Host "Health checks skipped."
+}
+
+if ($OpenBrowser) {
+    Start-Process "http://127.0.0.1:$MainPort"
 }

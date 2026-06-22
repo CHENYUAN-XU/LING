@@ -112,6 +112,11 @@ def main() -> None:
     assert '"video_companion.project_path"' in app_js
     assert 'setSelfUseIntegrationFlag("live2d", true)' in app_js
     assert 'setSelfUseIntegrationFlag("video_companion", true)' in app_js
+    assert 'setSelfUseIntegrationFlag(key, !configEnabled)' in app_js
+    assert 'key === "screen" || key === "proactive"' in app_js
+    assert 'status?.config_enabled ?? status?.config?.enabled' in app_js
+    assert 'enabled ? "关闭屏幕感知" : "启用屏幕感知"' in app_js
+    assert 'enabled ? "关闭主动能力" : "启用主动能力"' in app_js
     assert "function renderSelfUseIntegrationModal()" in app_js
     assert "function renderSelfUseApiSetupCard()" in app_js
     assert "function renderSelfUseLive2dSetupCard()" in app_js
@@ -157,6 +162,10 @@ def main() -> None:
     assert "function voiceAutoPlayEnabled" in app_js
     assert "function probeSelfUseLlm" in app_js
     assert "llm_unverified" in app_js
+    assert "澪的状态档案" in app_js
+    assert "告诉澪你的边界或节奏" in app_js
+    assert "不需要先给澪套关系或人格模板" in app_js
+    assert "以后你就是我的女朋友" not in app_js
     assert "function interruptVoicePlayback" in app_js
     assert "function voicePlaybackIsCurrent(playback)" in app_js
     assert "signal: playback.controller.signal" in app_js
@@ -251,6 +260,8 @@ def main() -> None:
     assert 'FastAPI(title="LING")' in server_py
     assert "state.companionStatus?.readiness?.length" in app_js
     assert "function readinessActionFor(item)" in app_js
+    assert "核心就绪" in app_js
+    assert "item.required === false" in app_js
     assert "function renderSelfUseReadinessItem(item)" in app_js
     assert "function openSelfUseIntegration()" in app_js
     assert "renderSelfUseReadinessItem(item)" in app_js
@@ -266,7 +277,6 @@ def main() -> None:
     assert "onclick: () => setSelfUseChatGate(true)" in app_js
     assert "onclick: () => startVideoCompanion(statusEl)" in app_js
     assert "onclick: openVideoCompanionPage" in app_js
-    assert 'text: "补形象资料", onclick: openPersonaEditor' in app_js
     assert 'text: "编辑形象", onclick: openPersonaEditor' in app_js
     assert "video.status?.session_active" in app_js
     assert "state.sending" in app_js
@@ -363,8 +373,12 @@ def main() -> None:
     assert cache_match, "service worker cache name missing"
     assert "ling-shell-" in cache_match.group(1)
     assert 'aria-label="LING"' in icon_svg
-    assert "Starting LING" in start_script
+    assert "Starting managed LING" in start_script
     assert "LING PID" in start_script
+    assert 'start_local_server.ps1' in start_script
+    assert '.venv\\Scripts\\python.exe' in start_script
+    assert 'Stop the existing LING process first' in start_script
+    assert 'Close the visible Video Companion terminal' in start_script
 
     assert "personal AI VTB" in roadmap
     assert "embodied workspace" in roadmap

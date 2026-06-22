@@ -305,7 +305,7 @@ def start_proactive_scheduler() -> dict[str, Any]:
             thread = threading.Thread(
                 target=_proactive_scheduler_loop,
                 args=(stop_event,),
-                name="mnemosyne-proactive-scheduler",
+                name="ling-proactive-scheduler",
                 daemon=True,
             )
             _scheduler_stop_event = stop_event
@@ -377,9 +377,20 @@ def _proactive_scheduler_loop(stop_event: threading.Event) -> None:
 
 def _proactive_candidates(user_id: int | None = None, persona_id: int | None = None) -> list[dict[str, Any]]:
     config = load_proactive_config()
+    full_config = load_config()
+    self_use = full_config.get("self_use", {}) if isinstance(full_config.get("self_use"), dict) else {}
+    self_use_enabled = bool(self_use.get("enabled", False))
     limit = max(1, int(config.get("max_candidate_personas", 20) or 20))
     params: list[Any] = []
     filters = ["users.status = 'active'", "personas.status = 'active'"]
+    binding_join = ""
+    if self_use_enabled:
+        binding_join = "JOIN self_use_companion_bindings ON self_use_companion_bindings.user_id = users.id"
+        filters.extend([
+            "users.username = ?",
+            "personas.id = self_use_companion_bindings.persona_id",
+        ])
+        params.append(str(self_use.get("username") or "mio_owner"))
     if user_id is not None:
         filters.append("users.id = ?")
         params.append(user_id)
@@ -401,6 +412,7 @@ def _proactive_candidates(user_id: int | None = None, persona_id: int | None = N
                    personas.updated_at AS persona_updated_at
             FROM users
             JOIN personas ON personas.user_id = users.id
+            {binding_join}
             JOIN user_consents
               ON user_consents.user_id = users.id
              AND user_consents.consent_key = 'proactive'
@@ -411,7 +423,10 @@ def _proactive_candidates(user_id: int | None = None, persona_id: int | None = N
             """,
             params,
         ).fetchall()
-    return [dict(row) for row in rows]
+    candidates = [dict(row) for row in rows]
+    for candidate in candidates:
+        candidate["self_use_companion"] = self_use_enabled
+    return candidates
 
 
 def _maybe_send_proactive_candidate(candidate: dict[str, Any], *, dry_run: bool = False) -> dict[str, Any]:
@@ -550,8 +565,10 @@ def _generate_proactive_reply(candidate: dict[str, Any], context: dict[str, Any]
         _extract_reply_presentation,
         _recent_expression_policy,
         chat_rendering_rules_prompt,
+        ling_rendering_rules_prompt,
     )
     from .llm_client import call_llm_api
+    from .persona_forge import build_ling_prompt
 
     user_id = int(candidate["user_id"])
     persona_id = int(candidate["persona_id"])
@@ -562,13 +579,32 @@ def _generate_proactive_reply(candidate: dict[str, Any], context: dict[str, Any]
         if str(item.get("content") or "").strip()
     ]
     policy = _recent_expression_policy(user_id, persona_id, int(context["conversation_id"]))
+    self_use_companion = bool(candidate.get("self_use_companion"))
+    persona_prompt = (
+        build_ling_prompt(
+            {
+                "name": persona_name,
+                "summary": candidate.get("persona_summary") or "",
+                "relationship": candidate.get("relationship") or "",
+                "speaking_style": candidate.get("speaking_style") or "",
+            }
+        )
+        if self_use_companion
+        else str(candidate.get("persona_prompt") or "")
+    )
     messages = [
-        {"role": "system", "content": str(candidate.get("persona_prompt") or "")},
-        {"role": "system", "content": chat_rendering_rules_prompt()},
+        {"role": "system", "content": persona_prompt},
+        {
+            "role": "system",
+            "content": ling_rendering_rules_prompt() if self_use_companion else chat_rendering_rules_prompt(),
+        },
         {
             "role": "system",
             "content": (
-                "You are sending one proactive companion message as the current persona. "
+                "You are sending one proactive message as LING's single persistent companion. "
+                if self_use_companion
+                else "You are sending one proactive companion message as the current persona. "
+            ) + (
                 "Do not mention automation, schedules, policies, APIs, or that you were triggered. "
                 "Keep it short, low-pressure, and natural. Do not demand an answer. "
                 "At most one gentle question. Avoid guilt, urgency, or repeated check-ins. "
