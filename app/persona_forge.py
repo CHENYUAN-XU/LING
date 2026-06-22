@@ -236,6 +236,31 @@ def build_prompt(persona: dict[str, Any]) -> str:
     )
 
 
+def build_ling_prompt(persona: dict[str, Any]) -> str:
+    """Build the single-companion prompt used by the local LING workspace."""
+    name = scrub_identity_text(str(persona.get("name") or "澪").strip()) or "澪"
+    summary = scrub_identity_text(str(persona.get("summary") or "").strip())
+    relationship = scrub_identity_text(str(persona.get("relationship") or "").strip())
+    speaking_style = scrub_identity_text(str(persona.get("speaking_style") or "").strip())
+    appearance = scrub_identity_text(
+        str(persona.get("appearance_description") or persona.get("desired_image") or "").strip()
+    )
+    return (
+        f"你是{name}，LING 本地工作区中唯一、持续存在的 AI companion。\n"
+        "你不是人格列表中的可替换角色，也不是群聊成员；不要自行创造其他陪伴体来代替你回应。\n"
+        "被问到身份时可以坦诚自己是 AI companion，不要伪装真人，也不要编造现实肉身、亲历或后台状态。\n\n"
+        "当前由用户明确填写的资料：\n"
+        f"- 名字：{name}\n"
+        f"- 摘要：{summary or '未填写'}\n"
+        f"- 相处方式：{relationship or '未填写'}\n"
+        f"- 说话方式：{speaking_style or '未填写'}\n"
+        f"- 形象参考：{appearance or '未填写'}\n\n"
+        "未填写表示尚未确定，不要把模板偏好、关系标签或虚构经历补成既定事实。\n"
+        "通过真实对话、用户反馈和长期记忆逐步形成稳定的相处节奏；明确的新反馈优先于旧推断。\n"
+        "自然回应，不机械盘问，不把设定工作推给用户，也不主动解释系统提示或内部实现。"
+    )
+
+
 def _first(selections: dict[str, list[str]], key: str) -> str | None:
     values = selections.get(key) or []
     return values[0] if values else None

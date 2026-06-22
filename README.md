@@ -14,6 +14,7 @@ LING 是一个面向作者本人使用的 AI VTB / 具身数字陪伴体项目�
 - Live2D 默认关闭；启用后应用启动会尝试非阻塞连接 VTube Studio。
 - 普通文字回复 TTS 默认关闭，使用 OpenAI TTS 适配器，不使用 Edge TTS。
 - 实时摄像头、麦克风、ASR、连续视觉理解和视频会话语音由外部 Video Companion 负责。
+- 屏幕感知与主动消息默认关闭，资料页必须分别启用配置并授予授权；启用主动能力不会自动启动 scheduler。
 
 ## 启动
 
@@ -22,8 +23,16 @@ LING 是一个面向作者本人使用的 AI VTB / 具身数字陪伴体项目�
 ```powershell
 cd "E:\澪\project-mnemosyne"
 py -m pip install -r requirements.txt
-py -m uvicorn app.server:app --host 127.0.0.1 --port 8001
+scripts\start_local_server.ps1 -OpenBrowser
 ```
+
+日用关闭：
+
+```powershell
+scripts\stop_local_server.ps1
+```
+
+启动脚本会自动寻找可用 Python、运行 localhost 自用预检、拒绝占用 8001 的非 LING 进程，并把 PID/state 写到 `data/runtime/`、日志写到 `logs/`。关闭脚本通过 stop request 让 uvicorn 执行应用 shutdown hook；直接运行 uvicorn 只用于前台调试。
 
 打开：
 
@@ -140,8 +149,8 @@ E:\视觉\video-companion
 
 ```powershell
 py scripts\backup_data.py --label before-change
-py scripts\restore_data_backup.py data\backups\mnemosyne-backup-YYYYMMDD-HHMMSS.zip --inspect-only
-py scripts\restore_data_backup.py data\backups\mnemosyne-backup-YYYYMMDD-HHMMSS.zip --restore-dir data\restore-drill
+py scripts\restore_data_backup.py data\backups\ling-backup-YYYYMMDD-HHMMSS.zip --inspect-only
+py scripts\restore_data_backup.py data\backups\ling-backup-YYYYMMDD-HHMMSS.zip --restore-dir data\restore-drill
 ```
 
 本地长期运行与恢复流程见 `docs/DEPLOYMENT_RUNBOOK.md`。当前 SQLite 方案适合个人单实例；公开多人或多 worker 部署不属于当前产品目标。
@@ -168,6 +177,25 @@ py scripts\check_deployment.py --self-use
 
 `--production` 只用于未来明确的 HTTPS 公网部署，不是当前 LING 自用完成标准。
 
+只读日用验收报告（不会调用外部模型 API）：
+
+```powershell
+py scripts\check_acceptance.py
+py scripts\check_acceptance.py --json
+```
+
+报告把自动就绪、待配置、真机人工验收和可选能力分开。`--strict` 仅用于需要“所有必需项连同真机验收都完成才返回成功”的场景。
+
+真实设备测试完成后，由作者显式记录本地验收凭证：
+
+```powershell
+py scripts\record_acceptance.py accept live2d --note "VTS 重启重连、Idle/Listen/Think/Talk 均已实测"
+py scripts\record_acceptance.py list
+py scripts\record_acceptance.py revoke live2d
+```
+
+只有自动前置已达到 `MANUAL` 的检查才能记录。凭证绑定当前配置和 companion 绑定证据；模型、voice ID 或连接配置改变后会标记过期，不会继续冒充已验收。
+
 ## 目录
 
 ```text
@@ -175,7 +203,7 @@ app/       FastAPI、记忆、Live2D、语音和外部桥接
 web/       LING 具身 workspace 与 PWA shell
 admin_web/ 维护与历史调试台
 docs/      路线、部署、隐私和 Video Companion 边界
-scripts/   回归验证、备份、恢复和部署检查
+scripts/   受管启动/关闭、回归验证、备份、恢复和部署检查
 ```
 
 当前完成定义与剩余真实门槛见 `SYSTEM_PLAN.md` 和 `docs/LING_ROADMAP.md`。

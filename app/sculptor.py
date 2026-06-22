@@ -8,7 +8,7 @@ from .database import dict_from_row, get_db, now_ts
 from .identity import scrub_identity_obj, scrub_identity_text
 from .layered_memory import refresh_memory_state, refresh_memory_summaries
 from .llm_client import call_llm_api
-from .persona_forge import build_prompt
+from .persona_forge import build_ling_prompt, build_prompt
 
 
 SCULPTOR_SYSTEM = """You are Sculptor, a persona revision planner.
@@ -575,6 +575,7 @@ def apply_revision_suggestion(
             raise ValueError(f"建议基于 v{int(base_version)}，当前人格已为 v{current_version}，请重新生成建议")
         suggestion = json.loads(suggestion_row["suggestion_json"] or "{}")
         suggestion = _normalize_suggestion(suggestion, persona)
+        suggestion["prompt"] = _applied_prompt(db, user_id, persona_id, suggestion)
         ts = now_ts()
         new_version = current_version + 1
         clean_decision_note = scrub_identity_text(decision_note.strip())[:1000]
@@ -655,6 +656,14 @@ def apply_revision_suggestion(
         )
         persona_row = db.execute("SELECT * FROM personas WHERE id = ?", (persona_id,)).fetchone()
     return {"persona": dict_from_row(persona_row), "suggestion_id": suggestion_id, "version": new_version}
+
+
+def _applied_prompt(db, user_id: int, persona_id: int, suggestion: dict[str, Any]) -> str:
+    bound = db.execute(
+        "SELECT 1 FROM self_use_companion_bindings WHERE user_id = ? AND persona_id = ?",
+        (user_id, persona_id),
+    ).fetchone()
+    return build_ling_prompt(suggestion) if bound else build_prompt(suggestion)
 
 
 def dismiss_revision_suggestion(

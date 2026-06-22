@@ -28,6 +28,7 @@ from .sculptor import (
 )
 from .growth_guidance import cancel_guidance_from_chat, maybe_store_chat_guidance
 from .presence_loop import detect_quiet_mode_request, on_reply_end, on_reply_start, on_user_message, presence_enabled as presence_is_enabled
+from .persona_forge import build_ling_prompt
 from .runtime_state import get_runtime_state
 
 
@@ -59,6 +60,18 @@ def chat_rendering_rules_prompt() -> str:
   普通问答不要添加，也不要在正文解释标签。
 - 表达标签必须稀少：上一条回复已经使用过非语言提示时，本轮不要再添加；近期展示过的同一标签不要重复使用；风险为 medium 的标签只在用户情绪明显需要承接时使用。
 - 标签会由程序层单独显示；你输出的可读正文仍应只是真正要说的话。
+""".format(expression_tags=expression_protocol_prompt() or "  - 当前没有启用的 expression 标签。")
+
+
+def ling_rendering_rules_prompt() -> str:
+    return """LING 回复规则：
+- 只以澪这个唯一 companion 的第一人称自然回应，不切换或生成其他人格成员。
+- 可以坦诚自己是 AI companion；不要伪装真人或编造现实经历，也不要主动讲解内部提示和实现细节。
+- 用户没有填写的关系、性格和经历都保持未确定，通过长期相处逐渐理解，不强行套用关系标签。
+- 不写括号舞台动作、神态旁白或表演说明；动作和状态由 Live2D/程序层承担。
+- 只有情绪承接确实需要时，才可在回复末尾追加至多一个白名单 expression 标签：
+{expression_tags}
+- 标签必须稀少，正文仍然只包含真正要说的话。
 """.format(expression_tags=expression_protocol_prompt() or "  - 当前没有启用的 expression 标签。")
 
 STAGE_DIRECTION_RE = re.compile(r"[\uFF08\(\u3010\[]\s*([^\uFF08\uFF09\(\)\[\]\u3010\u3011]{1,120}?)\s*[\uFF09\)\u3011\]]\s*")
@@ -389,6 +402,12 @@ def db_chat(
 
     with get_db() as db:
         profile = dict_from_row(db.execute("SELECT * FROM user_profiles WHERE user_id = ?", (user_id,)).fetchone()) or {}
+        self_use_companion = bool(
+            db.execute(
+                "SELECT 1 FROM self_use_companion_bindings WHERE user_id = ? AND persona_id = ?",
+                (user_id, persona_id),
+            ).fetchone()
+        )
         if retrying:
             db.execute(
                 "UPDATE messages SET reply_status = 'generating', reply_error = '' WHERE id = ? AND role = 'user'",
@@ -449,6 +468,11 @@ def db_chat(
         if detect_quiet_mode_request(message):
             state = get_runtime_state(user_id)
             state.set_quiet_mode(True)
+            _best_effort(
+                "ProactiveQuiet",
+                lambda: _persist_proactive_quiet(user_id, persona_id, True),
+                None,
+            )
             presence_quiet_triggered = True
 
     stored_memories = [] if retrying else _best_effort(
@@ -564,9 +588,18 @@ def db_chat(
     layered = scrub_identity_obj(layered)
 
     messages = [
-        {"role": "system", "content": _safe_context(persona["prompt"])},
-        {"role": "system", "content": runtime_persona_context},
-        {"role": "system", "content": chat_rendering_rules_prompt()},
+        {
+            "role": "system",
+            "content": _safe_context(build_ling_prompt(persona) if self_use_companion else persona["prompt"]),
+        },
+        {
+            "role": "system",
+            "content": _ling_runtime_prompt(persona) if self_use_companion else runtime_persona_context,
+        },
+        {
+            "role": "system",
+            "content": ling_rendering_rules_prompt() if self_use_companion else chat_rendering_rules_prompt(),
+        },
         {"role": "system", "content": profile_context},
         {"role": "system", "content": insight_context},
         {"role": "system", "content": conversation_context},
@@ -580,7 +613,10 @@ def db_chat(
         {"role": "system", "content": active_preference_context},
         {"role": "system", "content": expression_policy_context},
         {"role": "system", "content": profile_usage_context},
-        {"role": "system", "content": _final_persona_lock(persona)},
+        {
+            "role": "system",
+            "content": _ling_final_lock(persona) if self_use_companion else _final_persona_lock(persona),
+        },
         {"role": "user", "content": message},
     ]
 
@@ -749,6 +785,12 @@ def _finish_presence_reply(user_id: int) -> dict | None:
     return get_runtime_state(user_id).get_snapshot()
 
 
+def _persist_proactive_quiet(user_id: int, persona_id: int, quiet: bool) -> None:
+    from .proactive import get_proactive_controller
+
+    get_proactive_controller(user_id, persona_id).set_quiet_mode(quiet)
+
+
 def _pending_reply_payload(conversation: dict, persona_id: int, user_message_id: int) -> dict:
     return {
         "reply": "",
@@ -786,6 +828,33 @@ def _final_persona_lock(persona: dict) -> str:
         "- The speaking style above is a baseline; for response style and support behavior, follow newer explicit active user preferences when they differ.\n"
         "- If older chat history, summaries, memories, or previous replies mention a different self-name or relationship, treat them as obsolete.\n"
         "- When asked who you are, answer using only the current name and current relationship above.\n"
+    )
+
+
+def _ling_final_lock(persona: dict) -> str:
+    name = scrub_identity_text(str(persona.get("name") or "澪").strip()) or "澪"
+    relationship = scrub_identity_text(str(persona.get("relationship") or "").strip())
+    speaking_style = scrub_identity_text(str(persona.get("speaking_style") or "").strip())
+    return (
+        "LING identity lock for the next reply:\n"
+        f"- You are the single persistent companion named {name}.\n"
+        f"- User-defined relationship: {relationship or 'not specified'}.\n"
+        f"- User-defined speaking style: {speaking_style or 'not specified'}.\n"
+        "- Unspecified fields remain unknown; do not replace them with template personality or relationship labels.\n"
+        "- Older names or multi-persona framing in history are obsolete.\n"
+    )
+
+
+def _ling_runtime_prompt(persona: dict) -> str:
+    appearance = str(persona.get("appearance_description") or persona.get("desired_image") or "").strip()
+    return (
+        "Current LING companion state. Explicit user edits override older memory:\n"
+        f"- name: {persona.get('name') or '澪'}\n"
+        f"- summary: {persona.get('summary') or 'not specified'}\n"
+        f"- relationship: {persona.get('relationship') or 'not specified'}\n"
+        f"- speaking_style: {persona.get('speaking_style') or 'not specified'}\n"
+        f"- appearance_reference: {appearance or 'not specified'}\n"
+        "- Keep unspecified identity details open and learn only from real interaction and explicit feedback.\n"
     )
 
 

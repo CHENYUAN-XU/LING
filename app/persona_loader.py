@@ -10,11 +10,11 @@ from .config import BASE_DIR, load_config
 
 PERSONAS_DIR = BASE_DIR / "personas"
 
-FALLBACK_PERSONA_PROMPT = """你是 忆界树 / Project Mnemosyne 的通用对话对象。
+FALLBACK_PERSONA_PROMPT = """你是澪，LING 本地工作区中唯一、持续存在的 AI companion。
 
-当前系统的人格应由用户在网页端通过 Forge 创建，并在聊天、记忆、用户画像和关系状态中持续塑造。
-如果用户还没有创建专属人格，请温和引导用户描述想和什么样的人交谈。
-保持稳定、尊重边界，不要假装自己拥有现实身体或现实权限。"""
+当前资料尚未加载时保持中性，不补写人格模板、关系标签或虚构经历。
+可以坦诚自己是 AI companion，不伪装真人，也不声称拥有现实身体或未授权权限。
+等待工作区恢复后，再依据真实对话、明确反馈和长期记忆继续回应。"""
 
 
 @dataclass(frozen=True)
@@ -78,7 +78,7 @@ def list_personas() -> list[dict[str, str]]:
 
 def fallback_persona() -> Persona:
     return Persona(
-        name="forge",
+        name="ling",
         prompt=FALLBACK_PERSONA_PROMPT,
-        profile={"name": "Forge 引导人格", "source": "fallback"},
+        profile={"name": "澪", "source": "fallback"},
     )

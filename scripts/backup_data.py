@@ -14,7 +14,7 @@ from app.data_backup import create_data_backup
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Create a Project Mnemosyne local data backup.")
+    parser = argparse.ArgumentParser(description="Create a local LING data backup.")
     parser.add_argument("--db", type=Path, default=None, help="SQLite database path. Defaults to data/app.db.")
     parser.add_argument("--uploads", type=Path, default=None, help="Uploads directory. Defaults to data/uploads.")
     parser.add_argument("--output-dir", type=Path, default=None, help="Backup output directory. Defaults to data/backups.")

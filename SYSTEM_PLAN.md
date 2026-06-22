@@ -94,6 +94,7 @@ E:\视觉\video-companion
 
 - 本地 Presence 默认启用，不依赖聊天模型、语音或摄像头；idle、thinking、speaking 和 quiet 按用户隔离。
 - 第一屏可直接进入“安静模式”或“恢复在场”；quiet 下的 idle 检查不会破坏状态或触发 idle actions。
+- quiet 与 proactive 的持久禁止状态双向同步；重启后 Presence 会从 SQLite 恢复，文字中的“别打扰我”也会持久阻止主动消息。
 - LLM 回复失败会收尾到 idle/quiet，不会让后端永久停在 speaking。
 - Presence 启用不等于主动消息启用；`proactive.enabled` 与 scheduler 仍单独关闭并受授权控制。
 
@@ -104,12 +105,23 @@ E:\视觉\video-companion
 - 授权后的观察与摘要写回 `world_observations` 并进入 companion 状态。
 - 自用模式拒绝主仓库旧 `/api/camera/config`、`status` 和 MJPEG `stream`；资料页摄像头授权只服务外部 Video Companion。
 
+### 屏幕感知与主动能力
+
+- 屏幕感知保留在主仓库的最小边界：作者必须分别启用配置和授予授权，默认只允许一次性检查活动窗口标题；截图路径只记录尺寸/模式元数据，不保留像素。
+- 自用资料页可显式启停 screen/proactive 配置，但 camera 不在内部配置开关允许列表。
+- 主动能力将“配置启用”“用户授权”“最终 active”分开报告；启用能力不会自动开启 scheduler。
+- 自用 proactive status、tick、反馈和 quiet 操作全部锁定到 SQLite 稳定绑定的唯一 companion，同账号旧人格不能被选中。
+- 后台 scheduler 的候选 SQL 同样只联结自用 owner 的 `self_use_companion_bindings`，不会绕过 HTTP 边界扫描旧人格。
+
 ### 工程地基
 
 - SQLite 使用 WAL、busy timeout 和 foreign keys。
 - 备份支持创建、检查和旁路恢复演练。
 - PWA shell 不缓存 `/api`、`/uploads` 或 `/admin`。
+- Windows 日用入口使用受管 local runner：自动 Python 探测、自用预检、LING health/端口归属检查、PID state、UTF-8 日志和 stop-request 正常关闭。
 - 部署预检覆盖密钥环境变量、明文密钥、限流、日志、cookie、目录写权限、外部视频路径和主动调度风险。
+- `scripts/check_acceptance.py` 只读汇总单 companion 绑定、LING prompt、SQLite、聊天模型、Live2D、语音、外部 Video、备份和长时间真机门槛；它不会调用付费模型 API。
+- `scripts/record_acceptance.py` 只在作者完成真实测试后显式写入本地验收凭证；凭证按当前配置证据生成指纹，配置变化会自动失效。
 - 管理台保留错误事件和历史系统调试能力，但不是 LING 第一界面。
 
 ## 尚未完成的真实门槛
@@ -132,8 +144,9 @@ E:\视觉\video-companion
 2. 加固 Live2D 自动连接、断线恢复、模型切换、动作失败回退和状态一致性。
 3. 加固语音播放、打断、错误回退与动作时序。
 4. 完善外部 Video Companion 的状态、授权和回写观测，不进入其摄像头/麦克风实现。
-5. 做桌面、窄屏、PWA、长时间运行和部署验证。
-6. 只有在真实外部依赖已由作者明确配置后，执行对应真机验收。
+5. 加固屏幕感知与主动能力的显式配置、独立授权、唯一 companion 和 scheduler 安全边界。
+6. 做桌面、窄屏、PWA、长时间运行和部署验证。
+7. 只有在真实外部依赖已由作者明确配置后，执行对应真机验收。
 
 ## 运行与验证
 

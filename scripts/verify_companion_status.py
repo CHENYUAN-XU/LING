@@ -105,6 +105,9 @@ def main() -> None:
             assert status["chat_gate"]["reason"] == "missing_api_key"
             assert status["chat_gate"]["missing"] == ["MOONSHOT_API_KEY"]
             assert status["ready_count"] == 0
+            assert status["total_count"] == 4
+            assert status["optional_ready_count"] == 0
+            assert status["optional_total_count"] == 2
             assert {item["key"] for item in status["readiness"]} == {
                 "api", "visual", "live2d", "voice", "lip_sync", "video"
             }
@@ -125,6 +128,9 @@ def main() -> None:
             assert readiness["voice"]["text"] == "Voice profile unbound"
             assert readiness["lip_sync"]["ready"] is False
             assert readiness["video"]["ready"] is False
+            assert readiness["visual"]["required"] is False
+            assert readiness["video"]["required"] is False
+            assert all(readiness[key]["required"] for key in ("api", "live2d", "voice", "lip_sync"))
             assert status["embodiment"]["live2d_bound"] is False
             assert status["embodiment"]["voice_bound"] is False
             assert status["embodiment"]["visual_label"] == "Live2D pending"
@@ -260,7 +266,8 @@ def main() -> None:
             assert ready_status["chat_gate"]["ready"] is True
             assert ready_status["chat_gate"]["reason"] == "ready"
             assert ready_status["chat_gate"]["provider"] == "ollama"
-            assert ready_status["ready_count"] == 5
+            assert ready_status["ready_count"] == 3
+            assert ready_status["optional_ready_count"] == 2
             assert not all(item["ready"] for item in ready_status["readiness"])
             assert ready_status["runtime"]["key"] == "present"
             assert ready_status["live2d"]["current_model"]["modelID"] == "mio-main"
@@ -322,7 +329,7 @@ def main() -> None:
                 "error": None,
             }
             ready_voice_status = server.companion_status(user)
-            assert ready_voice_status["ready_count"] == 6
+            assert ready_voice_status["ready_count"] == 4
             assert {item["key"]: item for item in ready_voice_status["readiness"]}["voice"]["ready"] is True
 
             try:

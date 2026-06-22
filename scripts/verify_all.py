@@ -17,7 +17,7 @@ def run(label: str, command: list[str]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run Project Mnemosyne verification suite.")
+    parser = argparse.ArgumentParser(description="Run the LING verification suite.")
     parser.add_argument(
         "--http-smoke",
         metavar="BASE_URL",
@@ -26,7 +26,7 @@ def main() -> None:
     parser.add_argument(
         "--video-e2e",
         action="store_true",
-        help="Also start Project Mnemosyne and Video Companion on temporary ports and verify the bridge.",
+        help="Also start LING and Video Companion on temporary ports and verify the bridge.",
     )
     args = parser.parse_args()
 
@@ -70,8 +70,11 @@ def main() -> None:
         "scripts\\verify_sqlite_runtime.py",
         "scripts\\verify_guest_admin.py",
         "scripts\\verify_self_use_login.py",
+        "scripts\\verify_ling_prompt.py",
+        "scripts\\verify_acceptance_check.py",
         "scripts\\verify_self_use_chat_gate.py",
         "scripts\\verify_self_use_soak.py",
+        "scripts\\verify_local_launcher.py",
         "scripts\\verify_persona_purge.py",
         "scripts\\verify_account_delete.py",
         "scripts\\verify_admin_protection.py",

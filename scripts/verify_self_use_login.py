@@ -70,6 +70,9 @@ def main() -> None:
         assert persona["growth_notes"] == ""
         assert json.loads(persona["traits_json"]) == []
         assert json.loads(persona["boundaries_json"]) == []
+        assert "LING 本地工作区中唯一、持续存在的 AI companion" in persona["prompt"]
+        assert "用户创建的长期对话对象" not in persona["prompt"]
+        assert "群聊成员" in persona["prompt"]
 
         with database.get_db() as db:
             assert db.execute("SELECT COUNT(*) FROM personas WHERE user_id = ?", (second["id"],)).fetchone()[0] == 1
@@ -82,6 +85,17 @@ def main() -> None:
             version = db.execute("SELECT * FROM persona_versions WHERE persona_id = ?", (persona["id"],)).fetchone()
             assert version is not None
             assert version["change_type"] == "self_use_default"
+
+        server._normalize_existing_persona_identity()
+        with database.get_db() as db:
+            normalized_persona = db.execute("SELECT prompt FROM personas WHERE id = ?", (persona["id"],)).fetchone()
+            normalized_version = db.execute(
+                "SELECT prompt FROM persona_versions WHERE persona_id = ? ORDER BY version DESC LIMIT 1",
+                (persona["id"],),
+            ).fetchone()
+        assert "LING 本地工作区中唯一、持续存在的 AI companion" in normalized_persona["prompt"]
+        assert "LING 本地工作区中唯一、持续存在的 AI companion" in normalized_version["prompt"]
+        assert "用户创建的长期对话对象" not in normalized_persona["prompt"]
 
         multi = auth.get_or_create_local_user("mio_owner_multi", "Mio Multi")
         with database.get_db() as db:
@@ -120,6 +134,7 @@ def main() -> None:
         assert renamed_companion is not None
         assert renamed_companion["id"] == multi_companion["id"]
         assert renamed_companion["name"] == "Mio Renamed"
+        assert "名字：Mio Renamed" in renamed_companion["prompt"]
 
         original_load_config = server.load_config
         try:
@@ -168,6 +183,7 @@ def main() -> None:
         assert cleared["relationship"] == ""
         assert cleared["speaking_style"] == ""
         assert json.loads(cleared["traits_json"]) == []
+        assert "未填写表示尚未确定" in cleared["prompt"]
 
         repeated_blank = server._ensure_self_use_default_persona(int(second["id"]), config)
         assert repeated_blank is not None

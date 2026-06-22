@@ -14,7 +14,7 @@ from app.environment_check import inspect_environment
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Check Project Mnemosyne environment variable readiness.")
+    parser = argparse.ArgumentParser(description="Check LING environment variable readiness.")
     parser.add_argument("--strict", action="store_true", help="Exit non-zero when required API key env vars are missing.")
     args = parser.parse_args()
 

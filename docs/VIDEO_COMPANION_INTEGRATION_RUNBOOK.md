@@ -74,7 +74,7 @@ cd "E:\澪\project-mnemosyne"
 .\scripts\start_integrated_video_companion.ps1
 ```
 
-启动脚本不会修改长期 `config.yaml`。它会在启动主项目进程时设置：
+启动脚本不会修改长期 `config.yaml`。它要求主 LING 端口空闲，再通过 `start_local_server.ps1` 的受管 runner 启动主项目，并在该进程环境中设置：
 
 - `LING_VIDEO_COMPANION_ENABLED=true`
 - `LING_VIDEO_COMPANION_BASE_URL=http://127.0.0.1:<VideoPort>`
@@ -86,6 +86,8 @@ cd "E:\澪\project-mnemosyne"
 - `LING_VIDEO_COMPANION_PROJECT_PATH`（旧 `MNEMOSYNE_VIDEO_COMPANION_PROJECT_PATH` 仍兼容）
 - 当前盘根目录的 `E:\视觉\video-companion`
 - 工作区旁边的 `视觉\video-companion`
+
+Python 选择会优先使用显式 `-MainPython` / `-VideoPython`，Video Companion 默认优先使用外部项目自己的 `.venv\Scripts\python.exe`。如果 LING 已经在运行，先执行 `scripts\stop_local_server.ps1`；集成脚本不会复用一个缺少 bridge 环境的旧主进程。
 
 启动后默认会等待两个健康检查通过：
 
@@ -101,6 +103,8 @@ cd "E:\澪\project-mnemosyne"
 .\scripts\start_integrated_video_companion.ps1 -SkipHealthCheck
 .\scripts\start_integrated_video_companion.ps1 -DryRun
 ```
+
+关闭时先用 `scripts\stop_local_server.ps1` 正常关闭受管 LING，再关闭脚本启动的可见 Video Companion 终端。外部视频服务的进程生命周期仍由外部项目负责，主仓库不伪造其 shutdown 管理器。
 
 ## 验收
 

@@ -39,11 +39,13 @@ def main() -> None:
         )
         backup_path = Path(result["backup_path"])
         assert backup_path.exists()
+        assert backup_path.name.startswith("ling-backup-")
         assert backup_path.parent == output
         assert result["integrity_check"] == "ok"
         assert result["uploads_file_count"] == 1
 
         inspected = inspect_data_backup(backup_path)
+        assert inspected["manifest"]["project"] == "LING"
         assert inspected["integrity_check"] == "ok"
         assert inspected["uploads_file_count"] == 1
         manifest = inspected["manifest"]
