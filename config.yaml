@@ -8,7 +8,7 @@ self_use:
   seed_default_persona: true
   default_persona_name: 澪
   # Keep model calls off until you explicitly decide LING is ready to talk to an API.
-  chat_enabled: false
+  chat_enabled: true
 
 llm:
   provider: kimi
@@ -81,15 +81,17 @@ memory:
   consolidate_every: 10
 
 voice:
-  enabled: false
+  enabled: true
   auto_play: true
   # Realtime speech belongs to Video Companion or a higher-quality provider.
   # Edge TTS is intentionally disabled for LING.
-  tts_provider: openai_tts
+  tts_provider: local_http
   tts_model: gpt-4o-mini-tts
   api_key_env: OPENAI_API_KEY
-  voice_id: alloy
+  voice_id: mio
   response_format: mp3
+  local_base_url: http://127.0.0.1:9881
+  timeout_seconds: 45
   instructions: ""
   rate: 1.0
   pitch: 1.0
@@ -104,7 +106,7 @@ voice:
     点头: default
 
 live2d:
-  enabled: false
+  enabled: true
   # The app development server uses 8001, so configure VTube Studio's API to 8002
   # or run the app on a different port before enabling Live2D.
   vts_ws_url: ws://127.0.0.1:8002
@@ -207,7 +209,7 @@ security:
   secure_cookies: false
 
 video_companion:
-  enabled: false
+  enabled: true
   # External project path: E:\视觉\video-companion
   # Keep this on a different port from LING's 8001 dev server.
   base_url: http://127.0.0.1:8782
