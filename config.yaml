@@ -126,6 +126,11 @@ live2d:
     停顿: Default
     点头: Nod
 
+easyvtuber:
+  # External temporary body. LING opens this only after you click the page button.
+  enabled: true
+  root: "E:\\EasyVtuber_v0.8.0\\EasyVtuber"
+
 presence:
   enabled: true
   idle_timeout_seconds: 30

@@ -108,6 +108,8 @@ let state = {
   integrationFlagError: null,
   integrationConfigSaving: "",
   integrationConfigFeedback: {},
+  easyVtuberOpening: false,
+  easyVtuberFeedback: "",
   privacyPolicy: null,
   cameraPreviewActive: false,
 };
@@ -2792,13 +2794,20 @@ function renderCompanionStageActions({ live2dEnabled, live2dConnected }) {
 
   const statusEl = h("small", {
     class: `save-status companion-stage-action-status${state.presenceControlError ? " danger-text" : ""}`,
-    text: state.presenceControlError || "",
+    text: state.easyVtuberFeedback || state.presenceControlError || "",
   });
   const apiState = selfUseApiReadiness();
   const video = state.videoCompanionStatus || {};
   const videoActive = !!video.status?.session_active;
   const videoCanControl = !!video.enabled && !!video.connected;
   const actions = [
+    h("button", {
+      type: "button",
+      class: "ghost compact",
+      text: state.easyVtuberOpening ? "正在打开..." : "打开 EasyVtuber",
+      disabled: state.easyVtuberOpening,
+      onclick: openEasyVtuber,
+    }),
     h("button", { type: "button", class: "ghost compact", text: "编辑形象", onclick: openPersonaEditor }),
     live2dEnabled
       ? live2dConnected
@@ -2846,6 +2855,22 @@ function renderCompanionStageActions({ live2dEnabled, live2dConnected }) {
     statusEl,
   ].filter(Boolean);
   return h("div", { class: "companion-stage-actions self-use-stage-actions" }, actions);
+}
+
+async function openEasyVtuber() {
+  if (state.easyVtuberOpening) return;
+  state.easyVtuberOpening = true;
+  state.easyVtuberFeedback = "";
+  renderShell();
+  try {
+    const result = await api("/api/easyvtuber/open", { method: "POST" });
+    state.easyVtuberFeedback = result.already_running ? "已在运行" : "已启动";
+  } catch (err) {
+    state.easyVtuberFeedback = err.message || "打开失败";
+  } finally {
+    state.easyVtuberOpening = false;
+    renderShell();
+  }
 }
 
 function llmConfigured() {
@@ -6554,6 +6579,8 @@ function resetClientState() {
     integrationFlagError: null,
     integrationConfigSaving: "",
     integrationConfigFeedback: {},
+    easyVtuberOpening: false,
+    easyVtuberFeedback: "",
     privacyPolicy: null,
     cameraPreviewActive: false,
   };

@@ -95,6 +95,7 @@ from .video_companion import (
     start_video_companion_session,
     stop_video_companion_session,
 )
+from .easyvtuber import EasyVtuberError, easyvtuber_status, open_easyvtuber
 from .video_bridge import (
     build_video_session_context,
     build_video_turn_response,
@@ -2256,6 +2257,22 @@ class VideoCompanionSessionRequest(BaseModel):
 @app.get("/api/video-companion/config")
 def video_companion_config(user: dict = Depends(current_user)):
     return {"video_companion": public_video_companion_config()}
+
+
+@app.get("/api/easyvtuber/status")
+def easyvtuber_runtime_status(user: dict = Depends(current_user)):
+    if not _self_use_public(user).get("enabled"):
+        raise HTTPException(status_code=404, detail="EasyVtuber control is only available in LING self-use mode")
+    return {"easyvtuber": easyvtuber_status()}
+
+
+@app.post("/api/easyvtuber/open")
+def easyvtuber_open(request: Request, user: dict = Depends(current_user)):
+    _require_self_use_local_config_change(request, user)
+    try:
+        return open_easyvtuber()
+    except EasyVtuberError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/api/video-companion/status")
