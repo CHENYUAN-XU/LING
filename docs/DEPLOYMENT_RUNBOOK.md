@@ -66,7 +66,35 @@ py -m uvicorn app.server:app --host 127.0.0.1 --port 8001
 - 不要为方便访问改成 `0.0.0.0`；远程访问不是当前默认产品边界。
 - 端口被其他程序占用时启动脚本会拒绝误认；不会因为“有人监听 8001”就声称 LING 已运行。
 
-## 3. Live2D / VTube Studio
+## 3. Temporary EasyVtuber Image Body
+
+EasyVtuber is a temporary external single-image body for 澪. It is not a formal Live2D model and does not replace the later Live2D asset path.
+
+Start EasyVtuber yourself with its official launcher first:
+
+```powershell
+& "E:\EasyVtuber_v0.8.0\EasyVtuber\01A.启动器.bat"
+```
+
+For the current temporary setup, load `mio_half_512`, use `Mouse Input`, enable `Audio Input`, keep `WASAPI` capture enabled, and use `Debug Output` only while testing. The recommended low-load profile is 30 FPS, Low performance preset, SuperResolution off, TensorRT off, and RIFE `x2_half`. Do not set Frame Interpolation to Off on this EasyVtuber version because its missing x1 model will prevent startup.
+
+Then start LING through the external-body-aware wrapper:
+
+```powershell
+scripts\start_ling_with_easyvtuber.ps1 -OpenBrowser
+```
+
+The wrapper only verifies that the official EasyVtuber embedded Python process is already running and then starts LING through the existing managed runner. It never starts, stops, edits, embeds, or otherwise owns EasyVtuber. Add `-RequireEasyVtuber` only when a missing EasyVtuber process should block the LING start.
+
+LING reply audio is browser audio and therefore uses the current Windows default playback device. The intended test chain is:
+
+```text
+LING TTS playback -> Windows default playback device -> EasyVtuber WASAPI capture -> temporary image lip movement
+```
+
+For acceptance, send one short reply from LING and confirm that the image remains visible and its mouth follows system audio volume. Do not add virtual audio devices, camera tracking, iPhone tracking, OBS, Spout2, VTube Studio plugins, or Live2D state mappings to this temporary path.
+
+## 4. Live2D / VTube Studio
 
 1. 先启动 VTube Studio 并开启 Plugin API。
 2. 在 LING“接入”面板启用 Live2D。
@@ -76,13 +104,13 @@ py -m uvicorn app.server:app --host 127.0.0.1 --port 8001
 
 LING 会在启动时进行有界重连。主动点击断开后，本进程不会立刻自动连回。切换 VTS 模型后刷新能力；模型、热键和表情快照必须整组刷新成功才会重新标记就绪。
 
-## 4. 普通回复语音
+## 5. 普通回复语音
 
 普通文字回复语音由主项目的 OpenAI TTS 适配器负责，默认关闭。启用前设置配置所引用的环境变量，并在澪的形象绑定中填写实际 provider voice ID。
 
 Edge TTS 不属于 LING 的语音方案。实时麦克风、ASR 和视频会话语音属于外部 Video Companion。
 
-## 5. 外部 Video Companion
+## 6. 外部 Video Companion
 
 外部项目位于 `E:\视觉\video-companion`。主项目只负责启动代理、授权/状态展示、上下文提供、观察与摘要回写，不实现摄像头帧循环、麦克风状态机或视频会话 UI。
 
@@ -103,7 +131,7 @@ scripts\start_integrated_video_companion.ps1
 - 最近摘要回写；
 - 最近授权同步。
 
-## 6. SQLite 与备份
+## 7. SQLite 与备份
 
 本地单进程继续使用 WAL、busy timeout 和 foreign keys。`GET /api/health` 会报告实际 SQLite 状态。
 
@@ -115,7 +143,7 @@ py scripts\restore_data_backup.py data\backups\ling-backup-YYYYMMDD-HHMMSS.zip -
 
 备份包含 SQLite 一致性快照、上传的形象素材及 manifest。恢复只写入新的旁路目录；确认结果后再人工替换运行数据。
 
-## 7. 日用与休眠检查
+## 8. 日用与休眠检查
 
 每次较大改动或系统更新后观察：
 
@@ -129,7 +157,7 @@ py scripts\restore_data_backup.py data\backups\ling-backup-YYYYMMDD-HHMMSS.zip -
 
 自动化通过不等于上述真机观察已经完成。
 
-## 8. 回滚
+## 9. 回滚
 
 1. 停止 FastAPI 与外部 Video Companion。
 2. 保留当前日志和数据库副本。
@@ -137,6 +165,6 @@ py scripts\restore_data_backup.py data\backups\ling-backup-YYYYMMDD-HHMMSS.zip -
 4. 人工切换确认过的数据库与上传目录。
 5. 重新运行 `check_deployment.py --self-use` 和 `verify_all.py --video-e2e`。
 
-## 9. 非当前目标：公网部署
+## 10. 非当前目标：公网部署
 
 若未来明确需要公网或多人访问，再单独设计 HTTPS、secure cookie、反向代理、集中限流、PostgreSQL/MySQL、Redis 和多 worker 一致性。现有 `--production` 预检仍保留这些公网约束，但它不代表当前 LING 自用完成标准。
