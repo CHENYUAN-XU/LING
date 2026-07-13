@@ -4,6 +4,7 @@ import io
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -14,6 +15,7 @@ from .speech_planner import build_tts_request_params, split_reply_into_utterance
 _LAST_TTS_ERROR: str | None = None
 OPENAI_TTS_ENDPOINT = "https://api.openai.com/v1/audio/speech"
 OPENAI_TTS_FORMATS = {"mp3", "opus", "aac", "flac", "wav", "pcm"}
+LOCAL_HTTP_TTS_FORMATS = {"mp3", "wav"}
 OPENAI_TTS_BUILTIN_VOICES = {
     "alloy",
     "ash",
@@ -70,6 +72,11 @@ def _openai_response_format(value: Any) -> str:
     return fmt if fmt in OPENAI_TTS_FORMATS else "mp3"
 
 
+def _local_response_format(value: Any) -> str:
+    fmt = str(value or "mp3").strip().lower()
+    return fmt if fmt in LOCAL_HTTP_TTS_FORMATS else "mp3"
+
+
 def _openai_instructions(config: dict[str, Any], style: str | None) -> str | None:
     parts: list[str] = []
     base = str(config.get("instructions") or "").strip()
@@ -95,6 +102,28 @@ def _openai_tts_request(payload: dict[str, Any], api_key: str, timeout: float = 
     )
     with urllib.request.urlopen(req, timeout=timeout) as response:
         return response.read()
+
+
+def _local_base_url(config: dict[str, Any]) -> str:
+    raw = str(config.get("local_base_url") or config.get("base_url") or "http://127.0.0.1:9881").strip()
+    parsed = urllib.parse.urlparse(raw)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "http" or host not in {"127.0.0.1", "localhost", "::1"}:
+        raise ValueError("local_http TTS base_url must be localhost-only")
+    return raw.rstrip("/")
+
+
+def _local_tts_request(payload: dict[str, Any], base_url: str, timeout: float = 45.0) -> tuple[bytes, str]:
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        f"{base_url}/api/tts",
+        data=body,
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        content_type = response.headers.get("Content-Type", "")
+        return response.read(), content_type
 
 
 def _http_error_detail(error: urllib.error.HTTPError) -> str:
@@ -172,6 +201,55 @@ def _generate_openai_tts_audio(
     return audio
 
 
+def _generate_local_http_tts_audio(
+    text: str,
+    config: dict[str, Any],
+    voice_id: str | None,
+    rate: float,
+) -> bytes | None:
+    cleaned = _clean_tts_text(text)
+    if not cleaned:
+        _set_tts_error("voice text is empty")
+        return None
+
+    try:
+        base_url = _local_base_url(config)
+    except ValueError as exc:
+        _set_tts_error(str(exc))
+        return None
+
+    fmt = _local_response_format(config.get("response_format"))
+    selected_voice = str(voice_id or config.get("voice_id") or "mio").strip() or "mio"
+    payload: dict[str, Any] = {
+        "voice_id": selected_voice,
+        "text": cleaned,
+        "format": fmt,
+        "speed": _bounded_float(rate if rate is not None else config.get("rate"), 1.0, 0.6, 1.5),
+    }
+    timeout = _bounded_float(config.get("timeout_seconds"), 45.0, 1.0, 120.0)
+    try:
+        audio, content_type = _local_tts_request(payload, base_url, timeout)
+    except urllib.error.HTTPError as exc:
+        _set_tts_error(f"local TTS HTTP {exc.code}: {_http_error_detail(exc)}")
+        return None
+    except urllib.error.URLError as exc:
+        _set_tts_error(f"local TTS network error: {exc.reason}")
+        return None
+    except Exception as exc:
+        _set_tts_error(f"local TTS error: {exc}")
+        return None
+
+    if not audio:
+        _set_tts_error("local TTS returned empty audio")
+        return None
+    expected = "audio/mpeg" if fmt == "mp3" else "audio/wav"
+    if expected not in str(content_type).lower():
+        _set_tts_error(f"local TTS returned unexpected content type: {content_type}")
+        return None
+    _set_tts_error(None)
+    return audio
+
+
 def generate_tts_audio(text: str, voice_id: str | None = None, rate: float = 1.0, pitch: float = 1.0, style: str | None = None) -> bytes | None:
     """Generate TTS audio bytes for a single utterance. Returns None on failure."""
     if not voice_enabled():
@@ -184,6 +262,8 @@ def generate_tts_audio(text: str, voice_id: str | None = None, rate: float = 1.0
     if provider == "edge":
         _set_tts_error("edge TTS is disabled for LING; use the main OpenAI TTS reply voice or Video Companion realtime speech")
         return None
+    if provider == "local_http":
+        return _generate_local_http_tts_audio(text, config, voice_id, rate)
     if provider == "openai_tts":
         return _generate_openai_tts_audio(text, config, voice_id, rate, style)
     _set_tts_error(f"unsupported TTS provider: {provider}")
@@ -206,6 +286,35 @@ def generate_tts_reply_audio(
     """
     if not voice_enabled():
         return {"success": False, "audio": None, "chunks": [], "utterances": [], "error": "voice is disabled"}
+
+    config = load_voice_config()
+    provider = str(config.get("tts_provider", "openai_tts") or "openai_tts").strip().lower()
+    response_format = _local_response_format(config.get("response_format")) if provider == "local_http" else _openai_response_format(config.get("response_format"))
+    if provider == "local_http" and response_format == "mp3":
+        # MP3 byte streams are not safely concatenable. The local GPT-SoVITS service
+        # returns complete MP3 files, so split-and-append can introduce audible seams
+        # and some browsers stop after the first embedded MP3 stream. Generate one
+        # complete reply audio file for local playback instead.
+        cleaned = _clean_tts_text(reply_text)
+        if not cleaned:
+            return {"success": False, "audio": None, "chunks": [], "utterances": [], "error": "empty reply"}
+        audio = generate_tts_audio(cleaned, voice_id=voice_id)
+        chunk = {
+            "index": 0,
+            "text": cleaned,
+            "style": None,
+            "audio_available": audio is not None and len(audio) > 0,
+            "audio_size": len(audio) if audio else 0,
+        }
+        if not audio:
+            chunk["error"] = get_last_tts_error() or "audio generation failed"
+        return {
+            "success": bool(audio),
+            "audio": audio,
+            "chunks": [chunk],
+            "utterances": [cleaned],
+            "error": None if audio else (chunk.get("error") or "audio generation failed"),
+        }
 
     utterances = split_reply_into_utterances(reply_text)
     if not utterances:
@@ -300,7 +409,9 @@ def tts_health_check() -> dict:
         "model": config.get("tts_model") or config.get("model") or "",
         "voice_id": config.get("voice_id", "alloy"),
         "api_key_env": str(config.get("api_key_env") or "OPENAI_API_KEY"),
-        "response_format": _openai_response_format(config.get("response_format")),
+        "response_format": _local_response_format(config.get("response_format"))
+        if provider == "local_http"
+        else _openai_response_format(config.get("response_format")),
         "available": False,
         "error": None,
     }
@@ -312,6 +423,18 @@ def tts_health_check() -> dict:
 
     if provider == "edge":
         result["error"] = "edge TTS is disabled for LING; use the main OpenAI TTS reply voice or Video Companion realtime speech"
+    elif provider == "local_http":
+        try:
+            base_url = _local_base_url(config)
+            timeout = _bounded_float(config.get("timeout_seconds"), 3.0, 1.0, 30.0)
+            req = urllib.request.Request(f"{base_url}/api/health", method="GET")
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                result["available"] = 200 <= response.status < 300
+            result["base_url"] = base_url
+            if not result["available"]:
+                result["error"] = "local TTS health check failed"
+        except Exception as exc:
+            result["error"] = f"local TTS unavailable: {exc}"
     elif provider == "openai_tts":
         api_key_env = str(config.get("api_key_env") or "OPENAI_API_KEY").strip() or "OPENAI_API_KEY"
         if os.environ.get(api_key_env):

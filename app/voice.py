@@ -13,6 +13,8 @@ DEFAULT_VOICE_CONFIG: dict[str, Any] = {
     "api_key_env": "OPENAI_API_KEY",
     "voice_id": "alloy",
     "response_format": "mp3",
+    "local_base_url": "http://127.0.0.1:9881",
+    "timeout_seconds": 45.0,
     "instructions": "",
     "rate": 1.0,
     "pitch": 1.0,

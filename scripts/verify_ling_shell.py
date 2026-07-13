@@ -160,6 +160,12 @@ def main() -> None:
     assert 'await applyLive2dRuntimeState("thinking")' in app_js
     assert 'await applyLive2dRuntimeState("speaking")' in app_js
     assert "function voiceAutoPlayEnabled" in app_js
+    assert "function formatMessagePerformance(metrics)" in app_js
+    assert "X-LING-TTS-Generation-Ms" in app_js
+    assert "X-LING-TTS-Generation-Ms" in server_py
+    assert "function incrementalLocalVoiceEnabled(plan)" in app_js
+    assert "function playIncrementalLocalVoice" in app_js
+    assert 'fetch(`/api/voice/tts-chunk/${chunkIndex}`' in app_js
     assert "function probeSelfUseLlm" in app_js
     assert "llm_unverified" in app_js
     assert "澪的状态档案" in app_js
@@ -277,6 +283,10 @@ def main() -> None:
     assert "onclick: () => setSelfUseChatGate(true)" in app_js
     assert "onclick: () => startVideoCompanion(statusEl)" in app_js
     assert "onclick: openVideoCompanionPage" in app_js
+    assert "async function openEasyVtuber()" in app_js
+    assert 'api("/api/easyvtuber/open", { method: "POST" })' in app_js
+    assert '@app.post("/api/easyvtuber/open")' in server_py
+    assert "def easyvtuber_open" in server_py
     assert 'text: "编辑形象", onclick: openPersonaEditor' in app_js
     assert "video.status?.session_active" in app_js
     assert "state.sending" in app_js

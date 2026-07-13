@@ -108,6 +108,8 @@ let state = {
   integrationFlagError: null,
   integrationConfigSaving: "",
   integrationConfigFeedback: {},
+  easyVtuberOpening: false,
+  easyVtuberFeedback: "",
   privacyPolicy: null,
   cameraPreviewActive: false,
 };
@@ -2792,13 +2794,20 @@ function renderCompanionStageActions({ live2dEnabled, live2dConnected }) {
 
   const statusEl = h("small", {
     class: `save-status companion-stage-action-status${state.presenceControlError ? " danger-text" : ""}`,
-    text: state.presenceControlError || "",
+    text: state.easyVtuberFeedback || state.presenceControlError || "",
   });
   const apiState = selfUseApiReadiness();
   const video = state.videoCompanionStatus || {};
   const videoActive = !!video.status?.session_active;
   const videoCanControl = !!video.enabled && !!video.connected;
   const actions = [
+    h("button", {
+      type: "button",
+      class: "ghost compact",
+      text: state.easyVtuberOpening ? "正在打开..." : "打开 EasyVtuber",
+      disabled: state.easyVtuberOpening,
+      onclick: openEasyVtuber,
+    }),
     h("button", { type: "button", class: "ghost compact", text: "编辑形象", onclick: openPersonaEditor }),
     live2dEnabled
       ? live2dConnected
@@ -2846,6 +2855,22 @@ function renderCompanionStageActions({ live2dEnabled, live2dConnected }) {
     statusEl,
   ].filter(Boolean);
   return h("div", { class: "companion-stage-actions self-use-stage-actions" }, actions);
+}
+
+async function openEasyVtuber() {
+  if (state.easyVtuberOpening) return;
+  state.easyVtuberOpening = true;
+  state.easyVtuberFeedback = "";
+  renderShell();
+  try {
+    const result = await api("/api/easyvtuber/open", { method: "POST" });
+    state.easyVtuberFeedback = result.already_running ? "已在运行" : "已启动";
+  } catch (err) {
+    state.easyVtuberFeedback = err.message || "打开失败";
+  } finally {
+    state.easyVtuberOpening = false;
+    renderShell();
+  }
 }
 
 function llmConfigured() {
@@ -4420,6 +4445,7 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
   renderShell();
   scrollChat();
   try {
+    const requestStartedAt = performance.now();
     const data = await api("/api/chat", {
       method: "POST",
       body: JSON.stringify({
@@ -4455,6 +4481,10 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
           status: "sent",
           id: data.assistant_message_id,
           created_at: nowSeconds(),
+          performance: {
+            ...(data.performance && typeof data.performance === "object" ? data.performance : {}),
+            client_total_ms: Math.max(0, Math.round(performance.now() - requestStartedAt)),
+          },
         };
         state.messages.push(autoVoiceMessage);
         appliedReplyExpression = await applyMessageExpressionsToLive2d(data.expressions || []);
@@ -4885,6 +4915,7 @@ function renderDateDivider(value) {
 function renderMessage(message) {
   const isUser = message.role === "user";
   const isNotice = message.role === "notice";
+  const timing = !isUser && !isNotice ? formatMessagePerformance(message.performance) : "";
   const segments = messageSegments(message);
   return h("article", { class: `message ${isUser ? "user" : isNotice ? "notice" : "assistant"}` }, [
     !selfUseMode() && !isUser && !isNotice ? avatar(state.activePersona?.name || "忆", state.activePersona?.avatar_url) : null,
@@ -4912,6 +4943,7 @@ function renderMessage(message) {
       }),
       h("div", { class: "message-meta" }, [
         h("small", { class: "message-time", text: formatMessageTime(message.created_at) }),
+        timing ? h("small", { class: "message-performance", text: timing }) : null,
         h("button", {
           type: "button",
           class: "copy-message",
@@ -5961,6 +5993,109 @@ async function loadVoiceSpeechPlan(text, expressionLabels, messageId, playback =
   }
 }
 
+function incrementalLocalVoiceEnabled(plan) {
+  const provider = String(state.voiceConfig?.tts_provider || state.voiceConfig?.provider || "").trim().toLowerCase();
+  const chunkCount = Number(plan?.chunk_count || plan?.utterances?.length || 0);
+  return provider === "local_http" && chunkCount > 1;
+}
+
+async function fetchVoiceChunkAudio(chunkIndex, text, expressionLabels, playback) {
+  const isolated = tabSessionMode();
+  const token = tabSessionToken();
+  const headers = { "Content-Type": "application/json" };
+  if (isolated && token) headers.Authorization = `Bearer ${token}`;
+  const startedAt = performance.now();
+  const res = await fetch(`/api/voice/tts-chunk/${chunkIndex}`, {
+    method: "POST",
+    credentials: isolated ? "omit" : "same-origin",
+    headers,
+    body: JSON.stringify({
+      reply_text: text,
+      expression_labels: expressionLabels,
+      persona_id: state.activePersona?.id || null,
+    }),
+    signal: playback.controller.signal,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(function() { return {}; });
+    throw new Error(err.detail?.error || err.detail || "语音生成失败");
+  }
+  const blob = await res.blob();
+  if (!blob || blob.size === 0) throw new Error("语音数据为空");
+  const serverMs = Number(res.headers.get("X-LING-TTS-Generation-Ms"));
+  return {
+    blob,
+    clientMs: Math.max(0, Math.round(performance.now() - startedAt)),
+    serverMs: Number.isFinite(serverMs) && serverMs >= 0 ? serverMs : null,
+  };
+}
+
+async function playVoiceAudioBlob(blob, playback, onStarted = null) {
+  const audioUrl = URL.createObjectURL(blob);
+  try {
+    const audio = new Audio(audioUrl);
+    playback.audio = audio;
+    const playbackFinished = new Promise(function(resolve) {
+      let settled = false;
+      const finish = function(value) {
+        if (settled) return;
+        settled = true;
+        playback.finish = null;
+        resolve(value);
+      };
+      playback.finish = function() { finish(); };
+      audio.onended = function() { finish(); };
+      audio.onerror = function() { finish({ error: new Error("浏览器无法播放此音频") }); };
+    });
+    await audio.play();
+    if (!voicePlaybackIsCurrent(playback)) return;
+    playback.lipSync = await startLive2dLipSync(audio, playback);
+    if (!voicePlaybackIsCurrent(playback)) return;
+    if (onStarted) await onStarted();
+    const playbackResult = await playbackFinished;
+    if (playbackResult?.error) throw playbackResult.error;
+  } finally {
+    if (playback.lipSync) {
+      const lipSync = playback.lipSync;
+      playback.lipSync = null;
+      await lipSync.stop();
+    }
+    playback.audio = null;
+    playback.finish = null;
+    URL.revokeObjectURL(audioUrl);
+  }
+}
+
+async function playIncrementalLocalVoice(message, text, expressionLabels, playback, buttonEl) {
+  const totalChunks = Number(state.voicePlan?.chunk_count || state.voicePlan?.utterances?.length || 0);
+  if (totalChunks < 2) return false;
+  let nextAudio = fetchVoiceChunkAudio(0, text, expressionLabels, playback);
+  for (let index = 0; index < totalChunks; index += 1) {
+    const current = await nextAudio;
+    if (!voicePlaybackIsCurrent(playback)) return false;
+    if (index + 1 < totalChunks) {
+      nextAudio = fetchVoiceChunkAudio(index + 1, text, expressionLabels, playback);
+    }
+    if (index === 0) {
+      message.performance = {
+        ...(message.performance && typeof message.performance === "object" ? message.performance : {}),
+        tts_client_ms: current.clientMs,
+        ...(current.serverMs !== null ? { tts_server_ms: current.serverMs } : {}),
+      };
+    }
+    await playVoiceAudioBlob(current.blob, playback, async () => {
+      if (index !== 0) return;
+      state.voicePlaybackPhase = "playing";
+      renderShell();
+      if (buttonEl) buttonEl.textContent = "播放中…";
+      refreshRuntimeIndicators();
+      await applyLive2dRuntimeState("speaking");
+    });
+    if (!voicePlaybackIsCurrent(playback)) return false;
+  }
+  return !playback.interrupted;
+}
+
 async function playMessageVoice(message, buttonEl) {
   if (state.voicePlaying) return;
 
@@ -5997,11 +6132,23 @@ async function playMessageVoice(message, buttonEl) {
       buttonEl.disabled = true;
     }
 
+    if (incrementalLocalVoiceEnabled(state.voicePlan)) {
+      voicePlaybackCompleted = await playIncrementalLocalVoice(
+        message,
+        text,
+        expressionLabels,
+        playback,
+        buttonEl,
+      );
+      return;
+    }
+
     const isolated = tabSessionMode();
     const token = tabSessionToken();
     const headers = {};
     if (isolated && token) headers.Authorization = `Bearer ${token}`;
 
+    const voiceRequestStartedAt = performance.now();
     const res = await fetch("/api/voice/tts-reply", {
       method: "POST",
       credentials: isolated ? "omit" : "same-origin",
@@ -6025,6 +6172,13 @@ async function playMessageVoice(message, buttonEl) {
     if (!audioBlob || audioBlob.size === 0) {
       throw new Error("语音数据为空");
     }
+
+    const serverGenerationMs = Number(res.headers.get("X-LING-TTS-Generation-Ms"));
+    message.performance = {
+      ...(message.performance && typeof message.performance === "object" ? message.performance : {}),
+      tts_client_ms: Math.max(0, Math.round(performance.now() - voiceRequestStartedAt)),
+      ...(Number.isFinite(serverGenerationMs) && serverGenerationMs >= 0 ? { tts_server_ms: serverGenerationMs } : {}),
+    };
 
     const audioUrl = URL.createObjectURL(audioBlob);
     try {
@@ -6055,6 +6209,7 @@ async function playMessageVoice(message, buttonEl) {
       playback.lipSync = await startLive2dLipSync(audio, playback);
       if (!voicePlaybackIsCurrent(playback)) return;
       state.voicePlaybackPhase = "playing";
+      renderShell();
       if (buttonEl) buttonEl.textContent = "播放中...";
       refreshRuntimeIndicators();
       await applyLive2dRuntimeState("speaking");
@@ -6382,6 +6537,25 @@ function formatMessageTime(value) {
   return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
+function formatMessagePerformance(metrics) {
+  if (!selfUseMode() || !metrics || typeof metrics !== "object") return "";
+  const toMs = (value) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric >= 0 ? numeric : 0;
+  };
+  const total = toMs(metrics.client_total_ms || metrics.total_ms);
+  if (total < 100) return "";
+  const model = toMs(metrics.model_ms);
+  const preparation = toMs(metrics.preparation_ms);
+  const tts = toMs(metrics.tts_client_ms || metrics.tts_server_ms);
+  const formatSeconds = (milliseconds) => `${(milliseconds / 1000).toFixed(milliseconds >= 10000 ? 0 : 1)}s`;
+  const parts = [`响应 ${formatSeconds(total)}`];
+  if (model >= 100) parts.push(`模型 ${formatSeconds(model)}`);
+  if (preparation >= 300) parts.push(`准备 ${formatSeconds(preparation)}`);
+  if (tts >= 100) parts.push(`语音 ${formatSeconds(tts)}`);
+  return parts.join(" · ");
+}
+
 function messageDateKey(value) {
   if (!value) return "";
   const date = new Date(Number(value) * 1000);
@@ -6554,6 +6728,8 @@ function resetClientState() {
     integrationFlagError: null,
     integrationConfigSaving: "",
     integrationConfigFeedback: {},
+    easyVtuberOpening: false,
+    easyVtuberFeedback: "",
     privacyPolicy: null,
     cameraPreviewActive: false,
   };
