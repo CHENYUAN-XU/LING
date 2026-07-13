@@ -138,6 +138,7 @@ def verify_chat_failure_and_idempotency(chat, server, user_id: int, persona_id: 
     chat.call_llm_api = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("provider down"))
     failed = chat.db_chat(user_id, persona_id, "\u8fd8\u5728\u5417", conversation_id=target_id, client_message_id="msg-failed")
     assert failed["degraded"] is True and failed["assistant_message_id"] is None
+    assert set(failed["performance"]) == {"total_ms", "preparation_ms", "model_ms", "postprocess_ms"}
     listing = [
         item
         for item in server.conversations({"id": user_id})["conversations"]
@@ -151,6 +152,7 @@ def verify_chat_failure_and_idempotency(chat, server, user_id: int, persona_id: 
     chat.call_llm_api = lambda *args, **kwargs: "\u5728\u5462\u3002"
     answered = chat.db_chat(user_id, persona_id, "\u8fd8\u5728\u5417", client_message_id="msg-failed")
     repeated = chat.db_chat(user_id, persona_id, "\u8fd8\u5728\u5417", client_message_id="msg-failed")
+    assert set(answered["performance"]) == {"total_ms", "preparation_ms", "model_ms", "postprocess_ms"}
     assert answered["reply"] == "\u5728\u5462\u3002" and repeated.get("reused_reply") is True
     with database.get_db() as db:
         stored = db.execute(

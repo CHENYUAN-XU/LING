@@ -1917,6 +1917,7 @@ def voice_tts_reply(req: VoiceTTSReplyRequest, user: dict = Depends(current_user
         raise HTTPException(status_code=400, detail="LING 整段回复朗读当前只支持 MP3；请在 Voice 设置中选择 mp3")
 
     voice_profile = _voice_profile_for_request(user, req.persona_id)
+    started = time.perf_counter()
     result = generate_tts_reply_audio(reply_text, req.expression_labels, voice_id=voice_profile)
 
     if result["audio"] is None or not result["success"]:
@@ -1928,7 +1929,11 @@ def voice_tts_reply(req: VoiceTTSReplyRequest, user: dict = Depends(current_user
             detail=f"语音生成部分失败：{failed_count}/{len(result.get('chunks',[]))} 句未生成。原因：{error_hint}",
         )
 
-    return Response(content=result["audio"], media_type="audio/mpeg")
+    return Response(
+        content=result["audio"],
+        media_type="audio/mpeg",
+        headers={"X-LING-TTS-Generation-Ms": str(elapsed_ms(started))},
+    )
 
 
 @app.post("/api/voice/tts-chunk/{chunk_index}")
@@ -1938,6 +1943,7 @@ def voice_tts_chunk(chunk_index: int, req: VoiceTTSReplyRequest, user: dict = De
         raise HTTPException(status_code=400, detail="语音功能已在配置中关闭。")
 
     voice_profile = _voice_profile_for_request(user, req.persona_id)
+    started = time.perf_counter()
     audio, metadata = generate_tts_single_chunk(
         reply_text,
         chunk_index,
@@ -1956,7 +1962,11 @@ def voice_tts_chunk(chunk_index: int, req: VoiceTTSReplyRequest, user: dict = De
             },
         )
 
-    return Response(content=audio, media_type=_voice_media_type())
+    return Response(
+        content=audio,
+        media_type=_voice_media_type(),
+        headers={"X-LING-TTS-Generation-Ms": str(elapsed_ms(started))},
+    )
 
 
 @app.post("/api/voice/speech-plan")
