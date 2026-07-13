@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -370,6 +371,7 @@ def db_chat(
     client_message_id: str | None = None,
     defer_summary_refresh: bool = False,
 ) -> dict:
+    request_started = time.perf_counter()
     persona = get_persona_for_user(user_id, persona_id)
     client_message_id = str(client_message_id or "").strip()[:80]
     retrying = retry_user_message_id is not None
@@ -657,6 +659,7 @@ def db_chat(
     presence_reply_state = None
     if presence_is_enabled():
         presence_reply_state = _best_effort("PresenceReply", lambda: on_reply_start(user_id), {})
+    model_started = time.perf_counter()
     try:
         reply = call_llm_api(messages, task="chat")
     except LLMProviderError as exc:
@@ -664,13 +667,16 @@ def db_chat(
         return _failed_reply_payload(
             conversation, persona_id, user_message_id, trace_id, stored_memories, layered, semantic_memories,
             presence=_finish_presence_reply(user_id),
+            performance=_chat_performance(request_started, model_started),
         )
     except Exception as exc:
         _finish_context_trace(trace_id, status="degraded", error_text=str(exc))
         return _failed_reply_payload(
             conversation, persona_id, user_message_id, trace_id, stored_memories, layered, semantic_memories,
             presence=_finish_presence_reply(user_id),
+            performance=_chat_performance(request_started, model_started),
         )
+    model_finished = time.perf_counter()
 
     presentation = _extract_reply_presentation(reply)
     reply = presentation["content"]
@@ -741,6 +747,7 @@ def db_chat(
         "degraded": degraded,
         "expressions": expressions,
         "presence": presence_state,
+        "performance": _chat_performance(request_started, model_started, model_finished),
     }
 
 
@@ -753,6 +760,7 @@ def _failed_reply_payload(
     layered: list,
     semantic_memories: list,
     presence: dict | None = None,
+    performance: dict | None = None,
 ) -> dict:
     error_message = "回复暂时没有送达。可以稍后重试。"
     with get_db() as db:
@@ -775,6 +783,26 @@ def _failed_reply_payload(
         "degraded": True,
         "expressions": [],
         "presence": presence,
+        "performance": performance or {},
+    }
+
+
+def _chat_performance(
+    request_started: float,
+    model_started: float,
+    model_finished: float | None = None,
+) -> dict:
+    """Return safe, coarse latency timings for the self-use chat UI."""
+    completed = time.perf_counter()
+    model_ended = model_finished if model_finished is not None else completed
+    total_ms = max(0, round((completed - request_started) * 1000))
+    preparation_ms = max(0, round((model_started - request_started) * 1000))
+    model_ms = max(0, round((model_ended - model_started) * 1000))
+    return {
+        "total_ms": total_ms,
+        "preparation_ms": preparation_ms,
+        "model_ms": model_ms,
+        "postprocess_ms": max(0, total_ms - preparation_ms - model_ms),
     }
 
 

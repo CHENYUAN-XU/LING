@@ -160,6 +160,12 @@ def main() -> None:
     assert 'await applyLive2dRuntimeState("thinking")' in app_js
     assert 'await applyLive2dRuntimeState("speaking")' in app_js
     assert "function voiceAutoPlayEnabled" in app_js
+    assert "function formatMessagePerformance(metrics)" in app_js
+    assert "X-LING-TTS-Generation-Ms" in app_js
+    assert "X-LING-TTS-Generation-Ms" in server_py
+    assert "function incrementalLocalVoiceEnabled(plan)" in app_js
+    assert "function playIncrementalLocalVoice" in app_js
+    assert 'fetch(`/api/voice/tts-chunk/${chunkIndex}`' in app_js
     assert "function probeSelfUseLlm" in app_js
     assert "llm_unverified" in app_js
     assert "澪的状态档案" in app_js

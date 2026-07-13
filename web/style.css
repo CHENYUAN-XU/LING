@@ -2671,6 +2671,12 @@ small {
   font-size: 11px;
 }
 
+.message-performance {
+  min-height: 14px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .copy-message {
   min-height: 18px;
   padding: 0;
