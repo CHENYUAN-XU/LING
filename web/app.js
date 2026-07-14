@@ -118,6 +118,8 @@ let live2dActionQueue = Promise.resolve();
 let live2dExpressionResetTimer = null;
 let activeVoicePlayback = null;
 let voicePlaybackSequence = 0;
+let activeChatStream = null;
+let chatStreamSequence = 0;
 let companionStatusPollTimer = null;
 let companionStatusPollBusy = false;
 let companionLifecycleBound = false;
@@ -803,7 +805,7 @@ function renderSelfUseRail() {
       h("strong", { text: "LING" }),
       h("small", { text: persona?.name || "Mio" }),
     ]),
-    h("nav", { class: "rail-actions", "aria-label": "LING controls" }, [
+    h("nav", { class: "companion-rail-actions", "aria-label": "LING controls" }, [
       h("button", { type: "button", class: "rail-action active", title: "在场", "aria-label": "在场", text: "在", onclick: () => renderShell() }),
       h("button", { type: "button", class: "rail-action", title: "资料", "aria-label": "资料", text: "资", onclick: openPersonaPanel }),
       h("button", {
@@ -4319,8 +4321,8 @@ function renderComposer() {
   });
   const button = h("button", {
     type: "submit",
-    text: llmBlocked ? "未连接" : state.sending ? "等待" : text.send,
-    disabled: state.sending || llmBlocked ? "disabled" : null,
+    text: llmBlocked ? "未连接" : state.sending && state.view !== "group" ? "打断并发送" : text.send,
+    disabled: llmBlocked || (state.sending && state.view === "group") ? "disabled" : null,
   });
   const form = h("form", { class: "composer" }, [input, button]);
   input.value = loadDraft();
@@ -4338,7 +4340,7 @@ function renderComposer() {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const content = input.value.trim();
-    if (!content || state.sending || llmBlocked) return;
+    if (!content || llmBlocked || (state.sending && state.view === "group")) return;
     if (state.view === "group" && !state.activeGroupConversationId) return;
     if (state.view !== "group" && !state.activePersona) return;
     input.value = "";
@@ -4420,7 +4422,7 @@ function autoResizeTextarea(input) {
   input.style.height = `${Math.max(44, nextHeight)}px`;
 }
 
-async function apiChatStream(payload, onEvent) {
+async function apiChatStream(payload, onEvent, { signal } = {}) {
   const isolated = tabSessionMode();
   const token = tabSessionToken();
   const headers = { "Content-Type": "application/json" };
@@ -4430,6 +4432,7 @@ async function apiChatStream(payload, onEvent) {
     credentials: isolated ? "omit" : "same-origin",
     headers,
     body: JSON.stringify(payload),
+    signal,
   });
   if (!res.ok || !res.body) {
     const data = await res.json().catch(() => ({}));
@@ -4447,6 +4450,7 @@ async function apiChatStream(payload, onEvent) {
     const data = JSON.parse(dataLines.join("\n"));
     await onEvent(eventName, data);
     if (eventName === "final") finalData = data;
+    if (eventName === "cancelled") throw new DOMException("Chat stream was interrupted.", "AbortError");
     if (eventName === "error") throw new Error(data.message || "Chat service is temporarily unavailable.");
     eventName = "message";
     dataLines = [];
@@ -4489,16 +4493,18 @@ function takeCompletedSpeechSentences(buffer, flush = false) {
   return { sentences: result, rest: flush ? "" : rest };
 }
 
-function createStreamingVoiceQueue(message) {
+function createStreamingVoiceQueue(message, isCurrent = () => true) {
   if (!voiceAutoPlayEnabled()) return null;
   let queue = Promise.resolve();
   let spoken = false;
+  let cancelled = false;
   return {
     enqueue(sentence) {
       const text = String(sentence || "").trim();
-      if (!text) return;
+      if (!text || cancelled || !isCurrent()) return;
       spoken = true;
       queue = queue.then(async () => {
+        if (cancelled || !isCurrent()) return;
         const utterance = {
           role: "assistant",
           id: message.id,
@@ -4508,19 +4514,51 @@ function createStreamingVoiceQueue(message) {
           performance: message.performance || {},
         };
         await playMessageVoice(utterance, null);
+        if (cancelled || !isCurrent()) return;
         message.performance = utterance.performance || message.performance;
       });
     },
     get spoken() { return spoken; },
+    cancel() { cancelled = true; },
     done() { return queue; },
   };
 }
 
+function createChatStreamId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `chat-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function cancelActiveChatStream() {
+  const active = activeChatStream;
+  if (!active) return false;
+  active.cancelled = true;
+  active.voiceQueue?.cancel();
+  active.controller.abort();
+  interruptVoicePlayback();
+  void api(`/api/chat/stream/${encodeURIComponent(active.streamId)}/cancel`, {
+    method: "POST",
+    keepalive: true,
+  }).catch(() => null);
+  return true;
+}
+
 async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId = null, clientMessageId = "" } = {}) {
-  if (!content || !state.activePersona || state.sending) return;
+  if (!content || !state.activePersona) return;
+  if (state.sending) cancelActiveChatStream();
   interruptVoicePlayback();
   const requestPersonaId = Number(state.activePersona.id);
   const outgoingClientMessageId = clientMessageId || (retryUserMessageId ? "" : createClientMessageId());
+  const activeRequest = {
+    id: ++chatStreamSequence,
+    streamId: createChatStreamId(),
+    controller: new AbortController(),
+    voiceQueue: null,
+    cancelled: false,
+  };
+  activeChatStream = activeRequest;
+  const isCurrentRequest = () => activeChatStream === activeRequest && !activeRequest.cancelled;
+  const canContinueVoiceQueue = () => !activeRequest.cancelled;
   let appliedReplyExpression = false;
   let autoVoiceMessage = null;
   state.sending = true;
@@ -4555,13 +4593,16 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
     let streamingMessageVisible = false;
     let pendingSpeechText = "";
     let voiceQueue = null;
+    let firstSpeechText = "";
     const data = await apiChatStream({
       message: content,
       persona_id: state.activePersona.id,
       conversation_id: state.activeConversationId,
       retry_user_message_id: retryUserMessageId,
       client_message_id: outgoingClientMessageId || null,
+      stream_id: activeRequest.streamId,
     }, async (eventName, eventData) => {
+      if (!isCurrentRequest()) return;
       if (eventName !== "delta") return;
       const delta = String(eventData?.text || "");
       if (!delta) return;
@@ -4573,13 +4614,16 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
       pendingSpeechText += delta;
       const speech = takeCompletedSpeechSentences(pendingSpeechText);
       pendingSpeechText = speech.rest;
-      if (speech.sentences.length) {
-        voiceQueue ||= createStreamingVoiceQueue(streamingMessage);
-        for (const sentence of speech.sentences) voiceQueue?.enqueue(sentence);
+      if (!firstSpeechText && speech.sentences.length) {
+        firstSpeechText = speech.sentences[0];
+        voiceQueue ||= createStreamingVoiceQueue(streamingMessage, canContinueVoiceQueue);
+        activeRequest.voiceQueue = voiceQueue;
+        voiceQueue?.enqueue(firstSpeechText);
       }
       renderShell();
       scrollChat();
-    });
+    }, { signal: activeRequest.controller.signal });
+    if (!isCurrentRequest()) return;
     const stillViewingConversation = (
       state.view === "chat"
       && Number(state.activePersona?.id) === requestPersonaId
@@ -4602,10 +4646,16 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
           state.messages.push(streamingMessage);
           streamingMessageVisible = true;
         }
-        const finalSpeech = takeCompletedSpeechSentences(pendingSpeechText, true);
-        if (finalSpeech.sentences.length) {
-          voiceQueue ||= createStreamingVoiceQueue(streamingMessage);
-          for (const sentence of finalSpeech.sentences) voiceQueue?.enqueue(sentence);
+        const replyForVoice = String(data.reply || streamingMessage.content || "").trim();
+        const remainingSpeechText = firstSpeechText && replyForVoice.startsWith(firstSpeechText)
+          ? replyForVoice.slice(firstSpeechText.length).trim()
+          : replyForVoice;
+        if (remainingSpeechText) {
+          voiceQueue ||= createStreamingVoiceQueue(streamingMessage, canContinueVoiceQueue);
+          activeRequest.voiceQueue = voiceQueue;
+          if (!firstSpeechText || remainingSpeechText !== firstSpeechText) {
+            voiceQueue?.enqueue(remainingSpeechText);
+          }
         }
         streamingMessage.id = data.assistant_message_id;
         streamingMessage.content = data.reply;
@@ -4623,6 +4673,7 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
     }
     await loadMainData();
   } catch (err) {
+    if (!isCurrentRequest() || activeRequest.cancelled || err?.name === "AbortError") return;
     if (state.view === "chat" && Number(state.activePersona?.id) === requestPersonaId) {
       state.messages.push({
         role: "notice",
@@ -4637,6 +4688,8 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
     await loadPresenceStatus();
     await applyLive2dRuntimeState("idle");
   }
+  if (!isCurrentRequest()) return;
+  activeChatStream = null;
   state.sending = false;
   await syncCompanionRuntime({ applyLive2d: !appliedReplyExpression });
   renderShell();
