@@ -2688,7 +2688,7 @@ function personaEmbodimentProfile(persona) {
   const fallbackImageUrl = String(persona?.fallback_image_url || "").trim();
   const avatarUrl = String(persona?.avatar_url || "").trim();
   const visual = [
-    ["live2d_preview_url", live2dPreviewUrl, "Live2D preview", "preview"],
+    ["live2d_preview_url", live2dPreviewUrl, "临时静态形象", "preview"],
     ["fallback_image_url", fallbackImageUrl, "Fallback image", "fallback"],
     ["avatar_url", avatarUrl, "Legacy fallback", "legacy"],
   ].find(([, value]) => value);
@@ -2697,7 +2697,7 @@ function personaEmbodimentProfile(persona) {
     voiceProfile: String(statusEmbodiment.voice_profile || persona?.voice_profile || "").trim(),
     visualUrl: String(statusEmbodiment.visual_url || (visual ? visual[1] : "") || "").trim(),
     visualSource: String(statusEmbodiment.visual_source || (visual ? visual[0] : "none") || "none"),
-    visualLabel: String(statusEmbodiment.visual_label || (visual ? visual[2] : "Live2D pending")),
+    visualLabel: String(statusEmbodiment.visual_label || (visual ? visual[2] : "临时形象待绑定")),
     visualTone: String(statusEmbodiment.visual_tone || (visual ? visual[3] : "missing")),
   };
 }
@@ -2710,10 +2710,10 @@ function renderCompanionVisual(persona, embodiment) {
   const imageUrl = embodiment.visualUrl;
   const currentModel = live2dCurrentModelBinding();
   const live2dLabel = embodiment.live2dModelId
-    ? `Bound ${embodiment.live2dModelId}`
-    : currentModel.label
-      ? `VTS ${currentModel.label}`
-      : "Body pending";
+      ? `Bound ${embodiment.live2dModelId}`
+      : currentModel.label
+        ? `VTS ${currentModel.label}`
+      : "EasyVtuber 在外部窗口运行";
   return h("button", {
     type: "button",
     class: `companion-visual ${embodiment.visualTone}`,
@@ -4420,6 +4420,102 @@ function autoResizeTextarea(input) {
   input.style.height = `${Math.max(44, nextHeight)}px`;
 }
 
+async function apiChatStream(payload, onEvent) {
+  const isolated = tabSessionMode();
+  const token = tabSessionToken();
+  const headers = { "Content-Type": "application/json" };
+  if (isolated && token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch("/api/chat/stream", {
+    method: "POST",
+    credentials: isolated ? "omit" : "same-origin",
+    headers,
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok || !res.body) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(apiErrorMessage(data.detail, `HTTP ${res.status}`));
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let eventName = "message";
+  let dataLines = [];
+  let finalData = null;
+  const dispatch = async () => {
+    if (!dataLines.length) return;
+    const data = JSON.parse(dataLines.join("\n"));
+    await onEvent(eventName, data);
+    if (eventName === "final") finalData = data;
+    if (eventName === "error") throw new Error(data.message || "Chat service is temporarily unavailable.");
+    eventName = "message";
+    dataLines = [];
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const lines = buffer.split(/\r?\n/);
+    buffer = done ? "" : lines.pop();
+    for (const line of lines) {
+      if (!line) {
+        await dispatch();
+      } else if (line.startsWith("event:")) {
+        eventName = line.slice(6).trim() || "message";
+      } else if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trimStart());
+      }
+    }
+    if (done) break;
+  }
+  await dispatch();
+  if (!finalData) throw new Error("Chat stream ended without a final reply.");
+  return finalData;
+}
+
+function takeCompletedSpeechSentences(buffer, flush = false) {
+  const source = String(buffer || "");
+  const result = [];
+  let lastEnd = 0;
+  const sentenceRe = /[^。！？!?\n]+[。！？!?]+(?:[””』」])?/g;
+  let match;
+  while ((match = sentenceRe.exec(source))) {
+    const sentence = match[0].trim();
+    if (sentence) result.push(sentence);
+    lastEnd = sentenceRe.lastIndex;
+  }
+  const rest = source.slice(lastEnd);
+  if (flush && rest.trim()) result.push(rest.trim());
+  return { sentences: result, rest: flush ? "" : rest };
+}
+
+function createStreamingVoiceQueue(message) {
+  if (!voiceAutoPlayEnabled()) return null;
+  let queue = Promise.resolve();
+  let spoken = false;
+  return {
+    enqueue(sentence) {
+      const text = String(sentence || "").trim();
+      if (!text) return;
+      spoken = true;
+      queue = queue.then(async () => {
+        const utterance = {
+          role: "assistant",
+          id: message.id,
+          content: text,
+          expressions: [],
+          status: "sent",
+          performance: message.performance || {},
+        };
+        await playMessageVoice(utterance, null);
+        message.performance = utterance.performance || message.performance;
+      });
+    },
+    get spoken() { return spoken; },
+    done() { return queue; },
+  };
+}
+
 async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId = null, clientMessageId = "" } = {}) {
   if (!content || !state.activePersona || state.sending) return;
   interruptVoicePlayback();
@@ -4446,15 +4542,43 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
   scrollChat();
   try {
     const requestStartedAt = performance.now();
-    const data = await api("/api/chat", {
-      method: "POST",
-      body: JSON.stringify({
-        message: content,
-        persona_id: state.activePersona.id,
-        conversation_id: state.activeConversationId,
-        retry_user_message_id: retryUserMessageId,
-        client_message_id: outgoingClientMessageId || null,
-      }),
+    const streamingMessage = {
+      role: "assistant",
+      id: -Date.now(),
+      content: "",
+      expressions: [],
+      status: "streaming",
+      local_id: `stream-${Date.now()}`,
+      created_at: nowSeconds(),
+      performance: {},
+    };
+    let streamingMessageVisible = false;
+    let pendingSpeechText = "";
+    let voiceQueue = null;
+    const data = await apiChatStream({
+      message: content,
+      persona_id: state.activePersona.id,
+      conversation_id: state.activeConversationId,
+      retry_user_message_id: retryUserMessageId,
+      client_message_id: outgoingClientMessageId || null,
+    }, async (eventName, eventData) => {
+      if (eventName !== "delta") return;
+      const delta = String(eventData?.text || "");
+      if (!delta) return;
+      if (!streamingMessageVisible) {
+        state.messages.push(streamingMessage);
+        streamingMessageVisible = true;
+      }
+      streamingMessage.content += delta;
+      pendingSpeechText += delta;
+      const speech = takeCompletedSpeechSentences(pendingSpeechText);
+      pendingSpeechText = speech.rest;
+      if (speech.sentences.length) {
+        voiceQueue ||= createStreamingVoiceQueue(streamingMessage);
+        for (const sentence of speech.sentences) voiceQueue?.enqueue(sentence);
+      }
+      renderShell();
+      scrollChat();
     });
     const stillViewingConversation = (
       state.view === "chat"
@@ -4474,19 +4598,24 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
           created_at: nowSeconds(),
         });
       } else {
-        autoVoiceMessage = {
-          role: "assistant",
-          content: data.reply,
-          expressions: data.expressions || [],
-          status: "sent",
-          id: data.assistant_message_id,
-          created_at: nowSeconds(),
-          performance: {
-            ...(data.performance && typeof data.performance === "object" ? data.performance : {}),
-            client_total_ms: Math.max(0, Math.round(performance.now() - requestStartedAt)),
-          },
+        if (!streamingMessageVisible) {
+          state.messages.push(streamingMessage);
+          streamingMessageVisible = true;
+        }
+        const finalSpeech = takeCompletedSpeechSentences(pendingSpeechText, true);
+        if (finalSpeech.sentences.length) {
+          voiceQueue ||= createStreamingVoiceQueue(streamingMessage);
+          for (const sentence of finalSpeech.sentences) voiceQueue?.enqueue(sentence);
+        }
+        streamingMessage.id = data.assistant_message_id;
+        streamingMessage.content = data.reply;
+        streamingMessage.expressions = data.expressions || [];
+        streamingMessage.status = "sent";
+        streamingMessage.performance = {
+          ...(data.performance && typeof data.performance === "object" ? data.performance : {}),
+          client_total_ms: Math.max(0, Math.round(performance.now() - requestStartedAt)),
         };
-        state.messages.push(autoVoiceMessage);
+        autoVoiceMessage = voiceQueue?.spoken ? null : streamingMessage;
         appliedReplyExpression = await applyMessageExpressionsToLive2d(data.expressions || []);
         await markConversationRead(data.conversation_id);
       }
@@ -6132,17 +6261,6 @@ async function playMessageVoice(message, buttonEl) {
       buttonEl.disabled = true;
     }
 
-    if (incrementalLocalVoiceEnabled(state.voicePlan)) {
-      voicePlaybackCompleted = await playIncrementalLocalVoice(
-        message,
-        text,
-        expressionLabels,
-        playback,
-        buttonEl,
-      );
-      return;
-    }
-
     const isolated = tabSessionMode();
     const token = tabSessionToken();
     const headers = {};
@@ -6434,9 +6552,9 @@ function renderLive2dPanel(persona) {
 
 function messageSegments(message) {
   const content = String(message.content || "").trim();
-  if (!content) return [""];
-  if (message.role !== "assistant" || message.status === "error") return [content];
-  return splitAssistantContent(content);
+  // A complete server reply must remain one message bubble.  Splitting it here
+  // only creates several bubbles at the same instant; it is not streaming.
+  return [content];
 }
 
 function splitAssistantContent(content) {

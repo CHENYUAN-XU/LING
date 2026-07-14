@@ -4,6 +4,7 @@ import json
 import re
 import time
 from datetime import datetime
+from typing import Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .archivist import extract_and_store, recall_memories
@@ -18,7 +19,7 @@ from .expression_assets import (
 )
 from .identity import IDENTITY_REPLACEMENTS, scrub_identity_obj, scrub_identity_text
 from .layered_memory import layered_memory_prompt, recall_layered_memory, state_prompt, summary_prompt
-from .llm_client import LLMProviderError, call_llm_api
+from .llm_client import LLMProviderError, call_llm_api, call_llm_api_stream
 from .memory_rag import semantic_memory_prompt, semantic_memory_recall
 from .memory_policy import policy_snapshot, should_refresh_summary, should_use_semantic_recall
 from .mirror import discovery_prompt, insight_prompt, update_interaction_insight
@@ -370,6 +371,7 @@ def db_chat(
     retry_user_message_id: int | None = None,
     client_message_id: str | None = None,
     defer_summary_refresh: bool = False,
+    on_stream_delta: Callable[[str], None] | None = None,
 ) -> dict:
     request_started = time.perf_counter()
     persona = get_persona_for_user(user_id, persona_id)
@@ -661,7 +663,11 @@ def db_chat(
         presence_reply_state = _best_effort("PresenceReply", lambda: on_reply_start(user_id), {})
     model_started = time.perf_counter()
     try:
-        reply = call_llm_api(messages, task="chat")
+        reply = (
+            call_llm_api(messages, task="chat")
+            if on_stream_delta is None
+            else call_llm_api_stream(messages, on_stream_delta=on_stream_delta, task="chat")
+        )
     except LLMProviderError as exc:
         _finish_context_trace(trace_id, status="degraded", error_text=str(exc))
         return _failed_reply_payload(
