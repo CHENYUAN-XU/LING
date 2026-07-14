@@ -224,7 +224,7 @@ def main() -> None:
     assert "function live2dCurrentModelBinding()" in app_js
     assert "function renderSelfUseLive2dModelPicker(live2dModelIdField, statusEl = null)" in app_js
     assert "renderSelfUseLive2dModelPicker(fields.live2dModelId, bindingStatus)" in app_js
-    assert '["live2d_preview_url", live2dPreviewUrl, "Live2D preview", "preview"]' in app_js
+    assert '["live2d_preview_url", live2dPreviewUrl, "临时静态形象", "preview"]' in app_js
     assert '["fallback_image_url", fallbackImageUrl, "Fallback image", "fallback"]' in app_js
     assert '["avatar_url", avatarUrl, "Legacy fallback", "legacy"]' in app_js
     assert "function renderCompanionVisual(persona, embodiment)" in app_js
@@ -232,10 +232,10 @@ def main() -> None:
     assert "companion-visual-empty" in app_js
     assert "companion-visual-source" in app_js
     assert "live2dCurrentModelBinding()" in app_js
-    assert "Body pending" in app_js
+    assert "EasyVtuber 在外部窗口运行" in app_js
     assert "Bind body" in app_js
     assert ".companion-visual.missing" in style_css
-    assert "Live2D pending" in app_js
+    assert "临时形象待绑定" in app_js
     assert "使用并保存当前模型" in app_js
     assert "保存形象绑定" in app_js
     assert "async function saveSelfUseEmbodimentBinding(payload, statusEl = null)" in app_js

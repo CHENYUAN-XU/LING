@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import hmac
 import os
+import queue
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -5080,6 +5082,74 @@ def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: dict = Depen
         raise HTTPException(status_code=503, detail="服务暂时不可用，请稍后再试。") from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail="聊天服务暂时不可用，请稍后再试。") from exc
+
+
+@app.post("/api/chat/stream")
+def chat_stream(req: ChatRequest, background_tasks: BackgroundTasks, user: dict = Depends(current_user)):
+    """Stream text deltas for the local companion while keeping normal chat persistence."""
+    self_use = _self_use_public(user)
+    if self_use.get("enabled"):
+        _require_self_use_bound_persona(user, int(req.persona_id))
+        if not self_use.get("chat_enabled"):
+            raise HTTPException(status_code=403, detail="LING chat is not enabled yet. Set self_use.chat_enabled: true after API setup.")
+        gate = _companion_chat_gate(self_use, llm_runtime_status("chat"))
+        if not gate.get("ready"):
+            raise HTTPException(status_code=503, detail={
+                "error": "LING chat route is not verified",
+                "reason": gate.get("reason"),
+                "text": gate.get("text"),
+            })
+
+    events: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
+
+    def emit_delta(text: str) -> None:
+        if text:
+            events.put(("delta", {"text": text}))
+
+    def run_chat() -> None:
+        try:
+            result = db_chat(
+                user_id=int(user["id"]),
+                persona_id=int(req.persona_id),
+                conversation_id=req.conversation_id,
+                message=req.message,
+                retry_user_message_id=req.retry_user_message_id,
+                client_message_id=req.client_message_id,
+                defer_summary_refresh=True,
+                on_stream_delta=emit_delta,
+            )
+            events.put(("final", result))
+        except ValueError as exc:
+            events.put(("error", {"message": str(exc), "status_code": 404}))
+        except LLMProviderError as exc:
+            events.put(("error", {"message": exc.user_message, "status_code": 503}))
+        except RuntimeError:
+            events.put(("error", {"message": "LLM service is temporarily unavailable.", "status_code": 503}))
+        except Exception:
+            events.put(("error", {"message": "Chat service is temporarily unavailable.", "status_code": 500}))
+
+    def event_stream():
+        while True:
+            event_name, payload = events.get()
+            if event_name == "final" and payload.get("assistant_message_id") and (payload.get("conversation_summary") or {}).get("scheduled"):
+                background_tasks.add_task(
+                    refresh_conversation_summary,
+                    user_id=int(user["id"]),
+                    persona_id=int(req.persona_id),
+                    conversation_id=int(payload["conversation_id"]),
+                    latest_message_id=int(payload["assistant_message_id"]),
+                )
+            data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            yield f"event: {event_name}\ndata: {data}\n\n"
+            if event_name in {"final", "error"}:
+                break
+
+    threading.Thread(target=run_chat, name="ling-chat-stream", daemon=True).start()
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/")
