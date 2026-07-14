@@ -218,6 +218,8 @@ except Exception as exc:
 app = FastAPI(title="LING")
 rate_limiter = InMemoryRateLimiter(enabled=rate_limit_enabled())
 request_logger = configure_request_logging()
+_chat_stream_cancellations: dict[str, tuple[int, threading.Event]] = {}
+_chat_stream_cancellations_lock = threading.Lock()
 
 
 @app.middleware("http")
@@ -416,6 +418,7 @@ class ChatRequest(BaseModel):
     conversation_id: int | None = None
     retry_user_message_id: int | None = None
     client_message_id: str | None = Field(default=None, max_length=80)
+    stream_id: str | None = Field(default=None, max_length=64)
 
 
 class ConversationUpdateRequest(BaseModel):
@@ -5100,6 +5103,15 @@ def chat_stream(req: ChatRequest, background_tasks: BackgroundTasks, user: dict 
                 "text": gate.get("text"),
             })
 
+    stream_id = str(req.stream_id or uuid.uuid4().hex).strip()
+    if not stream_id or len(stream_id) > 64:
+        raise HTTPException(status_code=422, detail="invalid stream id")
+    cancel_event = threading.Event()
+    with _chat_stream_cancellations_lock:
+        if stream_id in _chat_stream_cancellations:
+            raise HTTPException(status_code=409, detail="chat stream id is already active")
+        _chat_stream_cancellations[stream_id] = (int(user["id"]), cancel_event)
+
     events: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
 
     def emit_delta(text: str) -> None:
@@ -5116,9 +5128,11 @@ def chat_stream(req: ChatRequest, background_tasks: BackgroundTasks, user: dict 
                 retry_user_message_id=req.retry_user_message_id,
                 client_message_id=req.client_message_id,
                 defer_summary_refresh=True,
+                defer_turn_enrichment=True,
                 on_stream_delta=emit_delta,
+                should_cancel=cancel_event.is_set,
             )
-            events.put(("final", result))
+            events.put(("cancelled" if result.get("interrupted") else "final", result))
         except ValueError as exc:
             events.put(("error", {"message": str(exc), "status_code": 404}))
         except LLMProviderError as exc:
@@ -5127,6 +5141,9 @@ def chat_stream(req: ChatRequest, background_tasks: BackgroundTasks, user: dict 
             events.put(("error", {"message": "LLM service is temporarily unavailable.", "status_code": 503}))
         except Exception:
             events.put(("error", {"message": "Chat service is temporarily unavailable.", "status_code": 500}))
+        finally:
+            with _chat_stream_cancellations_lock:
+                _chat_stream_cancellations.pop(stream_id, None)
 
     def event_stream():
         while True:
@@ -5141,7 +5158,7 @@ def chat_stream(req: ChatRequest, background_tasks: BackgroundTasks, user: dict 
                 )
             data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
             yield f"event: {event_name}\ndata: {data}\n\n"
-            if event_name in {"final", "error"}:
+            if event_name in {"final", "cancelled", "error"}:
                 break
 
     threading.Thread(target=run_chat, name="ling-chat-stream", daemon=True).start()
@@ -5150,6 +5167,17 @@ def chat_stream(req: ChatRequest, background_tasks: BackgroundTasks, user: dict 
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.post("/api/chat/stream/{stream_id}/cancel")
+def cancel_chat_stream(stream_id: str, user: dict = Depends(current_user)):
+    """Best-effort cancellation for an interrupted local companion turn."""
+    with _chat_stream_cancellations_lock:
+        active = _chat_stream_cancellations.get(stream_id)
+        if not active or active[0] != int(user["id"]):
+            return {"cancelled": False}
+        active[1].set()
+    return {"cancelled": True}
 
 
 @app.get("/")

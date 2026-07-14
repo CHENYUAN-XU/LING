@@ -341,6 +341,8 @@ def main() -> None:
 
     assert ".self-use-shell" in style_css
     assert ".companion-rail" in style_css
+    assert 'class: "companion-rail-actions"' in app_js
+    assert ".companion-rail-actions" in style_css
     assert ".self-use-integration-modal" in style_css
     assert ".self-use-integration-grid" in style_css
     assert ".self-use-integration-card" in style_css
@@ -349,6 +351,7 @@ def main() -> None:
     assert ".self-use-integration-field-grid" in style_css
     assert ".self-use-integration-row" in style_css
     assert ".self-use-workspace" in style_css
+    assert "grid-template-columns: max(420px, calc(50vw - 92px)) minmax(0, 1fr);" in style_css
     assert ".self-use-api-gate" in style_css
     assert ".self-use-api-dot" in style_css
     assert ".companion-runtime-badge" in style_css

@@ -28,6 +28,10 @@ class LLMProviderError(RuntimeError):
         self.user_message = "服务暂时繁忙，请稍后再试。"
 
 
+class LLMStreamCancelled(RuntimeError):
+    """Raised when a local client interrupts an in-flight streamed reply."""
+
+
 def messages_to_prompt(messages: List[Message]) -> str:
     parts: list[str] = []
     for msg in messages:
@@ -140,6 +144,7 @@ def _call_chat_completions_stream(
     default_base_url: str,
     default_model: str,
     on_delta: Callable[[str], None],
+    should_cancel: Callable[[], bool] | None = None,
     include_temperature: bool = True,
 ) -> str:
     """Stream an OpenAI-compatible chat completion and return its full text."""
@@ -166,6 +171,9 @@ def _call_chat_completions_stream(
             stream=True,
         )
         response.raise_for_status()
+        # Some OpenAI-compatible streaming gateways omit a charset. Requests then
+        # falls back to ISO-8859-1, which corrupts UTF-8 Chinese SSE deltas.
+        response.encoding = "utf-8"
     except requests.RequestException as exc:
         status_code = getattr(getattr(exc, "response", None), "status_code", None)
         raise LLMProviderError(f"{provider_name} stream request failed with status {status_code or 'unknown'}", status_code=status_code) from exc
@@ -173,6 +181,8 @@ def _call_chat_completions_stream(
     fragments: list[str] = []
     try:
         for raw_line in response.iter_lines(decode_unicode=True):
+            if should_cancel and should_cancel():
+                raise LLMStreamCancelled("chat stream cancelled")
             line = str(raw_line or "").strip()
             if not line or not line.startswith("data:"):
                 continue
@@ -190,6 +200,8 @@ def _call_chat_completions_stream(
                 on_delta(content)
     finally:
         response.close()
+    if should_cancel and should_cancel():
+        raise LLMStreamCancelled("chat stream cancelled")
     return "".join(fragments).strip()
 
 
@@ -273,7 +285,12 @@ def call_llm_api(messages: List[Message], task: str = "default") -> str:
     return response
 
 
-def call_llm_api_stream(messages: List[Message], on_delta: Callable[[str], None], task: str = "default") -> str:
+def call_llm_api_stream(
+    messages: List[Message],
+    on_delta: Callable[[str], None],
+    task: str = "default",
+    should_cancel: Callable[[], bool] | None = None,
+) -> str:
     """Use provider streaming when supported; callers still receive the final full reply."""
     llm_config = _llm_config_for_task(task)
     provider = str(llm_config.get("provider", "ollama")).lower()
@@ -282,16 +299,18 @@ def call_llm_api_stream(messages: List[Message], on_delta: Callable[[str], None]
     prompt_chars = sum(len(str(message.get("content", ""))) for message in messages)
     try:
         if provider == "openai":
-            response = _call_chat_completions_stream(messages, llm_config, provider_name="openai", env_key="OPENAI_API_KEY", default_base_url="https://api.openai.com/v1", default_model="gpt-4o-mini", on_delta=on_delta)
+            response = _call_chat_completions_stream(messages, llm_config, provider_name="openai", env_key="OPENAI_API_KEY", default_base_url="https://api.openai.com/v1", default_model="gpt-4o-mini", on_delta=on_delta, should_cancel=should_cancel)
         elif provider == "deepseek":
-            response = _call_chat_completions_stream(messages, llm_config, provider_name="deepseek", env_key="DEEPSEEK_API_KEY", default_base_url="https://api.deepseek.com/v1", default_model="deepseek-v4-flash", on_delta=on_delta)
+            response = _call_chat_completions_stream(messages, llm_config, provider_name="deepseek", env_key="DEEPSEEK_API_KEY", default_base_url="https://api.deepseek.com/v1", default_model="deepseek-v4-flash", on_delta=on_delta, should_cancel=should_cancel)
         elif provider in {"kimi", "moonshot"}:
-            response = _call_chat_completions_stream(messages, llm_config, provider_name="kimi", env_key="MOONSHOT_API_KEY", default_base_url="https://api.moonshot.ai/v1", default_model="kimi-k2.6", on_delta=on_delta, include_temperature=False)
+            response = _call_chat_completions_stream(messages, llm_config, provider_name="kimi", env_key="MOONSHOT_API_KEY", default_base_url="https://api.moonshot.ai/v1", default_model="kimi-k2.6", on_delta=on_delta, should_cancel=should_cancel, include_temperature=False)
         elif provider in {"openai_compatible", "compatible"} or llm_config.get("api_key_env"):
-            response = _call_chat_completions_stream(messages, llm_config, provider_name=provider, env_key=str(llm_config.get("api_key_env") or "OPENAI_API_KEY"), default_base_url=str(llm_config.get("base_url") or "https://api.openai.com/v1"), default_model=str(llm_config.get("model") or "gpt-4o-mini"), on_delta=on_delta)
+            response = _call_chat_completions_stream(messages, llm_config, provider_name=provider, env_key=str(llm_config.get("api_key_env") or "OPENAI_API_KEY"), default_base_url=str(llm_config.get("base_url") or "https://api.openai.com/v1"), default_model=str(llm_config.get("model") or "gpt-4o-mini"), on_delta=on_delta, should_cancel=should_cancel)
         else:
             # Preserve a useful response for non-streaming local providers.
             response = call_llm_api(messages, task=task)
+            if should_cancel and should_cancel():
+                raise LLMStreamCancelled("chat stream cancelled")
             if response:
                 on_delta(response)
             return response
