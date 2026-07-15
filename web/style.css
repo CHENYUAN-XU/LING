@@ -1403,6 +1403,19 @@ small {
   object-fit: contain;
 }
 
+.companion-visual.live-capture {
+  cursor: default;
+  background: #11151c;
+}
+
+.companion-visual.live-capture video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #11151c;
+}
+
 .companion-visual-empty {
   display: grid;
   place-items: center;

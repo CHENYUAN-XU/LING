@@ -109,6 +109,8 @@ let state = {
   integrationConfigSaving: "",
   integrationConfigFeedback: {},
   easyVtuberOpening: false,
+  easyVtuberCaptureRequesting: false,
+  easyVtuberCaptureActive: false,
   easyVtuberFeedback: "",
   privacyPolicy: null,
   cameraPreviewActive: false,
@@ -123,6 +125,7 @@ let chatStreamSequence = 0;
 let companionStatusPollTimer = null;
 let companionStatusPollBusy = false;
 let companionLifecycleBound = false;
+let easyVtuberCaptureStream = null;
 
 function tabSessionMode() {
   try {
@@ -705,6 +708,11 @@ function saveLastActive() {
 function renderShell() {
   normalizeSelfUseUiState();
   saveLastActive();
+  // Most UI actions update a small bit of state and then redraw the shell.  Keep
+  // the reader where they were instead of replacing the chat scroller at 0.
+  // New messages still explicitly call scrollChat() after rendering.
+  const previousChatLog = document.getElementById("chat-log");
+  const previousChatScrollTop = previousChatLog ? previousChatLog.scrollTop : null;
   const restoreSearchFocus = document.activeElement?.classList?.contains("conversation-search");
   app.className = `app-shell view-${state.view || "chat"} ${selfUseMode() ? "self-use-shell" : ""} ${state.activePersona || state.activeGroupConversation ? "has-persona" : "no-persona"}`;
   const children = [renderSidebar(), renderMain()];
@@ -716,6 +724,18 @@ function renderShell() {
   if (state.integrationOpen) children.push(renderSelfUseIntegrationModal());
   if (!selfUseMode() && state.groupCreateOpen) children.push(renderGroupCreateModal());
   app.replaceChildren(...children);
+  if (previousChatScrollTop !== null) {
+    const restoreChatScroll = () => {
+      const chatLog = document.getElementById("chat-log");
+      if (!chatLog) return;
+      const maxScrollTop = Math.max(0, chatLog.scrollHeight - chatLog.clientHeight);
+      chatLog.scrollTop = Math.min(previousChatScrollTop, maxScrollTop);
+    };
+    // Restore synchronously for click-driven redraws, then once more after
+    // layout settles.  The second pass protects against font/image reflow.
+    restoreChatScroll();
+    requestAnimationFrame(restoreChatScroll);
+  }
   if (restoreSearchFocus) {
     requestAnimationFrame(() => {
       const input = document.querySelector(".conversation-search");
@@ -2710,24 +2730,34 @@ function personaVisualUrl(persona) {
 
 function renderCompanionVisual(persona, embodiment) {
   const imageUrl = embodiment.visualUrl;
+  const capturedWindow = state.easyVtuberCaptureActive && easyVtuberCaptureStream;
   const currentModel = live2dCurrentModelBinding();
   const live2dLabel = embodiment.live2dModelId
       ? `Bound ${embodiment.live2dModelId}`
       : currentModel.label
         ? `VTS ${currentModel.label}`
       : "EasyVtuber 在外部窗口运行";
-  return h("button", {
-    type: "button",
-    class: `companion-visual ${embodiment.visualTone}`,
-    title: "编辑形象",
-    "aria-label": "编辑形象",
-    onclick: (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      openPersonaEditor();
-    },
-  }, [
-    imageUrl
+  const attrs = capturedWindow
+    ? {
+      class: "companion-visual live-capture",
+      title: "已绑定 EasyVtuber 实时窗口",
+      "aria-label": "已绑定 EasyVtuber 实时窗口",
+    }
+    : {
+      type: "button",
+      class: `companion-visual ${embodiment.visualTone}`,
+      title: "编辑形象",
+      "aria-label": "编辑形象",
+      onclick: (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openPersonaEditor();
+      },
+    };
+  const visual = h(capturedWindow ? "div" : "button", attrs, [
+    capturedWindow
+      ? h("video", { autoplay: true, muted: true, playsinline: true })
+      : imageUrl
       ? h("img", {
           src: imageUrl,
           alt: persona?.name || "LING companion",
@@ -2739,9 +2769,22 @@ function renderCompanionVisual(persona, embodiment) {
           h("strong", { text: "Live2D" }),
           h("small", { text: "Bind body" }),
         ]),
-    h("span", { class: `companion-visual-source ${embodiment.visualTone}`, text: embodiment.visualLabel }),
+    h("span", {
+      class: `companion-visual-source ${capturedWindow ? "preview" : embodiment.visualTone}`,
+      text: capturedWindow ? "EasyVtuber 实时画面" : embodiment.visualLabel,
+    }),
     h("span", { class: "companion-visual-model", text: live2dLabel }),
   ]);
+  if (capturedWindow) {
+    const video = visual.querySelector("video");
+    if (video) {
+      video.srcObject = easyVtuberCaptureStream;
+      video.muted = true;
+      video.playsInline = true;
+      video.play().catch(() => {});
+    }
+  }
+  return visual;
 }
 
 function renderCompanionStage(persona) {
@@ -2810,6 +2853,17 @@ function renderCompanionStageActions({ live2dEnabled, live2dConnected }) {
       disabled: state.easyVtuberOpening,
       onclick: openEasyVtuber,
     }),
+    h("button", {
+      type: "button",
+      class: state.easyVtuberCaptureActive ? "ghost compact" : "compact",
+      text: state.easyVtuberCaptureRequesting
+        ? "正在请求窗口..."
+        : state.easyVtuberCaptureActive
+          ? "取消窗口绑定"
+          : "绑定 EasyVtuber 窗口",
+      disabled: state.easyVtuberCaptureRequesting,
+      onclick: state.easyVtuberCaptureActive ? stopEasyVtuberWindowCapture : bindEasyVtuberWindow,
+    }),
     h("button", { type: "button", class: "ghost compact", text: "编辑形象", onclick: openPersonaEditor }),
     live2dEnabled
       ? live2dConnected
@@ -2871,6 +2925,66 @@ async function openEasyVtuber() {
     state.easyVtuberFeedback = err.message || "打开失败";
   } finally {
     state.easyVtuberOpening = false;
+    renderShell();
+  }
+}
+
+function stopEasyVtuberWindowCapture() {
+  if (easyVtuberCaptureStream) {
+    easyVtuberCaptureStream.getTracks().forEach((track) => track.stop());
+  }
+  easyVtuberCaptureStream = null;
+  state.easyVtuberCaptureActive = false;
+  state.easyVtuberFeedback = "已取消 EasyVtuber 窗口绑定";
+  renderShell();
+}
+
+async function bindEasyVtuberWindow() {
+  if (state.easyVtuberCaptureRequesting) return;
+  if (!navigator.mediaDevices?.getDisplayMedia) {
+    state.easyVtuberFeedback = "当前浏览器不支持窗口捕获；请使用 Chrome 或 Edge。";
+    renderShell();
+    return;
+  }
+  state.easyVtuberCaptureRequesting = true;
+  state.easyVtuberFeedback = "请选择 EasyVtuber 的 Debug Output 窗口";
+  renderShell();
+  try {
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: {
+        displaySurface: "window",
+        cursor: "never",
+        frameRate: 30,
+      },
+      audio: false,
+      preferCurrentTab: false,
+      selfBrowserSurface: "exclude",
+    });
+    const track = stream.getVideoTracks()[0];
+    if (!track) {
+      stream.getTracks().forEach((item) => item.stop());
+      throw new Error("没有获取到窗口画面");
+    }
+    if (easyVtuberCaptureStream) {
+      easyVtuberCaptureStream.getTracks().forEach((item) => item.stop());
+    }
+    easyVtuberCaptureStream = stream;
+    state.easyVtuberCaptureActive = true;
+    state.easyVtuberFeedback = "EasyVtuber 画面已绑定到 LING";
+    track.addEventListener("ended", () => {
+      if (easyVtuberCaptureStream !== stream) return;
+      easyVtuberCaptureStream = null;
+      state.easyVtuberCaptureActive = false;
+      state.easyVtuberFeedback = "EasyVtuber 窗口共享已结束";
+      renderShell();
+    }, { once: true });
+  } catch (err) {
+    const denied = err?.name === "NotAllowedError" || err?.name === "AbortError";
+    state.easyVtuberFeedback = denied
+      ? "未绑定窗口：请选择 EasyVtuber 的 Debug Output 窗口后确认。"
+      : (err?.message || "窗口绑定失败");
+  } finally {
+    state.easyVtuberCaptureRequesting = false;
     renderShell();
   }
 }
@@ -4657,6 +4771,10 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
             voiceQueue?.enqueue(remainingSpeechText);
           }
         }
+        const previousStreamingMessageId = streamingMessage.id;
+        if (sameVoiceMessageId(state.voicePlaying, previousStreamingMessageId)) {
+          state.voicePlaying = data.assistant_message_id;
+        }
         streamingMessage.id = data.assistant_message_id;
         streamingMessage.content = data.reply;
         streamingMessage.expressions = data.expressions || [];
@@ -5791,7 +5909,6 @@ function bindCompanionLifecycleRefresh() {
   document.addEventListener("visibilitychange", refreshWhenVisible);
   window.addEventListener("pageshow", refreshWhenVisible);
   window.addEventListener("online", refreshWhenVisible);
-  window.addEventListener("focus", refreshWhenVisible);
 }
 
 function stopCompanionStatusPolling() {
@@ -5805,19 +5922,13 @@ function stopCompanionStatusPolling() {
 async function pollCompanionStatus() {
   if (companionStatusPollBusy || !selfUseMode() || document.hidden) return;
   companionStatusPollBusy = true;
-  const before = companionStatusSignature();
   try {
     const loaded = await loadCompanionStatus({ preserveOnError: true });
     if (!loaded) return;
-    const changed = before !== companionStatusSignature();
-    const focusedTag = String(document.activeElement?.tagName || "").toLowerCase();
-    const editing = ["input", "textarea", "select"].includes(focusedTag)
-      || state.profileOpen
-      || state.personaPanelOpen
-      || state.integrationOpen
-      || state.privacyOpen;
-    if (changed && !editing) renderShell();
-    else refreshRuntimeIndicators();
+    // Status polling must never replace the chat tree: doing so loses a
+    // reader's position whenever the browser regains focus or a runtime label
+    // changes.  Explicit user actions still render their own panels.
+    refreshRuntimeIndicators();
   } finally {
     companionStatusPollBusy = false;
   }
@@ -6025,6 +6136,18 @@ function voicePlaybackIsCurrent(playback) {
   return !!playback && activeVoicePlayback === playback && !playback.interrupted;
 }
 
+function sameVoiceMessageId(left, right) {
+  return left !== null && left !== undefined
+    && right !== null && right !== undefined
+    && String(left) === String(right);
+}
+
+function localHttpVoiceStreamingEnabled() {
+  const provider = String(state.voiceConfig?.tts_provider || state.voiceConfig?.provider || "").trim().toLowerCase();
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  return provider === "local_http" && !!AudioContextClass && typeof ReadableStream !== "undefined";
+}
+
 function live2dLipSyncReady() {
   const status = state.live2dStatus || {};
   if (!live2dConnected() || status.lip_sync_enabled === false) return false;
@@ -6138,6 +6261,16 @@ function interruptVoicePlayback() {
       // The browser may reject seeking before media metadata is available.
     }
   }
+  if (playback.streamSources) {
+    for (const source of playback.streamSources) {
+      try { source.stop(); } catch {}
+    }
+    playback.streamSources.clear();
+  }
+  if (playback.streamContext) {
+    try { void playback.streamContext.close(); } catch {}
+    playback.streamContext = null;
+  }
   if (playback.finish) playback.finish();
   state.voicePlaying = null;
   state.voicePlaybackPhase = null;
@@ -6210,6 +6343,158 @@ async function fetchVoiceChunkAudio(chunkIndex, text, expressionLabels, playback
     clientMs: Math.max(0, Math.round(performance.now() - startedAt)),
     serverMs: Number.isFinite(serverMs) && serverMs >= 0 ? serverMs : null,
   };
+}
+
+function appendAudioBytes(left, right) {
+  const combined = new Uint8Array(left.length + right.length);
+  combined.set(left, 0);
+  combined.set(right, left.length);
+  return combined;
+}
+
+function parseStreamingWavHeader(bytes) {
+  if (bytes.length < 44) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const tag = (offset, length) => String.fromCharCode(...bytes.slice(offset, offset + length));
+  if (tag(0, 4) !== "RIFF" || tag(8, 4) !== "WAVE" || tag(36, 4) !== "data") {
+    throw new Error("local streaming TTS returned an invalid WAV header");
+  }
+  const channels = view.getUint16(22, true);
+  const sampleRate = view.getUint32(24, true);
+  const bitsPerSample = view.getUint16(34, true);
+  if (!channels || !sampleRate || bitsPerSample !== 16) {
+    throw new Error("local streaming TTS returned an unsupported WAV format");
+  }
+  return { channels, sampleRate, headerBytes: 44 };
+}
+
+async function playStreamingLocalVoice(message, text, expressionLabels, playback, buttonEl) {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) throw new Error("browser does not support streaming audio playback");
+
+  const isolated = tabSessionMode();
+  const token = tabSessionToken();
+  const headers = { "Content-Type": "application/json" };
+  if (isolated && token) headers.Authorization = `Bearer ${token}`;
+
+  const requestStartedAt = performance.now();
+  const response = await fetch("/api/voice/tts-stream", {
+    method: "POST",
+    credentials: isolated ? "omit" : "same-origin",
+    headers,
+    body: JSON.stringify({
+      reply_text: text,
+      expression_labels: expressionLabels,
+      persona_id: state.activePersona?.id || null,
+    }),
+    signal: playback.controller.signal,
+  });
+  if (!voicePlaybackIsCurrent(playback)) return false;
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || "local streaming TTS failed");
+  }
+  if (!response.body) throw new Error("browser did not expose the streaming audio body");
+
+  const context = new AudioContextClass();
+  playback.streamContext = context;
+  playback.streamSources = new Set();
+  let pendingBytes = new Uint8Array();
+  let wav = null;
+  let nextStartAt = 0;
+  let firstAudioScheduled = false;
+  let endTimer = null;
+
+  const stopScheduledAudio = () => {
+    for (const source of playback.streamSources) {
+      try { source.stop(); } catch {}
+    }
+    playback.streamSources.clear();
+  };
+
+  const waitForScheduledAudio = () => new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (endTimer !== null) window.clearTimeout(endTimer);
+      playback.finish = null;
+      resolve();
+    };
+    playback.finish = finish;
+    const waitMs = Math.max(0, Math.ceil((nextStartAt - context.currentTime) * 1000) + 40);
+    endTimer = window.setTimeout(finish, waitMs);
+  });
+
+  const schedulePcm = (pcmBytes) => {
+    if (!wav || !pcmBytes.length) return;
+    const bytesPerFrame = wav.channels * 2;
+    const usableLength = pcmBytes.length - (pcmBytes.length % bytesPerFrame);
+    if (!usableLength) return;
+    const frames = usableLength / bytesPerFrame;
+    const buffer = context.createBuffer(wav.channels, frames, wav.sampleRate);
+    const view = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, usableLength);
+    for (let channel = 0; channel < wav.channels; channel += 1) {
+      const output = buffer.getChannelData(channel);
+      for (let frame = 0; frame < frames; frame += 1) {
+        output[frame] = view.getInt16((frame * wav.channels + channel) * 2, true) / 32768;
+      }
+    }
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(context.destination);
+    source.onended = () => playback.streamSources.delete(source);
+    const startAt = Math.max(context.currentTime + 0.06, nextStartAt || 0);
+    source.start(startAt);
+    nextStartAt = startAt + buffer.duration;
+    playback.streamSources.add(source);
+    if (!firstAudioScheduled) {
+      firstAudioScheduled = true;
+      message.performance = {
+        ...(message.performance && typeof message.performance === "object" ? message.performance : {}),
+        tts_client_ms: Math.max(0, Math.round(performance.now() - requestStartedAt)),
+        tts_stream_first_audio_ms: Math.max(0, Math.round(performance.now() - requestStartedAt)),
+      };
+      state.voicePlaybackPhase = "playing";
+      renderShell();
+      if (buttonEl) buttonEl.textContent = "播放中...";
+      refreshRuntimeIndicators();
+      void applyLive2dRuntimeState("speaking");
+    }
+  };
+
+  try {
+    if (context.state === "suspended") await context.resume();
+    const reader = response.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!voicePlaybackIsCurrent(playback)) return false;
+      if (value?.length) pendingBytes = appendAudioBytes(pendingBytes, value);
+      if (!wav) {
+        wav = parseStreamingWavHeader(pendingBytes);
+        if (!wav) continue;
+        pendingBytes = pendingBytes.slice(wav.headerBytes);
+      }
+      const bytesPerFrame = wav.channels * 2;
+      const usableLength = pendingBytes.length - (pendingBytes.length % bytesPerFrame);
+      if (usableLength) {
+        schedulePcm(pendingBytes.slice(0, usableLength));
+        pendingBytes = pendingBytes.slice(usableLength);
+      }
+    }
+    if (!voicePlaybackIsCurrent(playback)) return false;
+    if (!firstAudioScheduled) throw new Error("local streaming TTS returned no audio frames");
+    await waitForScheduledAudio();
+    return !playback.interrupted;
+  } finally {
+    if (endTimer !== null) window.clearTimeout(endTimer);
+    stopScheduledAudio();
+    playback.finish = null;
+    playback.streamSources = null;
+    playback.streamContext = null;
+    try { await context.close(); } catch {}
+  }
 }
 
 async function playVoiceAudioBlob(blob, playback, onStarted = null) {
@@ -6304,7 +6589,7 @@ async function playMessageVoice(message, buttonEl) {
   state.voicePlan = null;
   state.voicePlanMessageId = null;
   try {
-    await loadVoiceSpeechPlan(text, expressionLabels, messageId, playback);
+    const speechPlan = await loadVoiceSpeechPlan(text, expressionLabels, messageId, playback);
     if (!voicePlaybackIsCurrent(playback)) return;
     await applyLive2dRuntimeState("thinking");
     if (!voicePlaybackIsCurrent(playback)) return;
@@ -6312,6 +6597,31 @@ async function playMessageVoice(message, buttonEl) {
     if (buttonEl) {
       buttonEl.textContent = "准备中...";
       buttonEl.disabled = true;
+    }
+
+    if (localHttpVoiceStreamingEnabled()) {
+      voicePlaybackCompleted = await playStreamingLocalVoice(
+        message,
+        text,
+        expressionLabels,
+        playback,
+        buttonEl,
+      );
+      return;
+    }
+
+    // Local GPT-SoVITS returns complete MP3 files. For a multi-sentence reply,
+    // request the next utterance while the current one is playing instead of
+    // waiting for one long synthesis job to finish.
+    if (incrementalLocalVoiceEnabled(speechPlan)) {
+      voicePlaybackCompleted = await playIncrementalLocalVoice(
+        message,
+        text,
+        expressionLabels,
+        playback,
+        buttonEl,
+      );
+      return;
     }
 
     const isolated = tabSessionMode();
@@ -6409,7 +6719,7 @@ async function playMessageVoice(message, buttonEl) {
     }
   } finally {
     if (activeVoicePlayback === playback) activeVoicePlayback = null;
-    if (Number(state.voicePlaying) === Number(messageId)) {
+    if (sameVoiceMessageId(state.voicePlaying, messageId)) {
       state.voicePlaying = null;
       state.voicePlaybackPhase = null;
     }
@@ -6438,8 +6748,8 @@ async function playMessageVoice(message, buttonEl) {
 function renderVoiceButton(message) {
   if (!voiceAvailable()) return null;
 
-  var isPlaying = Number(state.voicePlaying) === Number(message.id);
-  var hasError = !isPlaying && Number(state.voiceErrorMessageId) === Number(message.id) && !!state.voiceError;
+  var isPlaying = sameVoiceMessageId(state.voicePlaying, message.id);
+  var hasError = !isPlaying && sameVoiceMessageId(state.voiceErrorMessageId, message.id) && !!state.voiceError;
   var label = isPlaying ? "播放中..." : "播放语音";
 
   var btn = h("button", {
@@ -6836,6 +7146,10 @@ function resetClientState() {
   stopCompanionStatusPolling();
   interruptVoicePlayback();
   clearLive2dExpressionReset();
+  if (easyVtuberCaptureStream) {
+    easyVtuberCaptureStream.getTracks().forEach((track) => track.stop());
+    easyVtuberCaptureStream = null;
+  }
   state = {
     user: null,
     profile: null,
@@ -6900,6 +7214,8 @@ function resetClientState() {
     integrationConfigSaving: "",
     integrationConfigFeedback: {},
     easyVtuberOpening: false,
+    easyVtuberCaptureRequesting: false,
+    easyVtuberCaptureActive: false,
     easyVtuberFeedback: "",
     privacyPolicy: null,
     cameraPreviewActive: false,

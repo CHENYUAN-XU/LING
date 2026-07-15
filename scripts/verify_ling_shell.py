@@ -18,6 +18,7 @@ def main() -> None:
     sw_js = read("web/sw.js")
     icon_svg = read("web/icon.svg")
     server_py = read("app/server.py")
+    tts_service_py = read("app/tts_service.py")
     start_script = read("scripts/start_integrated_video_companion.ps1")
     roadmap = read("docs/LING_ROADMAP.md")
 
@@ -46,7 +47,10 @@ def main() -> None:
     assert 'document.addEventListener("visibilitychange", refreshWhenVisible);' in app_js
     assert 'window.addEventListener("pageshow", refreshWhenVisible);' in app_js
     assert 'window.addEventListener("online", refreshWhenVisible);' in app_js
-    assert 'window.addEventListener("focus", refreshWhenVisible);' in app_js
+    assert 'window.addEventListener("focus", refreshWhenVisible);' not in app_js
+    assert 'const previousChatScrollTop = previousChatLog ? previousChatLog.scrollTop : null;' in app_js
+    assert 'chatLog.scrollTop = Math.min(previousChatScrollTop, maxScrollTop);' in app_js
+    assert 'if (changed && !editing) renderShell();' not in app_js
     assert "live2d.capabilities_stale" in app_js
     assert "video.recent_summary?.id" in app_js
     assert 'loadCompanionStatus({ preserveOnError: true })' in app_js
@@ -166,6 +170,16 @@ def main() -> None:
     assert "function incrementalLocalVoiceEnabled(plan)" in app_js
     assert "function playIncrementalLocalVoice" in app_js
     assert 'fetch(`/api/voice/tts-chunk/${chunkIndex}`' in app_js
+    assert "function localHttpVoiceStreamingEnabled()" in app_js
+    assert "async function playStreamingLocalVoice" in app_js
+    assert 'fetch("/api/voice/tts-stream"' in app_js
+    assert "function sameVoiceMessageId" in app_js
+    assert "async function bindEasyVtuberWindow" in app_js
+    assert "navigator.mediaDevices?.getDisplayMedia" in app_js
+    assert "绑定 EasyVtuber 窗口" in app_js
+    assert '@app.post("/api/voice/tts-stream")' in server_py
+    assert "stream_local_http_tts_wav" in server_py
+    assert "def stream_local_http_tts_wav" in tts_service_py
     assert "function probeSelfUseLlm" in app_js
     assert "llm_unverified" in app_js
     assert "澪的状态档案" in app_js

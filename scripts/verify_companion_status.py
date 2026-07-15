@@ -133,7 +133,7 @@ def main() -> None:
             assert all(readiness[key]["required"] for key in ("api", "live2d", "voice", "lip_sync"))
             assert status["embodiment"]["live2d_bound"] is False
             assert status["embodiment"]["voice_bound"] is False
-            assert status["embodiment"]["visual_label"] == "Live2D pending"
+            assert status["embodiment"]["visual_label"] == "临时形象待绑定"
             assert status["embodiment"]["visual_tone"] == "missing"
 
             with database.get_db() as db:
@@ -161,13 +161,13 @@ def main() -> None:
             assert asset_status["embodiment"]["live2d_model_id"] == "mio-main"
             assert asset_status["embodiment"]["visual_url"] == "/uploads/mio-preview.webp"
             assert asset_status["embodiment"]["visual_source"] == "live2d_preview_url"
-            assert asset_status["embodiment"]["visual_label"] == "Live2D preview"
+            assert asset_status["embodiment"]["visual_label"] == "临时静态形象"
             assert asset_status["embodiment"]["visual_tone"] == "preview"
             assert asset_status["embodiment"]["visual_ready"] is True
             assert asset_status["embodiment"]["voice_profile"] == "mio-soft-v1"
             asset_readiness = {item["key"]: item for item in asset_status["readiness"]}
             assert asset_readiness["visual"]["ready"] is True
-            assert asset_readiness["visual"]["text"] == "Live2D preview"
+            assert asset_readiness["visual"]["text"] == "临时静态形象"
             assert asset_readiness["live2d"]["ready"] is False
             assert "适配器未启用" in asset_readiness["live2d"]["text"]
             assert asset_readiness["voice"]["ready"] is False
