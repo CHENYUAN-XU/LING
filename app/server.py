@@ -47,6 +47,7 @@ from .tts_service import (
     generate_tts_reply_audio,
     generate_tts_single_chunk,
     get_last_tts_error,
+    stream_local_http_tts_wav,
     tts_health_check,
 )
 from .speech_planner import build_tts_request_params, split_reply_into_utterances
@@ -1938,6 +1939,40 @@ def voice_tts_reply(req: VoiceTTSReplyRequest, user: dict = Depends(current_user
         content=result["audio"],
         media_type="audio/mpeg",
         headers={"X-LING-TTS-Generation-Ms": str(elapsed_ms(started))},
+    )
+
+
+@app.post("/api/voice/tts-stream")
+def voice_tts_stream(req: VoiceTTSReplyRequest, user: dict = Depends(current_user)):
+    """Return local GPT-SoVITS PCM WAV chunks without waiting for a complete MP3."""
+    reply_text = _non_empty_voice_text(req.reply_text)
+    if not voice_enabled():
+        raise HTTPException(status_code=400, detail="语音功能已在配置中关闭。")
+    voice_config = load_voice_config()
+    provider = str(voice_config.get("tts_provider") or "").strip().lower()
+    if provider != "local_http":
+        raise HTTPException(status_code=400, detail="实时语音流仅支持本机 local_http 语音服务。")
+
+    request_id = uuid.uuid4().hex
+    voice_profile = _voice_profile_for_request(user, req.persona_id)
+    try:
+        chunks = stream_local_http_tts_wav(
+            reply_text,
+            voice_id=voice_profile,
+            request_id=request_id,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail=f"本机流式语音启动失败：{exc}") from exc
+
+    return StreamingResponse(
+        chunks,
+        media_type="audio/wav",
+        headers={
+            "X-LING-TTS-Stream": "pcm-wav",
+            "X-Request-ID": request_id,
+            "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

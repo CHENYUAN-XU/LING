@@ -6,6 +6,7 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Iterator
 from typing import Any
 
 from .voice import load_voice_config, voice_enabled
@@ -124,6 +125,84 @@ def _local_tts_request(payload: dict[str, Any], base_url: str, timeout: float = 
     with urllib.request.urlopen(req, timeout=timeout) as response:
         content_type = response.headers.get("Content-Type", "")
         return response.read(), content_type
+
+
+def _cancel_local_tts_request(base_url: str, request_id: str) -> None:
+    request = urllib.request.Request(f"{base_url}/api/tts/{urllib.parse.quote(request_id)}", method="DELETE")
+    try:
+        with urllib.request.urlopen(request, timeout=3):
+            pass
+    except Exception:
+        # The stream may already have completed and released the one local GPU job.
+        pass
+
+
+def stream_local_http_tts_wav(
+    text: str,
+    *,
+    voice_id: str | None = None,
+    request_id: str,
+) -> Iterator[bytes]:
+    """Proxy the local GPT-SoVITS PCM WAV stream without buffering it into a file."""
+    cleaned = _clean_tts_text(text)
+    if not cleaned:
+        raise ValueError("voice text is empty")
+    config = load_voice_config()
+    provider = str(config.get("tts_provider", "openai_tts") or "openai_tts").strip().lower()
+    if provider != "local_http":
+        raise ValueError("streaming voice requires the local_http provider")
+    base_url = _local_base_url(config)
+    selected_voice = str(voice_id or config.get("voice_id") or "mio").strip() or "mio"
+    payload = {
+        "voice_id": selected_voice,
+        "text": cleaned,
+        "format": "wav",
+        "speed": _bounded_float(config.get("rate"), 1.0, 0.6, 1.5),
+        "request_id": request_id,
+    }
+    timeout = _bounded_float(config.get("timeout_seconds"), 45.0, 1.0, 120.0)
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        f"{base_url}/api/tts-stream",
+        data=body,
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+    try:
+        response = urllib.request.urlopen(request, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        detail = _http_error_detail(exc)
+        _set_tts_error(f"local streaming TTS HTTP {exc.code}: {detail}")
+        raise RuntimeError(get_last_tts_error()) from exc
+    except urllib.error.URLError as exc:
+        _set_tts_error(f"local streaming TTS network error: {exc.reason}")
+        raise RuntimeError(get_last_tts_error()) from exc
+    except Exception as exc:
+        _set_tts_error(f"local streaming TTS error: {exc}")
+        raise RuntimeError(get_last_tts_error()) from exc
+
+    content_type = str(response.headers.get("Content-Type", "")).lower()
+    if "audio/wav" not in content_type:
+        response.close()
+        _set_tts_error(f"local streaming TTS returned unexpected content type: {content_type}")
+        raise RuntimeError(get_last_tts_error())
+
+    def chunks() -> Iterator[bytes]:
+        try:
+            while True:
+                chunk = response.read(16 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+            _set_tts_error(None)
+        except Exception as exc:
+            _set_tts_error(f"local streaming TTS read error: {exc}")
+            raise
+        finally:
+            response.close()
+            _cancel_local_tts_request(base_url, request_id)
+
+    return chunks()
 
 
 def _http_error_detail(error: urllib.error.HTTPError) -> str:
