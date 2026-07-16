@@ -19,7 +19,8 @@ $env:PYTHONIOENCODING = "utf-8"
 function Resolve-PythonExecutable {
     param(
         [string]$Requested,
-        [string]$SearchRoot
+        [string]$SearchRoot,
+        [string]$RequireModule = ""
     )
 
     $candidates = @()
@@ -39,7 +40,13 @@ function Resolve-PythonExecutable {
             $resolved = & $candidate -c "import sys; print(sys.executable)" 2>$null
             if ($LASTEXITCODE -eq 0 -and $resolved) {
                 $path = [string]($resolved | Select-Object -Last 1)
-                if (Test-Path -LiteralPath $path) { return (Resolve-Path -LiteralPath $path).Path }
+                if (Test-Path -LiteralPath $path) {
+                    if (-not [string]::IsNullOrWhiteSpace($RequireModule)) {
+                        & $path -c "import importlib.util, sys; raise SystemExit(0 if importlib.util.find_spec('$RequireModule') else 1)" 2>$null
+                        if ($LASTEXITCODE -ne 0) { continue }
+                    }
+                    return (Resolve-Path -LiteralPath $path).Path
+                }
             }
         } catch {
             continue
@@ -98,7 +105,7 @@ if ([string]::IsNullOrWhiteSpace($VideoPath) -or -not (Test-Path -LiteralPath $V
 
 $VideoRoot = (Resolve-Path -LiteralPath $VideoPath).Path
 $MainPythonExe = Resolve-PythonExecutable -Requested $MainPython -SearchRoot $ProjectRoot
-$VideoPythonExe = Resolve-PythonExecutable -Requested $VideoPython -SearchRoot $VideoRoot
+$VideoPythonExe = Resolve-PythonExecutable -Requested $VideoPython -SearchRoot $VideoRoot -RequireModule "fastapi"
 $BridgeEnabled = if ($NoBridge) { "false" } else { "true" }
 $BridgeApiKeyEnv = if ($env:LING_VIDEO_BRIDGE_API_KEY) {
     "LING_VIDEO_BRIDGE_API_KEY"
