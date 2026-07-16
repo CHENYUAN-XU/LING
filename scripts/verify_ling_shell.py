@@ -37,7 +37,7 @@ def main() -> None:
     assert 'selfUse ? Promise.resolve({ personas: [] }) : api("/api/personas/deleted")' in app_js
     assert 'selfUse ? Promise.resolve({ group_conversations: [] }) : api("/api/group-conversations?status=active")' in app_js
     assert 'selfUseMode() ? renderVideoCompanionCameraConsentRow() : renderAwarenessConsentRow("camera")' in app_js
-    assert 'text: "摄像头采集、预览和连续视觉理解都在外部 Video Companion 中运行。"' in app_js
+    assert 'text: "摄像头预览、主对话和 mio 播放都在 LING 页面；外部项目只作为后台帧分析服务，不再打开它自己的聊天页面。"' in app_js
     assert 'if (s.connecting) return "正在连接 VTube Studio";' in app_js
     assert 'api("/api/live2d/refresh", { method: "POST" })' in app_js
     assert 'text: "刷新 VTS 能力"' in app_js
@@ -130,6 +130,14 @@ def main() -> None:
     assert '"video_companion.base_url"' in app_js
     assert '"video_companion.ws_url"' in app_js
     assert '"video_companion.project_path"' in app_js
+    assert "function renderMainVideoCompanionSession()" in app_js
+    assert "function connectMainVideoCompanionSocket()" in app_js
+    assert "function startMainVideoFrameCapture()" in app_js
+    assert 'navigator.mediaDevices.getUserMedia' in app_js
+    assert 'text: "开启主界面视频"' in app_js
+    assert '"开启摄像头与麦克风"' in app_js
+    assert 'text: "打开视频页"' not in app_js
+    assert ".main-video-session" in read("web/style.css")
     assert 'setSelfUseIntegrationFlag("live2d", true)' in app_js
     assert 'setSelfUseIntegrationFlag("video_companion", true)' in app_js
     assert 'setSelfUseIntegrationFlag(key, !configEnabled)' in app_js
@@ -312,7 +320,8 @@ def main() -> None:
     assert "onclick: () => setSelfUseChatGate(false)" in app_js
     assert "onclick: () => setSelfUseChatGate(true)" in app_js
     assert "onclick: () => startVideoCompanion(statusEl)" in app_js
-    assert "onclick: openVideoCompanionPage" in app_js
+    assert "function renderMainVideoCompanionSession()" in app_js
+    assert "onclick: () => startVideoCompanion()" in app_js
     assert "async function openEasyVtuber()" in app_js
     assert 'api("/api/easyvtuber/open", { method: "POST" })' in app_js
     assert '@app.post("/api/easyvtuber/open")' in server_py
@@ -347,7 +356,7 @@ def main() -> None:
     assert "await syncCompanionRuntime({ applyLive2d: true });" in app_js
     assert "await syncCompanionRuntime({ reload: true, applyLive2d: true });" in app_js
     assert "await applyLive2dRuntimeState(runtimeToLive2dState(runtime));" in app_js
-    assert ".self-use-stage-panel {\n  display: grid;\n  grid-template-rows: minmax(0, 1fr);" in style_css
+    assert ".self-use-stage-panel {\n  display: block;\n  height: 100%;\n  overflow-y: scroll;" in style_css
     assert "@media (max-width: 620px)" in style_css
     assert "grid-template-rows: minmax(540px, 68vh) minmax(0, 1fr);" in style_css
     assert "chatInputBlocked()" in app_js
@@ -381,7 +390,8 @@ def main() -> None:
     assert ".self-use-integration-field-grid" in style_css
     assert ".self-use-integration-row" in style_css
     assert ".self-use-workspace" in style_css
-    assert "grid-template-columns: max(420px, calc(50vw - 92px)) minmax(0, 1fr);" in style_css
+    assert "grid-template-columns: max(420px, calc(50vw - 112px)) minmax(0, 1fr);" in style_css
+    assert 'text: "在场"' in app_js and 'text: "资料"' in app_js and 'text: "接入"' in app_js
     assert ".self-use-api-gate" in style_css
     assert ".self-use-api-dot" in style_css
     assert ".companion-runtime-badge" in style_css

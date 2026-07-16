@@ -114,6 +114,15 @@ let state = {
   easyVtuberFeedback: "",
   privacyPolicy: null,
   cameraPreviewActive: false,
+  videoCompanionUi: {
+    starting: false,
+    cameraActive: false,
+    microphoneActive: false,
+    socket: "idle",
+    statusText: "未在主界面开启视频会话",
+    latestObservation: "",
+    frameCount: 0,
+  },
 };
 
 let live2dActionQueue = Promise.resolve();
@@ -126,6 +135,9 @@ let companionStatusPollTimer = null;
 let companionStatusPollBusy = false;
 let companionLifecycleBound = false;
 let easyVtuberCaptureStream = null;
+let videoCompanionMediaStream = null;
+let videoCompanionSocket = null;
+let videoCompanionFrameTimer = null;
 
 function tabSessionMode() {
   try {
@@ -826,14 +838,14 @@ function renderSelfUseRail() {
       h("small", { text: persona?.name || "Mio" }),
     ]),
     h("nav", { class: "companion-rail-actions", "aria-label": "LING controls" }, [
-      h("button", { type: "button", class: "rail-action active", title: "在场", "aria-label": "在场", text: "在", onclick: () => renderShell() }),
-      h("button", { type: "button", class: "rail-action", title: "资料", "aria-label": "资料", text: "资", onclick: openPersonaPanel }),
+      h("button", { type: "button", class: "rail-action active", title: "在场", "aria-label": "在场", text: "在场", onclick: () => renderShell() }),
+      h("button", { type: "button", class: "rail-action", title: "资料", "aria-label": "资料", text: "资料", onclick: openPersonaPanel }),
       h("button", {
         type: "button",
         class: "rail-action",
         title: "接入",
         "aria-label": "接入",
-        text: "接",
+        text: "接入",
         onclick: () => {
           state.integrationOpen = true;
           renderShell();
@@ -844,7 +856,7 @@ function renderSelfUseRail() {
         class: "rail-action",
         title: "记录",
         "aria-label": "记录",
-        text: "记",
+        text: "记录",
         onclick: () => {
           state.threadPanelOpen = true;
           state.editingConversationId = null;
@@ -854,9 +866,9 @@ function renderSelfUseRail() {
       h("button", {
         type: "button",
         class: "rail-action",
-        title: "我",
-        "aria-label": "我",
-        text: "我",
+        title: "我的",
+        "aria-label": "我的",
+        text: "我的",
         onclick: () => {
           state.profileOpen = true;
           renderShell();
@@ -869,7 +881,7 @@ function renderSelfUseRail() {
           class: "rail-action rail-admin",
           title: text.adminConsole,
           "aria-label": text.adminConsole,
-          text: "管",
+          text: "管理",
           onclick: () => {
             window.location.href = "/admin";
           },
@@ -2432,7 +2444,7 @@ function renderSelfUseVideoSetupCard() {
         disabled: state.integrationFlagSaving === "video_companion",
         onclick: () => setSelfUseIntegrationFlag("video_companion", !status.enabled),
       }),
-      h("button", { type: "button", class: "ghost compact", text: "打开", onclick: openVideoCompanionPage }),
+      h("button", { type: "button", class: "ghost compact", text: "主界面测试", onclick: () => startVideoCompanion() }),
       h("button", { type: "button", class: "ghost compact", text: "刷新", onclick: async () => {
         await loadAwarenessStatus();
         await loadCompanionStatus();
@@ -2562,7 +2574,7 @@ function readinessActionFor(item) {
         onclick: () => setSelfUseIntegrationFlag("video_companion", true),
       };
     }
-    return { text: video.connected ? "打开" : "接入", onclick: video.connected ? openVideoCompanionPage : openSelfUseIntegration };
+    return { text: video.connected ? "主界面开启" : "接入", onclick: video.connected ? () => startVideoCompanion() : openSelfUseIntegration };
   }
   return { text: "处理", onclick: openSelfUseIntegration };
 }
@@ -2822,6 +2834,7 @@ function renderCompanionStage(persona) {
       ]),
     ]),
     renderCompanionStageActions({ live2dEnabled, live2dConnected: live2dReady }),
+    selfUseMode() ? renderMainVideoCompanionSession() : null,
   ]);
 }
 
@@ -2843,8 +2856,8 @@ function renderCompanionStageActions({ live2dEnabled, live2dConnected }) {
   });
   const apiState = selfUseApiReadiness();
   const video = state.videoCompanionStatus || {};
-  const videoActive = !!video.status?.session_active;
   const videoCanControl = !!video.enabled && !!video.connected;
+  const videoUi = state.videoCompanionUi;
   const actions = [
     h("button", {
       type: "button",
@@ -2904,10 +2917,10 @@ function renderCompanionStageActions({ live2dEnabled, live2dConnected }) {
         onclick: () => setSelfUseIntegrationFlag("video_companion", true),
       })
       : videoCanControl
-      ? videoActive
-        ? h("button", { type: "button", class: "ghost compact", text: "停止视频", onclick: () => stopVideoCompanion(statusEl) })
-        : h("button", { type: "button", class: "compact", text: "启动视频", onclick: () => startVideoCompanion(statusEl) })
-      : h("button", { type: "button", class: "ghost compact", text: "打开视频", onclick: openVideoCompanionPage }),
+      ? videoUi.cameraActive || videoUi.starting
+        ? h("button", { type: "button", class: "ghost compact", text: videoUi.starting ? "正在开启视频..." : "停止主界面视频", disabled: videoUi.starting, onclick: () => stopVideoCompanion(statusEl) })
+        : h("button", { type: "button", class: "compact", text: "开启主界面视频", onclick: () => startVideoCompanion(statusEl) })
+      : h("button", { type: "button", class: "ghost compact", text: "检查视频服务", onclick: () => loadAwarenessStatus().then(renderShell) }),
     statusEl,
   ].filter(Boolean);
   return h("div", { class: "companion-stage-actions self-use-stage-actions" }, actions);
@@ -5587,31 +5600,221 @@ async function runProactiveTick(statusEl) {
 
 async function startVideoCompanion(statusEl) {
   if (statusEl) statusEl.textContent = "";
+  const ui = state.videoCompanionUi;
+  if (ui.starting || ui.cameraActive) return;
+  ui.starting = true;
+  ui.statusText = "正在申请摄像头和麦克风权限...";
+  renderShell();
   try {
     const personaId = state.activePersona?.id || null;
     const data = await api("/api/video-companion/session/start", {
       method: "POST",
       body: JSON.stringify({ persona_id: personaId }),
     });
-    if (statusEl) statusEl.textContent = data.started ? "视频会话已启动" : "视频会话未启动";
+    if (!data.started) throw new Error("Video Companion 未能启动后台会话");
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error("当前浏览器不支持摄像头和麦克风；请使用 Chrome 或 Edge");
+    }
+    videoCompanionMediaStream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
+      audio: true,
+    });
+    ui.cameraActive = videoCompanionMediaStream.getVideoTracks().some((track) => track.readyState === "live");
+    ui.microphoneActive = videoCompanionMediaStream.getAudioTracks().some((track) => track.readyState === "live");
+    ui.statusText = "主界面已取得本机摄像头和麦克风；正在连接后台帧分析服务...";
     await loadAwarenessStatus();
-    await syncCompanionRuntime({ reload: true, applyLive2d: true });
-    renderShell();
+    connectMainVideoCompanionSocket();
+    attachMainVideoPreview();
+    if (statusEl) statusEl.textContent = "主界面视频已开启";
   } catch (err) {
-    if (statusEl) statusEl.textContent = err.message;
+    stopMainVideoMedia({ keepStatus: true });
+    ui.statusText = `视频未开启：${err.message || "权限或设备不可用"}`;
+    if (statusEl) statusEl.textContent = ui.statusText;
+  } finally {
+    ui.starting = false;
+    renderShell();
+    attachMainVideoPreview();
   }
+}
+
+function mainVideoSocketOpen() {
+  return videoCompanionSocket?.readyState === WebSocket.OPEN;
+}
+
+function connectMainVideoCompanionSocket() {
+  const ui = state.videoCompanionUi;
+  const wsUrl = state.videoCompanionStatus?.config?.ws_url || "ws://127.0.0.1:8782/ws";
+  if (mainVideoSocketOpen() || !wsUrl) return;
+  try {
+    videoCompanionSocket?.close();
+    ui.socket = "connecting";
+    videoCompanionSocket = new WebSocket(wsUrl);
+    videoCompanionSocket.addEventListener("open", () => {
+      ui.socket = "connected";
+      ui.statusText = "主界面视频正在运行；文字回复和 mio 语音继续由澪主对话处理。";
+      sendVideoCompanionMessage({ type: "consent_update", item: "camera", granted: true, reason: "ling_main_ui" });
+      sendVideoCompanionMessage({ type: "consent_update", item: "microphone", granted: true, reason: "ling_main_ui" });
+      sendVideoCompanionMessage({ type: "consent_update", item: "external_vision", granted: false, reason: "ling_main_ui" });
+      startMainVideoFrameCapture();
+      renderShell();
+      attachMainVideoPreview();
+    });
+    videoCompanionSocket.addEventListener("message", (event) => handleMainVideoCompanionMessage(event));
+    videoCompanionSocket.addEventListener("error", () => {
+      ui.socket = "error";
+      ui.statusText = "主界面预览已开启，但后台帧分析连接失败。";
+      renderShell();
+      attachMainVideoPreview();
+    });
+    videoCompanionSocket.addEventListener("close", () => {
+      if (!state.videoCompanionUi.cameraActive) return;
+      ui.socket = "disconnected";
+      stopMainVideoFrameCapture();
+      ui.statusText = "主界面预览仍在运行，但后台帧分析已断开。";
+      renderShell();
+      attachMainVideoPreview();
+    });
+  } catch (err) {
+    ui.socket = "error";
+    ui.statusText = `后台帧分析连接失败：${err.message || err}`;
+  }
+}
+
+function sendVideoCompanionMessage(payload) {
+  if (!mainVideoSocketOpen()) return false;
+  videoCompanionSocket.send(JSON.stringify(payload));
+  return true;
+}
+
+function handleMainVideoCompanionMessage(event) {
+  let message;
+  try {
+    message = JSON.parse(event.data);
+  } catch {
+    return;
+  }
+  const ui = state.videoCompanionUi;
+  if (message.type === "observation") {
+    const observation = message.data || message.observation || {};
+    const content = String(observation.content || observation.summary || observation.description || "已收到画面观察").replace(/\s+/g, " ").trim();
+    if (content && content !== ui.latestObservation) {
+      ui.latestObservation = content;
+      renderShell();
+      attachMainVideoPreview();
+    }
+    return;
+  }
+  if (message.type === "system_error" || message.type === "error") {
+    ui.statusText = `后台视频服务提示：${message.message || message.detail || "未知错误"}`;
+    renderShell();
+    attachMainVideoPreview();
+  }
+}
+
+function attachMainVideoPreview() {
+  const preview = document.getElementById("main-video-companion-preview");
+  if (!preview || !videoCompanionMediaStream) return;
+  if (preview.srcObject !== videoCompanionMediaStream) preview.srcObject = videoCompanionMediaStream;
+  preview.muted = true;
+  preview.playsInline = true;
+  preview.play().catch(() => {});
+}
+
+function startMainVideoFrameCapture() {
+  if (videoCompanionFrameTimer) return;
+  videoCompanionFrameTimer = setInterval(() => {
+    if (!state.videoCompanionUi.cameraActive || !mainVideoSocketOpen()) return;
+    const preview = document.getElementById("main-video-companion-preview");
+    if (!preview?.videoWidth || !preview?.videoHeight) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.min(preview.videoWidth, 640);
+    canvas.height = Math.round(canvas.width * preview.videoHeight / preview.videoWidth);
+    const context = canvas.getContext("2d");
+    context.drawImage(preview, 0, 0, canvas.width, canvas.height);
+    const data = canvas.toDataURL("image/jpeg", 0.7).split(",")[1];
+    if (sendVideoCompanionMessage({ type: "frame", data, width: canvas.width, height: canvas.height, format: "jpeg" })) {
+      state.videoCompanionUi.frameCount += 1;
+    }
+  }, 2000);
+}
+
+function stopMainVideoFrameCapture() {
+  if (!videoCompanionFrameTimer) return;
+  clearInterval(videoCompanionFrameTimer);
+  videoCompanionFrameTimer = null;
+}
+
+function stopMainVideoMedia({ keepStatus = false } = {}) {
+  stopMainVideoFrameCapture();
+  if (videoCompanionSocket) {
+    try { videoCompanionSocket.close(); } catch {}
+    videoCompanionSocket = null;
+  }
+  if (videoCompanionMediaStream) {
+    videoCompanionMediaStream.getTracks().forEach((track) => track.stop());
+    videoCompanionMediaStream = null;
+  }
+  const ui = state.videoCompanionUi;
+  ui.cameraActive = false;
+  ui.microphoneActive = false;
+  ui.socket = "idle";
+  ui.frameCount = 0;
+  if (!keepStatus) ui.statusText = "主界面视频会话已停止";
+}
+
+function renderMainVideoCompanionSession() {
+  const ui = state.videoCompanionUi;
+  const status = state.videoCompanionStatus || {};
+  const visionProvider = String(status.status?.vision_usage?.provider || status.status?.vision_provider || status.status?.providers?.vision || "").toLowerCase();
+  const asrProvider = String(status.status?.speech_stats?.asr_provider || status.status?.asr_provider || status.status?.providers?.asr || "").toLowerCase();
+  const analysisHint = visionProvider === "mock" || asrProvider === "mock"
+    ? "后台服务目前是 mock 模式：可测试授权、预览和帧链路，但不会把讲话识别成文字，也不会产生真实视觉理解。"
+    : "后台帧分析已接入；澪的文字对话和 mio 语音仍只在右侧主聊天中运行。";
+  const controls = [
+    ui.cameraActive
+      ? h("button", { type: "button", class: "ghost compact", text: "停止视频", onclick: () => stopVideoCompanion() })
+      : h("button", {
+        type: "button",
+        class: status.enabled && status.connected ? "compact" : "ghost compact",
+        text: ui.starting ? "正在开启..." : "开启摄像头与麦克风",
+        disabled: ui.starting,
+        title: status.enabled && status.connected ? "" : "后台服务当前未连接；点击会尝试启动会话并显示具体错误。",
+        onclick: () => startVideoCompanion(),
+      }),
+  ];
+  const children = [
+    h("div", { class: "main-video-session-head" }, [
+      h("strong", { text: "主界面视频会话" }),
+      h("small", { class: `awareness-status ${ui.cameraActive ? "ok" : "waiting"}`, text: ui.cameraActive ? "摄像头已在 LING 内开启" : "未开启" }),
+    ]),
+    ui.cameraActive ? h("video", { id: "main-video-companion-preview", autoplay: true, muted: true, playsinline: true }) : null,
+    h("div", { class: "main-video-session-meta" }, [
+      h("span", { text: `麦克风：${ui.microphoneActive ? "已授权（语音识别待配置）" : "未开启"}` }),
+      h("span", { text: `后台帧链路：${ui.socket === "connected" ? "已连接" : ui.socket === "connecting" ? "连接中" : "未连接"}` }),
+      ui.frameCount ? h("span", { text: `已发送 ${ui.frameCount} 帧` }) : null,
+    ]),
+    h("small", { class: "muted", text: ui.statusText }),
+    h("small", { class: "muted", text: analysisHint }),
+    ui.latestObservation ? h("small", { class: "muted", text: `最新画面：${ui.latestObservation}` }) : null,
+    h("div", { class: "awareness-actions" }, controls),
+  ].filter(Boolean);
+  const panel = h("section", { class: "main-video-session" }, children);
+  if (ui.cameraActive) requestAnimationFrame(attachMainVideoPreview);
+  return panel;
 }
 
 async function stopVideoCompanion(statusEl) {
   if (statusEl) statusEl.textContent = "";
+  stopMainVideoMedia();
   try {
     const data = await api("/api/video-companion/session/stop", { method: "POST" });
-    if (statusEl) statusEl.textContent = data.stopped ? "视频会话已停止" : "视频会话未停止";
+    if (statusEl) statusEl.textContent = data.stopped ? "主界面视频会话已停止" : "视频会话未停止";
     await loadAwarenessStatus();
     await syncCompanionRuntime({ reload: true, applyLive2d: true });
     renderShell();
   } catch (err) {
     if (statusEl) statusEl.textContent = err.message;
+    renderShell();
   }
 }
 
@@ -5641,7 +5844,6 @@ function renderVideoCompanionPanel() {
   const status = state.videoCompanionStatus || {};
   const config = status.config || {};
   const stateInfo = videoCompanionState();
-  const sessionActive = !!status.status?.session_active;
   const canControl = !!status.enabled && !!status.connected;
   const statusEl = h("small", { class: "save-status" });
 
@@ -5656,23 +5858,16 @@ function renderVideoCompanionPanel() {
         h("button", {
           type: "button",
           class: "ghost compact",
-          text: "打开视频页",
-          title: config.base_url || "http://127.0.0.1:8782",
-          onclick: openVideoCompanionPage,
-        }),
-        h("button", {
-          type: "button",
-          class: "ghost compact",
-          text: sessionActive ? "会话运行中" : "启动会话",
-          disabled: !canControl || sessionActive,
+          text: state.videoCompanionUi.cameraActive ? "主界面视频运行中" : "在主界面开启",
+          disabled: !canControl || state.videoCompanionUi.starting || state.videoCompanionUi.cameraActive,
           title: canControl ? "" : "需先启动 E:\\视觉\\video-companion 外部服务，并在 config.yaml 开启 video_companion.enabled",
           onclick: () => startVideoCompanion(statusEl),
         }),
         h("button", {
           type: "button",
           class: "ghost compact",
-          text: "停止会话",
-          disabled: !canControl || !sessionActive,
+          text: "停止主界面视频",
+          disabled: !canControl || !state.videoCompanionUi.cameraActive,
           title: canControl ? "" : "外部服务未连接",
           onclick: () => stopVideoCompanion(statusEl),
         }),
@@ -5681,7 +5876,7 @@ function renderVideoCompanionPanel() {
     ]),
     h("small", {
       class: "muted",
-      text: "实时摄像头、麦克风和视频理解由外部项目负责；主项目只做状态检查和会话入口。",
+      text: "摄像头预览、主对话和 mio 播放都在 LING 页面；外部项目只作为后台帧分析服务，不再打开它自己的聊天页面。",
     }),
   ]);
 }
@@ -5721,10 +5916,10 @@ function renderVideoCompanionCameraConsentRow() {
       h("label", { class: "awareness-toggle" }, [
         checkbox,
         h("span", {}, [
-          h("strong", { text: "Video Companion 摄像头授权" }),
+          h("strong", { text: "主界面视频会话授权" }),
           h("small", {
             class: `awareness-status ${checkbox.checked ? "ok" : "waiting"}`,
-            text: checkbox.checked ? "已允许外部视频会话读取授权" : "未授权",
+            text: checkbox.checked ? "已允许主界面发起视频会话" : "未授权",
           }),
         ]),
       ]),
@@ -5732,7 +5927,7 @@ function renderVideoCompanionCameraConsentRow() {
     ]),
     h("small", {
       class: "muted",
-      text: "摄像头采集、预览和连续视觉理解都在外部 Video Companion 中运行。",
+      text: "真正的摄像头和麦克风权限会由“开启主界面视频”按钮在此页面请求；该开关只记录本地授权偏好。",
     }),
   ]);
 }
@@ -7166,6 +7361,7 @@ function resetClientState() {
   stopCompanionStatusPolling();
   interruptVoicePlayback();
   clearLive2dExpressionReset();
+  stopMainVideoMedia();
   if (easyVtuberCaptureStream) {
     easyVtuberCaptureStream.getTracks().forEach((track) => track.stop());
     easyVtuberCaptureStream = null;
@@ -7239,6 +7435,15 @@ function resetClientState() {
     easyVtuberFeedback: "",
     privacyPolicy: null,
     cameraPreviewActive: false,
+    videoCompanionUi: {
+      starting: false,
+      cameraActive: false,
+      microphoneActive: false,
+      socket: "idle",
+      statusText: "未在主界面开启视频会话",
+      latestObservation: "",
+      frameCount: 0,
+    },
   };
 }
 
