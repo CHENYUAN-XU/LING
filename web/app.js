@@ -4734,8 +4734,10 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
         activeRequest.voiceQueue = voiceQueue;
         voiceQueue?.enqueue(firstSpeechText);
       }
-      renderShell();
-      scrollChat();
+      if (!updateStreamingMessageBubble(streamingMessage)) {
+        renderShell();
+      }
+      scrollChat({ force: false });
     }, { signal: activeRequest.controller.signal });
     if (!isCurrentRequest()) return;
     const stillViewingConversation = (
@@ -4771,10 +4773,10 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
             voiceQueue?.enqueue(remainingSpeechText);
           }
         }
-        const previousStreamingMessageId = streamingMessage.id;
-        if (sameVoiceMessageId(state.voicePlaying, previousStreamingMessageId)) {
-          state.voicePlaying = data.assistant_message_id;
-        }
+        // The first queued utterance owns the temporary streaming id until it
+        // finishes.  Rewriting state.voicePlaying to the persisted id here
+        // prevents that playback from clearing its own state, which in turn
+        // makes every queued later sentence return early as "already playing".
         streamingMessage.id = data.assistant_message_id;
         streamingMessage.content = data.reply;
         streamingMessage.expressions = data.expressions || [];
@@ -5239,7 +5241,12 @@ function renderMessage(message) {
             })
           );
         }
-        return h("div", { class: `bubble ${message.status || ""}` }, children);
+        return h("div", {
+          class: `bubble ${message.status || ""}`,
+          ...(message.status === "streaming" && message.local_id
+            ? { "data-streaming-message": message.local_id }
+            : {}),
+        }, children);
       }),
       h("div", { class: "message-meta" }, [
         h("small", { class: "message-time", text: formatMessageTime(message.created_at) }),
@@ -6589,8 +6596,7 @@ async function playMessageVoice(message, buttonEl) {
   state.voicePlan = null;
   state.voicePlanMessageId = null;
   try {
-    const speechPlan = await loadVoiceSpeechPlan(text, expressionLabels, messageId, playback);
-    if (!voicePlaybackIsCurrent(playback)) return;
+    const useLocalStreaming = localHttpVoiceStreamingEnabled();
     await applyLive2dRuntimeState("thinking");
     if (!voicePlaybackIsCurrent(playback)) return;
     renderShell();
@@ -6599,7 +6605,10 @@ async function playMessageVoice(message, buttonEl) {
       buttonEl.disabled = true;
     }
 
-    if (localHttpVoiceStreamingEnabled()) {
+    // The local WAV stream already begins synthesis at the service.  Asking for
+    // a separate speech plan first adds a whole HTTP round trip before the
+    // first spoken sentence, without changing streamed playback.
+    if (useLocalStreaming) {
       voicePlaybackCompleted = await playStreamingLocalVoice(
         message,
         text,
@@ -6609,6 +6618,9 @@ async function playMessageVoice(message, buttonEl) {
       );
       return;
     }
+
+    const speechPlan = await loadVoiceSpeechPlan(text, expressionLabels, messageId, playback);
+    if (!voicePlaybackIsCurrent(playback)) return;
 
     // Local GPT-SoVITS returns complete MP3 files. For a multi-sentence reply,
     // request the next utterance while the current one is playing instead of
@@ -6920,6 +6932,14 @@ function messageSegments(message) {
   return [content];
 }
 
+function updateStreamingMessageBubble(message) {
+  if (!message?.local_id || message.status !== "streaming") return false;
+  const bubble = document.querySelector(`[data-streaming-message="${message.local_id}"]`);
+  if (!bubble) return false;
+  bubble.textContent = String(message.content || "").trim();
+  return true;
+}
+
 function splitAssistantContent(content) {
   const text = String(content || "").replace(/\n{3,}/g, "\n\n").trim();
   if (text.length <= 72 && !text.includes("\n")) return [text];
@@ -7222,10 +7242,14 @@ function resetClientState() {
   };
 }
 
-function scrollChat() {
+function scrollChat({ force = true } = {}) {
+  const currentLog = document.getElementById("chat-log");
+  const nearBottom = !currentLog || (
+    currentLog.scrollHeight - currentLog.scrollTop - currentLog.clientHeight <= 96
+  );
   requestAnimationFrame(() => {
     const log = document.getElementById("chat-log");
-    if (log) log.scrollTop = log.scrollHeight;
+    if (log && (force || nearBottom)) log.scrollTop = log.scrollHeight;
   });
 }
 

@@ -215,55 +215,13 @@ def discovery_prompt(
 ) -> str:
     insight = ensure_user_insight(user_id)
     topic_model = insight.get("topic_model", {})
-    discovery_dimensions = insight.get("discovery_dimensions", {})
     curiosity_feedback = insight.get("curiosity_feedback", {})
-    known_topics = {
-        *topic_model.get("likes", []),
-        *topic_model.get("dislikes", []),
-        *topic_model.get("avoid_topics", []),
-    }
-    evidence_count = (
-        len(known_topics)
-        + len(insight.get("interaction_style", []))
-        + len(insight.get("emotional_patterns", []))
-    )
-    sparse_profile = evidence_count < 4
     lines = [
         "Conversation discovery policy:",
-        "- Stored likes and memories are context, not a recurring conversation theme. A known favorite is not a default conversational hook.",
-        "- Mention a remembered preference only when the user brings it up, it directly helps the current reply, or the current topic naturally reaches it.",
-        "- Never funnel unrelated topics through one remembered detail merely to show familiarity.",
-        "- Answer the user's current message first. Curiosity must feel like conversation, not an interview; normally ask no more than one exploratory question in a reply.",
-        "- A question may be direct or somewhat personal when natural in this AI conversation, but it must be non-coercive and easy to decline or skip. Do not push after hesitation or refusal.",
-        "- Do not infer broad identity, personality, or relationship needs from a single preference or anecdote.",
+        "- Answer the current message first. Treat stored memories as context, not a reason to force a familiar topic.",
+        "- Ask at most one optional, easy-to-skip question when it naturally helps the conversation; never turn a reply into an interview.",
+        "- Do not infer broad identity, personality, or relationship needs from one preference or anecdote.",
     ]
-    if sparse_profile:
-        lines.extend(
-            [
-                "- The user profile is currently sparse. Prefer gradually learning a different dimension over returning to an already known preference.",
-                "- When the moment welcomes a question, explore one new area such as daily rhythm, other interests, values, comfort style, annoyances, ambitions, or boundaries.",
-            ]
-        )
-    else:
-        lines.append("- The profile has multiple signals, but keep discovering naturally instead of treating existing interests as a closed script.")
-    covered_dimensions = [
-        DISCOVERY_DIMENSIONS[key]
-        for key in DISCOVERY_DIMENSIONS
-        if int((discovery_dimensions.get(key) or {}).get("observed_count") or 0) > 0
-    ]
-    lightly_known_dimensions = [
-        DISCOVERY_DIMENSIONS[key]
-        for key in DISCOVERY_DIMENSIONS
-        if int((discovery_dimensions.get(key) or {}).get("observed_count") or 0) == 0
-    ]
-    if covered_dimensions:
-        lines.append(f"- Explicit user signals have already touched these areas: {json.dumps(covered_dimensions, ensure_ascii=False)}.")
-    if lightly_known_dimensions:
-        lines.append(
-            f"- Areas not yet clearly learned: {json.dumps(lightly_known_dimensions, ensure_ascii=False)}. "
-            "If a curious question fits naturally, prefer one of these instead of re-mining covered ground."
-        )
-        lines.append("- Discovery coverage is guidance, not a checklist: do not force a question just to fill an area.")
     if curiosity_feedback.get("status") == "cautious":
         lines.append(
             "- The user has explicitly said they do not want exploratory or personal questions. "
@@ -286,11 +244,8 @@ def discovery_prompt(
         if topic in recent_text and topic not in current_text
     ))
     if recently_repeated:
-        lines.extend(
-            [
-                f"- Recent assistant replies already used these remembered topics without a new user cue: {json.dumps(recently_repeated, ensure_ascii=False)}.",
-                "- Do not bring these topics back in this reply unless answering the current message truly requires them. Move to the user's current concern or a new dimension instead.",
-            ]
+        lines.append(
+            f"- Do not revive these recently repeated topics without a new user cue: {json.dumps(recently_repeated, ensure_ascii=False)}."
         )
     return "\n".join(lines)
 
