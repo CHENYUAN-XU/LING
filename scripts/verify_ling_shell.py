@@ -19,6 +19,8 @@ def main() -> None:
     icon_svg = read("web/icon.svg")
     server_py = read("app/server.py")
     tts_service_py = read("app/tts_service.py")
+    layered_memory_py = read("app/layered_memory.py")
+    db_chat_py = read("app/db_chat.py")
     start_script = read("scripts/start_integrated_video_companion.ps1")
     roadmap = read("docs/LING_ROADMAP.md")
 
@@ -51,6 +53,20 @@ def main() -> None:
     assert 'const previousChatScrollTop = previousChatLog ? previousChatLog.scrollTop : null;' in app_js
     assert 'chatLog.scrollTop = Math.min(previousChatScrollTop, maxScrollTop);' in app_js
     assert 'if (changed && !editing) renderShell();' not in app_js
+    assert 'data-streaming-message' in app_js
+    assert 'if (!updateStreamingMessageBubble(streamingMessage)) {' in app_js
+    assert 'scrollChat({ force: false });' in app_js
+    assert 'const previousStreamingMessageId = streamingMessage.id;' not in app_js
+    assert 'prevents that playback from clearing its own state' in app_js
+    assert 'const useLocalStreaming = localHttpVoiceStreamingEnabled();' in app_js
+    assert app_js.index('if (useLocalStreaming) {') < app_js.index('const speechPlan = await loadVoiceSpeechPlan')
+    assert "def load_memory_state(user_id: int, persona_id: int | None = None)" in layered_memory_py
+    assert "state = load_memory_state(user_id, persona_id)" in layered_memory_py
+    assert "refresh_memory_summaries(user_id, persona_id)" not in layered_memory_py[layered_memory_py.index("def summary_prompt"):layered_memory_py.index("def _recall_table")]
+    assert "recall_memories(user_id, persona_id, message, limit=6)" in db_chat_py
+    assert "recall_layered_memory(user_id, persona_id, message, limit=8)" in db_chat_py
+    assert "Do not turn a normal request for detail into a numbered list" in db_chat_py
+    assert 'return (\n            "Profile usage: keep saved personal details in the background' in db_chat_py
     assert "live2d.capabilities_stale" in app_js
     assert "video.recent_summary?.id" in app_js
     assert 'loadCompanionStatus({ preserveOnError: true })' in app_js

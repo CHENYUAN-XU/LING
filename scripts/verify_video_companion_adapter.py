@@ -53,30 +53,46 @@ def verify_disabled_defaults(user_id: int) -> None:
     import app.video_companion as vc
 
     user = {"id": user_id}
-    assert vc.video_companion_enabled() is False
-    cfg = vc.public_video_companion_config()
-    assert cfg["enabled"] is False
-    assert cfg["base_url"] == "http://127.0.0.1:8782"
-    assert cfg["ws_url"] == "ws://127.0.0.1:8782/ws"
-    assert cfg["project_path"].endswith("video-companion")
-    assert "project_path_exists" in cfg
+    original_config = vc.load_config
+    override_keys = [key for key in os.environ if key.startswith(("LING_VIDEO_COMPANION_", "MNEMOSYNE_VIDEO_COMPANION_"))]
+    original_env = {key: os.environ.get(key) for key in override_keys}
+    try:
+        # This verifies product defaults, not the developer's real local setup.
+        # A locally enabled Video Companion must not make this regression test fail.
+        vc.load_config = lambda: {}
+        for key in override_keys:
+            os.environ.pop(key, None)
+        assert vc.video_companion_enabled() is False
+        cfg = vc.public_video_companion_config()
+        assert cfg["enabled"] is False
+        assert cfg["base_url"] == "http://127.0.0.1:8782"
+        assert cfg["ws_url"] == "ws://127.0.0.1:8782/ws"
+        assert cfg["project_path"].endswith("video-companion")
+        assert "project_path_exists" in cfg
 
-    server_cfg = server.video_companion_config(user)
-    assert server_cfg["video_companion"]["enabled"] is False
-    assert "project_path_exists" in server_cfg["video_companion"]
+        server_cfg = server.video_companion_config(user)
+        assert server_cfg["video_companion"]["enabled"] is False
+        assert "project_path_exists" in server_cfg["video_companion"]
 
-    status = server.video_companion_status(user)
-    assert status["enabled"] is False
-    assert status["connected"] is False
-    assert status["reason"] == "video_companion_disabled"
+        status = server.video_companion_status(user)
+        assert status["enabled"] is False
+        assert status["connected"] is False
+        assert status["reason"] == "video_companion_disabled"
 
-    start = server.video_companion_start(server.VideoCompanionSessionRequest(persona_id=123), user)
-    assert start["started"] is False
-    assert start["reason"] == "video_companion_disabled"
+        start = server.video_companion_start(server.VideoCompanionSessionRequest(persona_id=123), user)
+        assert start["started"] is False
+        assert start["reason"] == "video_companion_disabled"
 
-    stop = server.video_companion_stop(user)
-    assert stop["stopped"] is False
-    assert stop["reason"] == "video_companion_disabled"
+        stop = server.video_companion_stop(user)
+        assert stop["stopped"] is False
+        assert stop["reason"] == "video_companion_disabled"
+    finally:
+        vc.load_config = original_config
+        for key, value in original_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def verify_env_overrides() -> None:

@@ -82,6 +82,7 @@ def ling_response_pacing_prompt() -> str:
 - Default to one to three short, natural sentences. Lead with the direct answer.
 - Do not write an essay, recap, or a formal customer-service answer unless the user asks for detail.
 - If several sentences help, make each one carry a distinct thought and leave a natural place for the user to interrupt.
+- Do not turn a normal request for detail into a numbered list or a ten-point lecture. Use a few spoken, connected sentences; use a list only when the user explicitly asks for steps, a checklist, or an enumeration.
 - The UI renders one reply as one growing bubble; do not imitate typing or split a single thought into labelled parts."""
 
 
@@ -501,8 +502,11 @@ def db_chat(
         )
         if persona_changed:
             persona = get_persona_for_user(user_id, persona_id)
-    recalled_memories = _best_effort("MemoryRecall", lambda: recall_memories(user_id, persona_id, message, limit=12), [])
-    layered = _best_effort("LayeredMemory", lambda: recall_layered_memory(user_id, persona_id, message, limit=18), [])
+    # Keep the synchronous recall payload small.  The persisted summary/state
+    # carry broad continuity; recall here only needs enough material to answer
+    # the current message.  This protects first-token latency as memory grows.
+    recalled_memories = _best_effort("MemoryRecall", lambda: recall_memories(user_id, persona_id, message, limit=6), [])
+    layered = _best_effort("LayeredMemory", lambda: recall_layered_memory(user_id, persona_id, message, limit=8), [])
     semantic_memories = (
         _best_effort("SemanticMemory", lambda: semantic_memory_recall(user_id, persona_id, message, limit=8), [])
         if should_use_semantic_recall()
@@ -1591,6 +1595,11 @@ def _profile_usage_prompt(user_text: str, *, profile: dict | None = None, curren
         "今天是几号", "今天几号", "今天是525", "生日",
     )
     needs_lookup = any(cue in str(user_text or "") for cue in lookup_cues)
+    if not needs_lookup:
+        return (
+            "Profile usage: keep saved personal details in the background unless the user explicitly asks "
+            "about their profile, what you remember, or a date-related clue."
+        )
     lines = [
         "Saved user profile usage policy:",
         f"- current_local_date: {now.date().isoformat()}",
@@ -1599,11 +1608,8 @@ def _profile_usage_prompt(user_text: str, *, profile: dict | None = None, curren
         "- Do not volunteer a saved fact, occasion, preference, or personal detail merely to perform familiarity or intimacy.",
         "- When the current question asks what you know about the user, asks you to check their information, or offers a clue resolvable from profile fields and the date, use the relevant fact to answer directly and briefly.",
     ]
-    if needs_lookup:
-        lines.append("- This turn invites checking the saved user profile if it resolves the user's question. Use only the relevant fact and do not turn it into a recurring topic afterward.")
-        lines.append("- For a profile lookup request, answer only the requested saved fields or the one fact needed to resolve the clue. Do not add unrequested memories, interests, occasions, or intimacy performances.")
-    else:
-        lines.append("- This turn does not explicitly invite profile lookup. Keep saved profile facts in the background unless strictly required to answer.")
+    lines.append("- This turn invites checking the saved user profile if it resolves the user's question. Use only the relevant fact and do not turn it into a recurring topic afterward.")
+    lines.append("- For a profile lookup request, answer only the requested saved fields or the one fact needed to resolve the clue. Do not add unrequested memories, interests, occasions, or intimacy performances.")
     return "\n".join(lines)
 
 
