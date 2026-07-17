@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import hmac
 import os
+import queue
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -45,6 +47,7 @@ from .tts_service import (
     generate_tts_reply_audio,
     generate_tts_single_chunk,
     get_last_tts_error,
+    stream_local_http_tts_wav,
     tts_health_check,
 )
 from .speech_planner import build_tts_request_params, split_reply_into_utterances
@@ -95,6 +98,7 @@ from .video_companion import (
     start_video_companion_session,
     stop_video_companion_session,
 )
+from .easyvtuber import EasyVtuberError, easyvtuber_status, open_easyvtuber
 from .video_bridge import (
     build_video_session_context,
     build_video_turn_response,
@@ -215,6 +219,8 @@ except Exception as exc:
 app = FastAPI(title="LING")
 rate_limiter = InMemoryRateLimiter(enabled=rate_limit_enabled())
 request_logger = configure_request_logging()
+_chat_stream_cancellations: dict[str, tuple[int, threading.Event]] = {}
+_chat_stream_cancellations_lock = threading.Lock()
 
 
 @app.middleware("http")
@@ -413,6 +419,7 @@ class ChatRequest(BaseModel):
     conversation_id: int | None = None
     retry_user_message_id: int | None = None
     client_message_id: str | None = Field(default=None, max_length=80)
+    stream_id: str | None = Field(default=None, max_length=64)
 
 
 class ConversationUpdateRequest(BaseModel):
@@ -1916,6 +1923,7 @@ def voice_tts_reply(req: VoiceTTSReplyRequest, user: dict = Depends(current_user
         raise HTTPException(status_code=400, detail="LING 整段回复朗读当前只支持 MP3；请在 Voice 设置中选择 mp3")
 
     voice_profile = _voice_profile_for_request(user, req.persona_id)
+    started = time.perf_counter()
     result = generate_tts_reply_audio(reply_text, req.expression_labels, voice_id=voice_profile)
 
     if result["audio"] is None or not result["success"]:
@@ -1927,7 +1935,45 @@ def voice_tts_reply(req: VoiceTTSReplyRequest, user: dict = Depends(current_user
             detail=f"语音生成部分失败：{failed_count}/{len(result.get('chunks',[]))} 句未生成。原因：{error_hint}",
         )
 
-    return Response(content=result["audio"], media_type="audio/mpeg")
+    return Response(
+        content=result["audio"],
+        media_type="audio/mpeg",
+        headers={"X-LING-TTS-Generation-Ms": str(elapsed_ms(started))},
+    )
+
+
+@app.post("/api/voice/tts-stream")
+def voice_tts_stream(req: VoiceTTSReplyRequest, user: dict = Depends(current_user)):
+    """Return local GPT-SoVITS PCM WAV chunks without waiting for a complete MP3."""
+    reply_text = _non_empty_voice_text(req.reply_text)
+    if not voice_enabled():
+        raise HTTPException(status_code=400, detail="语音功能已在配置中关闭。")
+    voice_config = load_voice_config()
+    provider = str(voice_config.get("tts_provider") or "").strip().lower()
+    if provider != "local_http":
+        raise HTTPException(status_code=400, detail="实时语音流仅支持本机 local_http 语音服务。")
+
+    request_id = uuid.uuid4().hex
+    voice_profile = _voice_profile_for_request(user, req.persona_id)
+    try:
+        chunks = stream_local_http_tts_wav(
+            reply_text,
+            voice_id=voice_profile,
+            request_id=request_id,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail=f"本机流式语音启动失败：{exc}") from exc
+
+    return StreamingResponse(
+        chunks,
+        media_type="audio/wav",
+        headers={
+            "X-LING-TTS-Stream": "pcm-wav",
+            "X-Request-ID": request_id,
+            "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/voice/tts-chunk/{chunk_index}")
@@ -1937,6 +1983,7 @@ def voice_tts_chunk(chunk_index: int, req: VoiceTTSReplyRequest, user: dict = De
         raise HTTPException(status_code=400, detail="语音功能已在配置中关闭。")
 
     voice_profile = _voice_profile_for_request(user, req.persona_id)
+    started = time.perf_counter()
     audio, metadata = generate_tts_single_chunk(
         reply_text,
         chunk_index,
@@ -1955,7 +2002,11 @@ def voice_tts_chunk(chunk_index: int, req: VoiceTTSReplyRequest, user: dict = De
             },
         )
 
-    return Response(content=audio, media_type=_voice_media_type())
+    return Response(
+        content=audio,
+        media_type=_voice_media_type(),
+        headers={"X-LING-TTS-Generation-Ms": str(elapsed_ms(started))},
+    )
 
 
 @app.post("/api/voice/speech-plan")
@@ -2253,14 +2304,63 @@ class VideoCompanionSessionRequest(BaseModel):
     persona_id: int | str | None = None
 
 
+class VideoCompanionObservationRequest(BaseModel):
+    persona_id: int
+    description: str = Field(..., min_length=1, max_length=800)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 @app.get("/api/video-companion/config")
 def video_companion_config(user: dict = Depends(current_user)):
     return {"video_companion": public_video_companion_config()}
 
 
+@app.get("/api/easyvtuber/status")
+def easyvtuber_runtime_status(user: dict = Depends(current_user)):
+    if not _self_use_public(user).get("enabled"):
+        raise HTTPException(status_code=404, detail="EasyVtuber control is only available in LING self-use mode")
+    return {"easyvtuber": easyvtuber_status()}
+
+
+@app.post("/api/easyvtuber/open")
+def easyvtuber_open(request: Request, user: dict = Depends(current_user)):
+    _require_self_use_local_config_change(request, user)
+    try:
+        return open_easyvtuber()
+    except EasyVtuberError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @app.get("/api/video-companion/status")
 def video_companion_status(user: dict = Depends(current_user)):
     return _video_companion_status_for_user(int(user["id"]))
+
+
+@app.post("/api/video-companion/observation")
+def video_companion_observation(req: VideoCompanionObservationRequest, user: dict = Depends(current_user)):
+    """Store a browser-received frame observation for the active LING companion."""
+    persona_id = int(req.persona_id)
+    bound_id = _self_use_bound_persona_id(user) if _self_use_public(user).get("enabled") else None
+    if bound_id is not None and persona_id != bound_id:
+        raise HTTPException(status_code=404, detail="companion not found in LING self-use mode")
+    with get_db() as db:
+        owned = db.execute(
+            "SELECT 1 FROM personas WHERE id = ? AND user_id = ? AND status = 'active'",
+            (persona_id, int(user["id"])),
+        ).fetchone()
+    if not owned:
+        raise HTTPException(status_code=404, detail="active companion not found")
+    return save_video_observation(
+        {
+            "persona_id": persona_id,
+            "description": req.description,
+            "confidence": req.confidence,
+            "evidence_type": "video_observation",
+            "metadata": req.metadata,
+            "origin": "ling_main_ui",
+        }
+    )
 
 
 @app.post("/api/video-companion/session/start")
@@ -5053,6 +5153,99 @@ def chat(req: ChatRequest, background_tasks: BackgroundTasks, user: dict = Depen
         raise HTTPException(status_code=503, detail="服务暂时不可用，请稍后再试。") from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail="聊天服务暂时不可用，请稍后再试。") from exc
+
+
+@app.post("/api/chat/stream")
+def chat_stream(req: ChatRequest, background_tasks: BackgroundTasks, user: dict = Depends(current_user)):
+    """Stream text deltas for the local companion while keeping normal chat persistence."""
+    self_use = _self_use_public(user)
+    if self_use.get("enabled"):
+        _require_self_use_bound_persona(user, int(req.persona_id))
+        if not self_use.get("chat_enabled"):
+            raise HTTPException(status_code=403, detail="LING chat is not enabled yet. Set self_use.chat_enabled: true after API setup.")
+        gate = _companion_chat_gate(self_use, llm_runtime_status("chat"))
+        if not gate.get("ready"):
+            raise HTTPException(status_code=503, detail={
+                "error": "LING chat route is not verified",
+                "reason": gate.get("reason"),
+                "text": gate.get("text"),
+            })
+
+    stream_id = str(req.stream_id or uuid.uuid4().hex).strip()
+    if not stream_id or len(stream_id) > 64:
+        raise HTTPException(status_code=422, detail="invalid stream id")
+    cancel_event = threading.Event()
+    with _chat_stream_cancellations_lock:
+        if stream_id in _chat_stream_cancellations:
+            raise HTTPException(status_code=409, detail="chat stream id is already active")
+        _chat_stream_cancellations[stream_id] = (int(user["id"]), cancel_event)
+
+    events: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
+
+    def emit_delta(text: str) -> None:
+        if text:
+            events.put(("delta", {"text": text}))
+
+    def run_chat() -> None:
+        try:
+            result = db_chat(
+                user_id=int(user["id"]),
+                persona_id=int(req.persona_id),
+                conversation_id=req.conversation_id,
+                message=req.message,
+                retry_user_message_id=req.retry_user_message_id,
+                client_message_id=req.client_message_id,
+                defer_summary_refresh=True,
+                defer_turn_enrichment=True,
+                on_stream_delta=emit_delta,
+                should_cancel=cancel_event.is_set,
+            )
+            events.put(("cancelled" if result.get("interrupted") else "final", result))
+        except ValueError as exc:
+            events.put(("error", {"message": str(exc), "status_code": 404}))
+        except LLMProviderError as exc:
+            events.put(("error", {"message": exc.user_message, "status_code": 503}))
+        except RuntimeError:
+            events.put(("error", {"message": "LLM service is temporarily unavailable.", "status_code": 503}))
+        except Exception:
+            events.put(("error", {"message": "Chat service is temporarily unavailable.", "status_code": 500}))
+        finally:
+            with _chat_stream_cancellations_lock:
+                _chat_stream_cancellations.pop(stream_id, None)
+
+    def event_stream():
+        while True:
+            event_name, payload = events.get()
+            if event_name == "final" and payload.get("assistant_message_id") and (payload.get("conversation_summary") or {}).get("scheduled"):
+                background_tasks.add_task(
+                    refresh_conversation_summary,
+                    user_id=int(user["id"]),
+                    persona_id=int(req.persona_id),
+                    conversation_id=int(payload["conversation_id"]),
+                    latest_message_id=int(payload["assistant_message_id"]),
+                )
+            data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            yield f"event: {event_name}\ndata: {data}\n\n"
+            if event_name in {"final", "cancelled", "error"}:
+                break
+
+    threading.Thread(target=run_chat, name="ling-chat-stream", daemon=True).start()
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/api/chat/stream/{stream_id}/cancel")
+def cancel_chat_stream(stream_id: str, user: dict = Depends(current_user)):
+    """Best-effort cancellation for an interrupted local companion turn."""
+    with _chat_stream_cancellations_lock:
+        active = _chat_stream_cancellations.get(stream_id)
+        if not active or active[0] != int(user["id"]):
+            return {"cancelled": False}
+        active[1].set()
+    return {"cancelled": True}
 
 
 @app.get("/")

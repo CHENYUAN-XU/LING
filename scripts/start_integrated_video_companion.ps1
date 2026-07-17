@@ -19,7 +19,8 @@ $env:PYTHONIOENCODING = "utf-8"
 function Resolve-PythonExecutable {
     param(
         [string]$Requested,
-        [string]$SearchRoot
+        [string]$SearchRoot,
+        [string]$RequireModule = ""
     )
 
     $candidates = @()
@@ -39,7 +40,13 @@ function Resolve-PythonExecutable {
             $resolved = & $candidate -c "import sys; print(sys.executable)" 2>$null
             if ($LASTEXITCODE -eq 0 -and $resolved) {
                 $path = [string]($resolved | Select-Object -Last 1)
-                if (Test-Path -LiteralPath $path) { return (Resolve-Path -LiteralPath $path).Path }
+                if (Test-Path -LiteralPath $path) {
+                    if (-not [string]::IsNullOrWhiteSpace($RequireModule)) {
+                        & $path -c "import importlib.util, sys; raise SystemExit(0 if importlib.util.find_spec('$RequireModule') else 1)" 2>$null
+                        if ($LASTEXITCODE -ne 0) { continue }
+                    }
+                    return (Resolve-Path -LiteralPath $path).Path
+                }
             }
         } catch {
             continue
@@ -98,7 +105,7 @@ if ([string]::IsNullOrWhiteSpace($VideoPath) -or -not (Test-Path -LiteralPath $V
 
 $VideoRoot = (Resolve-Path -LiteralPath $VideoPath).Path
 $MainPythonExe = Resolve-PythonExecutable -Requested $MainPython -SearchRoot $ProjectRoot
-$VideoPythonExe = Resolve-PythonExecutable -Requested $VideoPython -SearchRoot $VideoRoot
+$VideoPythonExe = Resolve-PythonExecutable -Requested $VideoPython -SearchRoot $VideoRoot -RequireModule "fastapi"
 $BridgeEnabled = if ($NoBridge) { "false" } else { "true" }
 $BridgeApiKeyEnv = if ($env:LING_VIDEO_BRIDGE_API_KEY) {
     "LING_VIDEO_BRIDGE_API_KEY"
@@ -123,6 +130,30 @@ legacy_bridge:
   api_key_env: "$BridgeApiKeyEnv"
   timeout: 10
   retries: 2
+
+vision_provider:
+  # Kimi exposes an OpenAI-compatible vision API. Keep it disabled until the
+  # user explicitly opts in from LING's main video panel.
+  provider: "openai"
+  model: "moonshot-v1-8k-vision-preview"
+  api_key_env: "MOONSHOT_API_KEY"
+  api_base: "https://api.moonshot.cn/v1"
+  default_on: false
+  max_frames_per_minute: 3
+  max_cost_per_hour: 0.10
+  max_cost_per_day: 0.50
+  max_resolution: 640
+  fallback_on_limit: "skip"
+
+privacy:
+  defaults:
+    camera: false
+    microphone: false
+    external_vision: false
+    save_summary: false
+    save_observation: false
+  save_raw_media: false
+  log_redact_pii: true
 "@ | Set-Content -LiteralPath $VideoConfig -Encoding UTF8
 
 if ($DryRun) {

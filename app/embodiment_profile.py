@@ -10,10 +10,10 @@ def persona_embodiment_profile(persona: dict[str, Any] | None) -> dict[str, Any]
     avatar_url = str(item.get("avatar_url") or "").strip()
     visual_url = ""
     visual_source = "none"
-    visual_label = "Live2D pending"
+    visual_label = "临时形象待绑定"
     visual_tone = "missing"
     for source, value, label, tone in (
-        ("live2d_preview_url", live2d_preview_url, "Live2D preview", "preview"),
+        ("live2d_preview_url", live2d_preview_url, "临时静态形象", "preview"),
         ("fallback_image_url", fallback_image_url, "Fallback image", "fallback"),
         ("avatar_url", avatar_url, "Legacy avatar fallback", "legacy"),
     ):

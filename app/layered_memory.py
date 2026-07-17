@@ -450,7 +450,16 @@ def refresh_memory_state(
 
 
 def state_prompt(user_id: int, persona_id: int | None = None) -> str:
-    state = refresh_memory_state(user_id, persona_id)
+    """Build the chat-time state prompt without mutating the memory database.
+
+    ``refresh_memory_state`` is intentionally a heavier maintenance operation: it
+    scans the current memory rows, derives dynamic state, and writes several
+    rows.  Calling it on the critical path of every chat turn made first-token
+    latency depend on SQLite writes.  State is already refreshed by turn
+    enrichment and the scheduled memory maintenance paths, so a normal reply
+    should consume the latest persisted snapshot instead.
+    """
+    state = load_memory_state(user_id, persona_id)
     lines = ["Memory state variables:"]
     for key in ("preferred_address", "forbidden_addresses", "likes", "dislikes", "interaction_style", "relationship_state"):
         value = state.get(key)
@@ -487,6 +496,39 @@ def state_prompt(user_id: int, persona_id: int | None = None) -> str:
         lines.append("- no explicit state variables yet")
     lines.append("These variables are precise backend state. Follow them over vague memory text.")
     return "\n".join(lines)
+
+
+def load_memory_state(user_id: int, persona_id: int | None = None) -> dict[str, Any]:
+    """Read the newest persisted state values for a persona without refreshing them."""
+    with get_db() as db:
+        rows = db.execute(
+            """
+            SELECT key, value_json, updated_at, persona_id
+            FROM memory_state
+            WHERE user_id = ? AND (persona_id = ? OR persona_id IS NULL)
+            ORDER BY CASE WHEN persona_id = ? THEN 0 ELSE 1 END, updated_at DESC
+            """,
+            (user_id, persona_id, persona_id),
+        ).fetchall()
+
+    state: dict[str, Any] = {}
+    for row in rows:
+        key = str(row["key"] or "").strip()
+        if not key or key in state:
+            continue
+        try:
+            state[key] = json.loads(row["value_json"] or "null")
+        except (TypeError, json.JSONDecodeError):
+            continue
+
+    dynamic_state = {
+        key.removeprefix("dynamic."): value
+        for key, value in state.items()
+        if key.startswith("dynamic.") and isinstance(value, list)
+    }
+    if dynamic_state:
+        state["dynamic_state"] = dynamic_state
+    return state
 
 
 def apply_memory_decay(user_id: int, persona_id: int | None = None) -> dict:
@@ -538,7 +580,8 @@ def layered_memory_prompt(memory: dict[str, list[dict]]) -> str:
 
 
 def summary_prompt(user_id: int, persona_id: int | None = None) -> str:
-    refresh_memory_summaries(user_id, persona_id)
+    # Summary refresh includes decay and upserts.  It belongs to scheduled
+    # maintenance, never in the first-token path of an interactive reply.
     summaries = _current_rows("memory_summaries", user_id, persona_id, limit=8)
     if not summaries:
         return "Stable memory summary: no summaries yet."

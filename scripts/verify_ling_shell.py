@@ -18,6 +18,9 @@ def main() -> None:
     sw_js = read("web/sw.js")
     icon_svg = read("web/icon.svg")
     server_py = read("app/server.py")
+    tts_service_py = read("app/tts_service.py")
+    layered_memory_py = read("app/layered_memory.py")
+    db_chat_py = read("app/db_chat.py")
     start_script = read("scripts/start_integrated_video_companion.ps1")
     roadmap = read("docs/LING_ROADMAP.md")
 
@@ -34,7 +37,7 @@ def main() -> None:
     assert 'selfUse ? Promise.resolve({ personas: [] }) : api("/api/personas/deleted")' in app_js
     assert 'selfUse ? Promise.resolve({ group_conversations: [] }) : api("/api/group-conversations?status=active")' in app_js
     assert 'selfUseMode() ? renderVideoCompanionCameraConsentRow() : renderAwarenessConsentRow("camera")' in app_js
-    assert 'text: "摄像头采集、预览和连续视觉理解都在外部 Video Companion 中运行。"' in app_js
+    assert 'text: "摄像头预览、主对话和 mio 播放都在 LING 页面；外部项目只作为后台帧分析服务，不再打开它自己的聊天页面。"' in app_js
     assert 'if (s.connecting) return "正在连接 VTube Studio";' in app_js
     assert 'api("/api/live2d/refresh", { method: "POST" })' in app_js
     assert 'text: "刷新 VTS 能力"' in app_js
@@ -46,7 +49,24 @@ def main() -> None:
     assert 'document.addEventListener("visibilitychange", refreshWhenVisible);' in app_js
     assert 'window.addEventListener("pageshow", refreshWhenVisible);' in app_js
     assert 'window.addEventListener("online", refreshWhenVisible);' in app_js
-    assert 'window.addEventListener("focus", refreshWhenVisible);' in app_js
+    assert 'window.addEventListener("focus", refreshWhenVisible);' not in app_js
+    assert 'const previousChatScrollTop = previousChatLog ? previousChatLog.scrollTop : null;' in app_js
+    assert 'chatLog.scrollTop = Math.min(previousChatScrollTop, maxScrollTop);' in app_js
+    assert 'if (changed && !editing) renderShell();' not in app_js
+    assert 'data-streaming-message' in app_js
+    assert 'if (!updateStreamingMessageBubble(streamingMessage)) {' in app_js
+    assert 'scrollChat({ force: false });' in app_js
+    assert 'const previousStreamingMessageId = streamingMessage.id;' not in app_js
+    assert 'prevents that playback from clearing its own state' in app_js
+    assert 'const useLocalStreaming = localHttpVoiceStreamingEnabled();' in app_js
+    assert app_js.index('if (useLocalStreaming) {') < app_js.index('const speechPlan = await loadVoiceSpeechPlan')
+    assert "def load_memory_state(user_id: int, persona_id: int | None = None)" in layered_memory_py
+    assert "state = load_memory_state(user_id, persona_id)" in layered_memory_py
+    assert "refresh_memory_summaries(user_id, persona_id)" not in layered_memory_py[layered_memory_py.index("def summary_prompt"):layered_memory_py.index("def _recall_table")]
+    assert "recall_memories(user_id, persona_id, message, limit=6)" in db_chat_py
+    assert "recall_layered_memory(user_id, persona_id, message, limit=8)" in db_chat_py
+    assert "Do not turn a normal request for detail into a numbered list" in db_chat_py
+    assert 'return (\n            "Profile usage: keep saved personal details in the background' in db_chat_py
     assert "live2d.capabilities_stale" in app_js
     assert "video.recent_summary?.id" in app_js
     assert 'loadCompanionStatus({ preserveOnError: true })' in app_js
@@ -110,6 +130,14 @@ def main() -> None:
     assert '"video_companion.base_url"' in app_js
     assert '"video_companion.ws_url"' in app_js
     assert '"video_companion.project_path"' in app_js
+    assert "function renderMainVideoCompanionSession()" in app_js
+    assert "function connectMainVideoCompanionSocket()" in app_js
+    assert "function startMainVideoFrameCapture()" in app_js
+    assert 'navigator.mediaDevices.getUserMedia' in app_js
+    assert 'text: "开启主界面视频"' in app_js
+    assert '"开启摄像头与麦克风"' in app_js
+    assert 'text: "打开视频页"' not in app_js
+    assert ".main-video-session" in read("web/style.css")
     assert 'setSelfUseIntegrationFlag("live2d", true)' in app_js
     assert 'setSelfUseIntegrationFlag("video_companion", true)' in app_js
     assert 'setSelfUseIntegrationFlag(key, !configEnabled)' in app_js
@@ -160,6 +188,22 @@ def main() -> None:
     assert 'await applyLive2dRuntimeState("thinking")' in app_js
     assert 'await applyLive2dRuntimeState("speaking")' in app_js
     assert "function voiceAutoPlayEnabled" in app_js
+    assert "function formatMessagePerformance(metrics)" in app_js
+    assert "X-LING-TTS-Generation-Ms" in app_js
+    assert "X-LING-TTS-Generation-Ms" in server_py
+    assert "function incrementalLocalVoiceEnabled(plan)" in app_js
+    assert "function playIncrementalLocalVoice" in app_js
+    assert 'fetch(`/api/voice/tts-chunk/${chunkIndex}`' in app_js
+    assert "function localHttpVoiceStreamingEnabled()" in app_js
+    assert "async function playStreamingLocalVoice" in app_js
+    assert 'fetch("/api/voice/tts-stream"' in app_js
+    assert "function sameVoiceMessageId" in app_js
+    assert "async function bindEasyVtuberWindow" in app_js
+    assert "navigator.mediaDevices?.getDisplayMedia" in app_js
+    assert "绑定 EasyVtuber 窗口" in app_js
+    assert '@app.post("/api/voice/tts-stream")' in server_py
+    assert "stream_local_http_tts_wav" in server_py
+    assert "def stream_local_http_tts_wav" in tts_service_py
     assert "function probeSelfUseLlm" in app_js
     assert "llm_unverified" in app_js
     assert "澪的状态档案" in app_js
@@ -218,7 +262,7 @@ def main() -> None:
     assert "function live2dCurrentModelBinding()" in app_js
     assert "function renderSelfUseLive2dModelPicker(live2dModelIdField, statusEl = null)" in app_js
     assert "renderSelfUseLive2dModelPicker(fields.live2dModelId, bindingStatus)" in app_js
-    assert '["live2d_preview_url", live2dPreviewUrl, "Live2D preview", "preview"]' in app_js
+    assert '["live2d_preview_url", live2dPreviewUrl, "临时静态形象", "preview"]' in app_js
     assert '["fallback_image_url", fallbackImageUrl, "Fallback image", "fallback"]' in app_js
     assert '["avatar_url", avatarUrl, "Legacy fallback", "legacy"]' in app_js
     assert "function renderCompanionVisual(persona, embodiment)" in app_js
@@ -226,10 +270,10 @@ def main() -> None:
     assert "companion-visual-empty" in app_js
     assert "companion-visual-source" in app_js
     assert "live2dCurrentModelBinding()" in app_js
-    assert "Body pending" in app_js
+    assert "EasyVtuber 在外部窗口运行" in app_js
     assert "Bind body" in app_js
     assert ".companion-visual.missing" in style_css
-    assert "Live2D pending" in app_js
+    assert "临时形象待绑定" in app_js
     assert "使用并保存当前模型" in app_js
     assert "保存形象绑定" in app_js
     assert "async function saveSelfUseEmbodimentBinding(payload, statusEl = null)" in app_js
@@ -276,7 +320,12 @@ def main() -> None:
     assert "onclick: () => setSelfUseChatGate(false)" in app_js
     assert "onclick: () => setSelfUseChatGate(true)" in app_js
     assert "onclick: () => startVideoCompanion(statusEl)" in app_js
-    assert "onclick: openVideoCompanionPage" in app_js
+    assert "function renderMainVideoCompanionSession()" in app_js
+    assert "onclick: () => startVideoCompanion()" in app_js
+    assert "async function openEasyVtuber()" in app_js
+    assert 'api("/api/easyvtuber/open", { method: "POST" })' in app_js
+    assert '@app.post("/api/easyvtuber/open")' in server_py
+    assert "def easyvtuber_open" in server_py
     assert 'text: "编辑形象", onclick: openPersonaEditor' in app_js
     assert "video.status?.session_active" in app_js
     assert "state.sending" in app_js
@@ -307,7 +356,7 @@ def main() -> None:
     assert "await syncCompanionRuntime({ applyLive2d: true });" in app_js
     assert "await syncCompanionRuntime({ reload: true, applyLive2d: true });" in app_js
     assert "await applyLive2dRuntimeState(runtimeToLive2dState(runtime));" in app_js
-    assert ".self-use-stage-panel {\n  display: grid;\n  grid-template-rows: minmax(0, 1fr);" in style_css
+    assert ".self-use-stage-panel {\n  display: block;\n  height: 100%;\n  overflow-y: scroll;" in style_css
     assert "@media (max-width: 620px)" in style_css
     assert "grid-template-rows: minmax(540px, 68vh) minmax(0, 1fr);" in style_css
     assert "chatInputBlocked()" in app_js
@@ -331,6 +380,8 @@ def main() -> None:
 
     assert ".self-use-shell" in style_css
     assert ".companion-rail" in style_css
+    assert 'class: "companion-rail-actions"' in app_js
+    assert ".companion-rail-actions" in style_css
     assert ".self-use-integration-modal" in style_css
     assert ".self-use-integration-grid" in style_css
     assert ".self-use-integration-card" in style_css
@@ -339,6 +390,8 @@ def main() -> None:
     assert ".self-use-integration-field-grid" in style_css
     assert ".self-use-integration-row" in style_css
     assert ".self-use-workspace" in style_css
+    assert "grid-template-columns: max(420px, calc(50vw - 112px)) minmax(0, 1fr);" in style_css
+    assert 'text: "在场"' in app_js and 'text: "资料"' in app_js and 'text: "接入"' in app_js
     assert ".self-use-api-gate" in style_css
     assert ".self-use-api-dot" in style_css
     assert ".companion-runtime-badge" in style_css

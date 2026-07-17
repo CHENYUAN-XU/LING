@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+import time
 from datetime import datetime
+from typing import Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .archivist import extract_and_store, recall_memories
@@ -17,7 +20,7 @@ from .expression_assets import (
 )
 from .identity import IDENTITY_REPLACEMENTS, scrub_identity_obj, scrub_identity_text
 from .layered_memory import layered_memory_prompt, recall_layered_memory, state_prompt, summary_prompt
-from .llm_client import LLMProviderError, call_llm_api
+from .llm_client import LLMProviderError, LLMStreamCancelled, call_llm_api, call_llm_api_stream
 from .memory_rag import semantic_memory_prompt, semantic_memory_recall
 from .memory_policy import policy_snapshot, should_refresh_summary, should_use_semantic_recall
 from .mirror import discovery_prompt, insight_prompt, update_interaction_insight
@@ -30,6 +33,7 @@ from .growth_guidance import cancel_guidance_from_chat, maybe_store_chat_guidanc
 from .presence_loop import detect_quiet_mode_request, on_reply_end, on_reply_start, on_user_message, presence_enabled as presence_is_enabled
 from .persona_forge import build_ling_prompt
 from .runtime_state import get_runtime_state
+from .world_state import get_recent_world_observations
 
 
 CHAT_RENDERING_RULES = """聊天输出规则：
@@ -73,6 +77,15 @@ def ling_rendering_rules_prompt() -> str:
 {expression_tags}
 - 标签必须稀少，正文仍然只包含真正要说的话。
 """.format(expression_tags=expression_protocol_prompt() or "  - 当前没有启用的 expression 标签。")
+
+def ling_response_pacing_prompt() -> str:
+    return """LING response pacing:
+- Default to one to three short, natural sentences. Lead with the direct answer.
+- Do not write an essay, recap, or a formal customer-service answer unless the user asks for detail.
+- If several sentences help, make each one carry a distinct thought and leave a natural place for the user to interrupt.
+- Do not turn a normal request for detail into a numbered list or a ten-point lecture. Use a few spoken, connected sentences; use a list only when the user explicitly asks for steps, a checklist, or an enumeration.
+- The UI renders one reply as one growing bubble; do not imitate typing or split a single thought into labelled parts."""
+
 
 STAGE_DIRECTION_RE = re.compile(r"[\uFF08\(\u3010\[]\s*([^\uFF08\uFF09\(\)\[\]\u3010\u3011]{1,120}?)\s*[\uFF09\)\u3011\]]\s*")
 STRUCTURED_EXPRESSION_RE = re.compile(
@@ -369,7 +382,11 @@ def db_chat(
     retry_user_message_id: int | None = None,
     client_message_id: str | None = None,
     defer_summary_refresh: bool = False,
+    defer_turn_enrichment: bool = False,
+    on_stream_delta: Callable[[str], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> dict:
+    request_started = time.perf_counter()
     persona = get_persona_for_user(user_id, persona_id)
     client_message_id = str(client_message_id or "").strip()[:80]
     retrying = retry_user_message_id is not None
@@ -475,57 +492,22 @@ def db_chat(
             )
             presence_quiet_triggered = True
 
-    stored_memories = [] if retrying else _best_effort(
-        "Archivist",
-        lambda: extract_and_store(
+    stored_memories: list[dict] = []
+    if not retrying and not defer_turn_enrichment:
+        stored_memories, persona_changed = _run_turn_enrichment(
             user_id=user_id,
             persona_id=persona_id,
             conversation_id=int(conversation["id"]),
-            source_message_id=user_message_id,
-            user_text=message,
-        ),
-        [],
-    )
-    if not retrying:
-        _best_effort("Mirror", lambda: update_interaction_insight(user_id, message, stored_memories), {})
-        _best_effort(
-            "GrowthGuidanceStop",
-            lambda: cancel_guidance_from_chat(user_id, persona_id, message, user_message_id),
-            [],
+            user_message_id=user_message_id,
+            message=message,
         )
-        _best_effort(
-            "GrowthGuidance",
-            lambda: maybe_store_chat_guidance(user_id, persona_id, message, user_message_id, stored_memories),
-            None,
-        )
-        core_revision = _best_effort(
-            "SculptorCoreUpdate",
-            lambda: maybe_apply_explicit_core_update_from_chat(user_id, persona_id, message, user_message_id),
-            None,
-        )
-        if core_revision:
+        if persona_changed:
             persona = get_persona_for_user(user_id, persona_id)
-        queued_revision = _best_effort(
-            "SculptorQueue",
-            lambda: maybe_queue_revision_from_feedback(
-                user_id,
-                persona_id,
-                user_message_id,
-                allow_handled_core=bool(core_revision),
-            ),
-            None,
-        )
-        if queued_revision and queued_revision.get("status") == "applied":
-            persona = get_persona_for_user(user_id, persona_id)
-        reconciled_revision = _best_effort(
-            "SculptorGuidanceReconcile",
-            lambda: maybe_reconcile_inactive_chat_guidance_style(user_id, persona_id),
-            None,
-        )
-        if reconciled_revision:
-            persona = get_persona_for_user(user_id, persona_id)
-    recalled_memories = _best_effort("MemoryRecall", lambda: recall_memories(user_id, persona_id, message, limit=12), [])
-    layered = _best_effort("LayeredMemory", lambda: recall_layered_memory(user_id, persona_id, message, limit=18), [])
+    # Keep the synchronous recall payload small.  The persisted summary/state
+    # carry broad continuity; recall here only needs enough material to answer
+    # the current message.  This protects first-token latency as memory grows.
+    recalled_memories = _best_effort("MemoryRecall", lambda: recall_memories(user_id, persona_id, message, limit=6), [])
+    layered = _best_effort("LayeredMemory", lambda: recall_layered_memory(user_id, persona_id, message, limit=8), [])
     semantic_memories = (
         _best_effort("SemanticMemory", lambda: semantic_memory_recall(user_id, persona_id, message, limit=8), [])
         if should_use_semantic_recall()
@@ -539,6 +521,7 @@ def db_chat(
         "Conversation rolling summary: unavailable.",
     )
     state_context = _best_effort("StatePrompt", lambda: state_prompt(user_id, persona_id), "Current state: unavailable.")
+    video_context = _best_effort("VideoContext", lambda: _fresh_video_context_prompt(user_id), "")
     summary_context = _best_effort("MemorySummaryPrompt", lambda: summary_prompt(user_id, persona_id), "Memory summary: unavailable.")
     layered_context = _best_effort("LayeredPrompt", lambda: layered_memory_prompt(layered), "Layered memory: unavailable.")
     semantic_context = _best_effort("SemanticPrompt", lambda: semantic_memory_prompt(semantic_memories), "Semantic memory: unavailable.")
@@ -563,6 +546,7 @@ def db_chat(
     insight_context = _safe_context(insight_context)
     conversation_context = _safe_context(conversation_context)
     state_context = _safe_context(state_context)
+    video_context = _safe_context(video_context)
     summary_context = _safe_context(summary_context)
     layered_context = _safe_context(layered_context)
     semantic_context = _safe_context(semantic_context)
@@ -576,6 +560,7 @@ def db_chat(
     insight_context = _replace_stale_persona_names(insight_context, str(persona.get("name") or ""), stale_persona_names)
     conversation_context = _replace_stale_persona_names(conversation_context, str(persona.get("name") or ""), stale_persona_names)
     state_context = _replace_stale_persona_names(state_context, str(persona.get("name") or ""), stale_persona_names)
+    video_context = _replace_stale_persona_names(video_context, str(persona.get("name") or ""), stale_persona_names)
     summary_context = _replace_stale_persona_names(summary_context, str(persona.get("name") or ""), stale_persona_names)
     layered_context = _replace_stale_persona_names(layered_context, str(persona.get("name") or ""), stale_persona_names)
     semantic_context = _replace_stale_persona_names(semantic_context, str(persona.get("name") or ""), stale_persona_names)
@@ -600,10 +585,15 @@ def db_chat(
             "role": "system",
             "content": ling_rendering_rules_prompt() if self_use_companion else chat_rendering_rules_prompt(),
         },
+        {
+            "role": "system",
+            "content": ling_response_pacing_prompt() if self_use_companion else "",
+        },
         {"role": "system", "content": profile_context},
         {"role": "system", "content": insight_context},
         {"role": "system", "content": conversation_context},
         {"role": "system", "content": state_context},
+        {"role": "system", "content": video_context},
         {"role": "system", "content": summary_context},
         {"role": "system", "content": layered_context},
         {"role": "system", "content": semantic_context},
@@ -632,6 +622,7 @@ def db_chat(
             "insight_prompt": insight_context,
             "conversation_summary_prompt": conversation_context,
             "state_prompt": state_context,
+            "video_context": video_context,
             "summary_prompt": summary_context,
             "layered_prompt": layered_context,
             "semantic_memory_prompt": semantic_context,
@@ -657,20 +648,41 @@ def db_chat(
     presence_reply_state = None
     if presence_is_enabled():
         presence_reply_state = _best_effort("PresenceReply", lambda: on_reply_start(user_id), {})
+    model_started = time.perf_counter()
     try:
-        reply = call_llm_api(messages, task="chat")
+        reply = (
+            call_llm_api(messages, task="chat")
+            if on_stream_delta is None
+            else call_llm_api_stream(messages, on_delta=on_stream_delta, task="chat", should_cancel=should_cancel)
+        )
+    except LLMStreamCancelled:
+        _finish_context_trace(trace_id, status="cancelled", error_text="chat stream cancelled")
+        return _interrupted_reply_payload(
+            conversation,
+            persona_id,
+            user_message_id,
+            trace_id,
+            stored_memories,
+            layered,
+            semantic_memories,
+            presence=_finish_presence_reply(user_id),
+            performance=_chat_performance(request_started, model_started),
+        )
     except LLMProviderError as exc:
         _finish_context_trace(trace_id, status="degraded", error_text=str(exc))
         return _failed_reply_payload(
             conversation, persona_id, user_message_id, trace_id, stored_memories, layered, semantic_memories,
             presence=_finish_presence_reply(user_id),
+            performance=_chat_performance(request_started, model_started),
         )
     except Exception as exc:
         _finish_context_trace(trace_id, status="degraded", error_text=str(exc))
         return _failed_reply_payload(
             conversation, persona_id, user_message_id, trace_id, stored_memories, layered, semantic_memories,
             presence=_finish_presence_reply(user_id),
+            performance=_chat_performance(request_started, model_started),
         )
+    model_finished = time.perf_counter()
 
     presentation = _extract_reply_presentation(reply)
     reply = presentation["content"]
@@ -708,6 +720,19 @@ def db_chat(
         _finish_context_trace(trace_id, status="degraded", assistant_message_id=assistant_message_id)
     else:
         _finish_context_trace(trace_id, status="success", assistant_message_id=assistant_message_id)
+    if defer_turn_enrichment and not retrying:
+        threading.Thread(
+            target=_run_turn_enrichment,
+            kwargs={
+                "user_id": user_id,
+                "persona_id": persona_id,
+                "conversation_id": int(conversation["id"]),
+                "user_message_id": user_message_id,
+                "message": message,
+            },
+            name="ling-turn-enrichment",
+            daemon=True,
+        ).start()
     if should_refresh_summary(len(history) + 2):
         if defer_summary_refresh:
             conversation_summary = {"scheduled": True, "reason": "refresh after reply response"}
@@ -741,6 +766,7 @@ def db_chat(
         "degraded": degraded,
         "expressions": expressions,
         "presence": presence_state,
+        "performance": _chat_performance(request_started, model_started, model_finished),
     }
 
 
@@ -753,6 +779,7 @@ def _failed_reply_payload(
     layered: list,
     semantic_memories: list,
     presence: dict | None = None,
+    performance: dict | None = None,
 ) -> dict:
     error_message = "回复暂时没有送达。可以稍后重试。"
     with get_db() as db:
@@ -775,6 +802,62 @@ def _failed_reply_payload(
         "degraded": True,
         "expressions": [],
         "presence": presence,
+        "performance": performance or {},
+    }
+
+
+def _interrupted_reply_payload(
+    conversation: dict,
+    persona_id: int,
+    user_message_id: int,
+    trace_id: int | None,
+    stored_memories: list,
+    layered: list,
+    semantic_memories: list,
+    presence: dict | None = None,
+    performance: dict | None = None,
+) -> dict:
+    """Keep the user's message but deliberately do not persist a partial reply."""
+    with get_db() as db:
+        db.execute(
+            "UPDATE messages SET reply_status = 'interrupted', reply_error = '' WHERE id = ? AND role = 'user'",
+            (user_message_id,),
+        )
+    return {
+        "reply": "",
+        "conversation_id": conversation["id"],
+        "persona_id": persona_id,
+        "user_message_id": user_message_id,
+        "assistant_message_id": None,
+        "context_trace_id": trace_id,
+        "conversation_summary": {"skipped": True, "reason": "reply interrupted by user"},
+        "semantic_memory": semantic_memories,
+        "stored_memories": stored_memories,
+        "layered_memory": layered,
+        "degraded": False,
+        "interrupted": True,
+        "expressions": [],
+        "presence": presence,
+        "performance": performance or {},
+    }
+
+
+def _chat_performance(
+    request_started: float,
+    model_started: float,
+    model_finished: float | None = None,
+) -> dict:
+    """Return safe, coarse latency timings for the self-use chat UI."""
+    completed = time.perf_counter()
+    model_ended = model_finished if model_finished is not None else completed
+    total_ms = max(0, round((completed - request_started) * 1000))
+    preparation_ms = max(0, round((model_started - request_started) * 1000))
+    model_ms = max(0, round((model_ended - model_started) * 1000))
+    return {
+        "total_ms": total_ms,
+        "preparation_ms": preparation_ms,
+        "model_ms": model_ms,
+        "postprocess_ms": max(0, total_ms - preparation_ms - model_ms),
     }
 
 
@@ -812,6 +895,32 @@ def _pending_reply_payload(conversation: dict, persona_id: int, user_message_id:
 
 def _safe_context(text: str) -> str:
     return scrub_identity_text(text)
+
+
+def _fresh_video_context_prompt(user_id: int) -> str:
+    """Return the latest short-lived, grounded browser camera observation."""
+    observations = get_recent_world_observations(
+        user_id,
+        source="video_companion",
+        observation_type="video_observation",
+        limit=1,
+    )
+    if not observations:
+        return ""
+    observation = observations[0]
+    age_seconds = max(0, now_ts() - int(observation.get("created_at") or 0))
+    if age_seconds > 30:
+        return ""
+    content = re.sub(r"\s+", " ", str(observation.get("content") or "")).strip()[:600]
+    if not content:
+        return ""
+    return (
+        "Fresh camera observation from the user's currently permitted browser camera "
+        f"({age_seconds}s old): {content}\n"
+        "Use it only when the user asks about what is visible, their presence, or the live scene. "
+        "Treat it as incomplete local detection, never invent visual details beyond it. "
+        "If it says the detector cannot judge, be transparent instead of claiming to see."
+    )
 
 
 def _final_persona_lock(persona: dict) -> str:
@@ -1433,6 +1542,61 @@ def _best_effort(label: str, action, fallback):
         return fallback
 
 
+def _run_turn_enrichment(
+    *,
+    user_id: int,
+    persona_id: int,
+    conversation_id: int,
+    user_message_id: int,
+    message: str,
+) -> tuple[list[dict], bool]:
+    """Persist memory and adaptive guidance without blocking the next model turn."""
+    stored_memories = _best_effort(
+        "Archivist",
+        lambda: extract_and_store(
+            user_id=user_id,
+            persona_id=persona_id,
+            conversation_id=conversation_id,
+            source_message_id=user_message_id,
+            user_text=message,
+        ),
+        [],
+    )
+    _best_effort("Mirror", lambda: update_interaction_insight(user_id, message, stored_memories), {})
+    _best_effort(
+        "GrowthGuidanceStop",
+        lambda: cancel_guidance_from_chat(user_id, persona_id, message, user_message_id),
+        [],
+    )
+    _best_effort(
+        "GrowthGuidance",
+        lambda: maybe_store_chat_guidance(user_id, persona_id, message, user_message_id, stored_memories),
+        None,
+    )
+    core_revision = _best_effort(
+        "SculptorCoreUpdate",
+        lambda: maybe_apply_explicit_core_update_from_chat(user_id, persona_id, message, user_message_id),
+        None,
+    )
+    queued_revision = _best_effort(
+        "SculptorQueue",
+        lambda: maybe_queue_revision_from_feedback(
+            user_id,
+            persona_id,
+            user_message_id,
+            allow_handled_core=bool(core_revision),
+        ),
+        None,
+    )
+    reconciled_revision = _best_effort(
+        "SculptorGuidanceReconcile",
+        lambda: maybe_reconcile_inactive_chat_guidance_style(user_id, persona_id),
+        None,
+    )
+    persona_changed = bool(core_revision) or bool(queued_revision and queued_revision.get("status") == "applied") or bool(reconciled_revision)
+    return stored_memories, persona_changed
+
+
 def _profile_prompt(profile: dict) -> str:
     preferences = profile.get("preferences_json") or "{}"
     try:
@@ -1463,6 +1627,11 @@ def _profile_usage_prompt(user_text: str, *, profile: dict | None = None, curren
         "今天是几号", "今天几号", "今天是525", "生日",
     )
     needs_lookup = any(cue in str(user_text or "") for cue in lookup_cues)
+    if not needs_lookup:
+        return (
+            "Profile usage: keep saved personal details in the background unless the user explicitly asks "
+            "about their profile, what you remember, or a date-related clue."
+        )
     lines = [
         "Saved user profile usage policy:",
         f"- current_local_date: {now.date().isoformat()}",
@@ -1471,11 +1640,8 @@ def _profile_usage_prompt(user_text: str, *, profile: dict | None = None, curren
         "- Do not volunteer a saved fact, occasion, preference, or personal detail merely to perform familiarity or intimacy.",
         "- When the current question asks what you know about the user, asks you to check their information, or offers a clue resolvable from profile fields and the date, use the relevant fact to answer directly and briefly.",
     ]
-    if needs_lookup:
-        lines.append("- This turn invites checking the saved user profile if it resolves the user's question. Use only the relevant fact and do not turn it into a recurring topic afterward.")
-        lines.append("- For a profile lookup request, answer only the requested saved fields or the one fact needed to resolve the clue. Do not add unrequested memories, interests, occasions, or intimacy performances.")
-    else:
-        lines.append("- This turn does not explicitly invite profile lookup. Keep saved profile facts in the background unless strictly required to answer.")
+    lines.append("- This turn invites checking the saved user profile if it resolves the user's question. Use only the relevant fact and do not turn it into a recurring topic afterward.")
+    lines.append("- For a profile lookup request, answer only the requested saved fields or the one fact needed to resolve the clue. Do not add unrequested memories, interests, occasions, or intimacy performances.")
     return "\n".join(lines)
 
 

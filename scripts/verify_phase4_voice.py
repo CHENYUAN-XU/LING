@@ -14,6 +14,12 @@ import app.database as database
 import app.server as server
 
 
+def test_voice_config() -> dict:
+    import app.voice as voice_mod
+
+    return dict(voice_mod.DEFAULT_VOICE_CONFIG)
+
+
 def seed_user() -> int:
     ts = database.now_ts()
     with database.get_db() as db:
@@ -43,64 +49,82 @@ def seed_user() -> int:
 def verify_voice_config() -> None:
     import app.voice as voice_mod
 
-    assert voice_mod.voice_enabled() is False
-    config = voice_mod.load_voice_config()
-    assert config["auto_play"] is True
-    assert config["tts_provider"] == "openai_tts"
-    assert config["tts_model"] == "gpt-4o-mini-tts"
-    assert config["api_key_env"] == "OPENAI_API_KEY"
-    assert config["voice_id"] == "alloy"
-    assert config["response_format"] == "mp3"
-    assert config["instructions"] == ""
-    assert config["split_long_replies"] is True
-    assert config["max_chunk_length"] == 80
-    assert isinstance(config["expression_style_map"], dict)
-    assert config["expression_style_map"]["微笑"] == "cheerful"
-    assert config["expression_style_map"]["轻笑"] == "cheerful"
-    assert config["expression_style_map"]["担心"] == "concerned"
-    assert config["expression_style_map"]["轻声"] == "gentle"
-    assert config["expression_style_map"]["停顿"] == "default"
-    assert config["expression_style_map"]["点头"] == "default"
+    original_config = voice_mod.load_voice_config
+    try:
+        voice_mod.load_voice_config = test_voice_config
+        assert voice_mod.voice_enabled() is False
+        config = voice_mod.load_voice_config()
+        assert config["auto_play"] is True
+        assert config["tts_provider"] == "openai_tts"
+        assert config["tts_model"] == "gpt-4o-mini-tts"
+        assert config["api_key_env"] == "OPENAI_API_KEY"
+        assert config["voice_id"] == "alloy"
+        assert config["response_format"] == "mp3"
+        assert config["instructions"] == ""
+        assert config["split_long_replies"] is True
+        assert config["max_chunk_length"] == 80
+        assert isinstance(config["expression_style_map"], dict)
+        assert config["expression_style_map"]["微笑"] == "cheerful"
+        assert config["expression_style_map"]["轻笑"] == "cheerful"
+        assert config["expression_style_map"]["担心"] == "concerned"
+        assert config["expression_style_map"]["轻声"] == "gentle"
+        assert config["expression_style_map"]["停顿"] == "default"
+        assert config["expression_style_map"]["点头"] == "default"
+    finally:
+        voice_mod.load_voice_config = original_config
 
 
 def verify_speech_planner() -> None:
     import app.speech_planner as sp
 
-    short = sp.split_reply_into_utterances("我在。")
-    assert short == ["我在。"]
+    original_config = sp.load_voice_config
+    try:
+        sp.load_voice_config = test_voice_config
+        short = sp.split_reply_into_utterances("我在。")
+        assert short == ["我在。"]
 
-    multi = sp.split_reply_into_utterances("先坐一会儿。今天过得怎么样？")
-    assert len(multi) >= 2
-    assert multi[0] == "先坐一会儿。"
+        multi = sp.split_reply_into_utterances("先坐一会儿。今天过得怎么样？")
+        assert len(multi) >= 2
+        assert multi[0] == "先坐一会儿。"
 
-    long_text = "这是一句比较长的回复内容，包含了许多文字用来测试分段功能是否正常工作。"
-    segments = sp.split_reply_into_utterances(long_text)
-    assert len(segments) == 1
-    assert segments[0] == long_text
+        long_text = "这是一句比较长的回复内容，包含了许多文字用来测试分段功能是否正常工作。"
+        segments = sp.split_reply_into_utterances(long_text)
+        assert len(segments) == 1
+        assert segments[0] == long_text
 
-    params = sp.build_tts_request_params(["你好"], ["微笑"])
-    assert len(params) == 1
-    assert params[0]["text"] == "你好"
-    assert params[0]["voice_id"] == "alloy"
-    assert params[0]["style"] == "cheerful"
+        params = sp.build_tts_request_params(["你好"], ["微笑"])
+        assert len(params) == 1
+        assert params[0]["text"] == "你好"
+        assert params[0]["voice_id"] == "alloy"
+        assert params[0]["style"] == "cheerful"
 
-    params_no_style = sp.build_tts_request_params(["你好"], ["未知标签"])
-    assert params_no_style[0].get("style") is None or params_no_style[0].get("style") == "default"
+        params_no_style = sp.build_tts_request_params(["你好"], ["未知标签"])
+        assert params_no_style[0].get("style") is None or params_no_style[0].get("style") == "default"
 
-    params_no_label = sp.build_tts_request_params(["你好"])
-    assert len(params_no_label) == 1
+        params_no_label = sp.build_tts_request_params(["你好"])
+        assert len(params_no_label) == 1
+    finally:
+        sp.load_voice_config = original_config
 
 
 def verify_tts_service_disabled() -> None:
     import app.tts_service as tts_svc
 
-    health = tts_svc.tts_health_check()
-    assert health["enabled"] is False
-    assert health["available"] is False
+    original_enabled = tts_svc.voice_enabled
+    original_config = tts_svc.load_voice_config
+    try:
+        tts_svc.voice_enabled = lambda: False
+        tts_svc.load_voice_config = test_voice_config
+        health = tts_svc.tts_health_check()
+        assert health["enabled"] is False
+        assert health["available"] is False
 
-    result = tts_svc.generate_tts_audio("测试")
-    assert result is None
-    assert tts_svc.get_last_tts_error() == "voice is disabled"
+        result = tts_svc.generate_tts_audio("测试")
+        assert result is None
+        assert tts_svc.get_last_tts_error() == "voice is disabled"
+    finally:
+        tts_svc.voice_enabled = original_enabled
+        tts_svc.load_voice_config = original_config
 
 
 def verify_tts_failure_metadata_and_cleanup() -> None:
@@ -231,7 +255,7 @@ def verify_bound_voice_profile_routing() -> None:
     calls: list[dict] = []
     try:
         tts_svc.voice_enabled = lambda: True
-        tts_svc.generate_tts_audio = lambda **kwargs: calls.append(kwargs) or b"audio"
+        tts_svc.generate_tts_audio = lambda *args, **kwargs: calls.append(kwargs) or b"audio"
         result = tts_svc.generate_tts_reply_audio("你好。", voice_id="voice_mio")
         assert result["success"] is True
         assert calls[0]["voice_id"] == "voice_mio"
@@ -242,60 +266,75 @@ def verify_bound_voice_profile_routing() -> None:
 
 def verify_server_endpoints(user_id: int) -> None:
     user = {"id": user_id}
-
-    voice_cfg = server.voice_config(user)
-    assert "voice" in voice_cfg
-    assert voice_cfg["voice"]["enabled"] is False
-    assert voice_cfg["voice"]["auto_play"] is True
-    assert voice_cfg["voice"]["tts_model"] == "gpt-4o-mini-tts"
-    assert voice_cfg["voice"]["api_key_env"] == "OPENAI_API_KEY"
-    assert voice_cfg["voice"]["response_format"] == "mp3"
-    assert "instructions" in voice_cfg["voice"]
-
-    health = server.voice_health(user)
-    assert health["enabled"] is False
-
-    from fastapi import HTTPException
+    original_config = server.load_voice_config
+    original_enabled = server.voice_enabled
+    original_health = server.tts_health_check
+    server.load_voice_config = test_voice_config
+    server.voice_enabled = lambda: False
+    server.tts_health_check = lambda: {
+        "enabled": False,
+        "available": False,
+        "error": "voice is disabled",
+    }
 
     try:
-        server.voice_tts(server.VoiceTTSRequest(text="测试"), user)
-        raise AssertionError("should fail when voice is disabled")
-    except HTTPException as exc:
-        assert exc.status_code == 400
+        voice_cfg = server.voice_config(user)
+        assert "voice" in voice_cfg
+        assert voice_cfg["voice"]["enabled"] is False
+        assert voice_cfg["voice"]["auto_play"] is True
+        assert voice_cfg["voice"]["tts_model"] == "gpt-4o-mini-tts"
+        assert voice_cfg["voice"]["api_key_env"] == "OPENAI_API_KEY"
+        assert voice_cfg["voice"]["response_format"] == "mp3"
+        assert "instructions" in voice_cfg["voice"]
 
-    try:
-        server.voice_tts(server.VoiceTTSRequest(text="   "), user)
-        raise AssertionError("blank voice text should be rejected as a bad request")
-    except HTTPException as exc:
-        assert exc.status_code == 400
-        assert "不能为空" in str(exc.detail)
+        health = server.voice_health(user)
+        assert health["enabled"] is False
 
-    try:
-        server.voice_tts_reply(server.VoiceTTSReplyRequest(reply_text="测试回复。"), user)
-        raise AssertionError("should fail when voice is disabled")
-    except HTTPException as exc:
-        assert exc.status_code == 400
+        from fastapi import HTTPException
 
-    try:
-        server.voice_speech_plan(server.VoiceTTSReplyRequest(reply_text="   "), user)
-        raise AssertionError("blank speech plan text should be rejected")
-    except HTTPException as exc:
-        assert exc.status_code == 400
+        try:
+            server.voice_tts(server.VoiceTTSRequest(text="测试"), user)
+            raise AssertionError("should fail when voice is disabled")
+        except HTTPException as exc:
+            assert exc.status_code == 400
 
-    plan = server.voice_speech_plan(server.VoiceTTSReplyRequest(reply_text="你好。今天怎么样？"), user)
-    assert len(plan["utterances"]) >= 2
-    assert len(plan["tts_params"]) == len(plan["utterances"])
-    assert plan["chunk_count"] == len(plan["utterances"])
-    assert plan["styles"] == []
-    assert plan["expression_labels"] == []
+        try:
+            server.voice_tts(server.VoiceTTSRequest(text="   "), user)
+            raise AssertionError("blank voice text should be rejected as a bad request")
+        except HTTPException as exc:
+            assert exc.status_code == 400
+            assert "不能为空" in str(exc.detail)
 
-    styled_plan = server.voice_speech_plan(
-        server.VoiceTTSReplyRequest(reply_text="你好。", expression_labels=["微笑"]),
-        user,
-    )
-    assert styled_plan["chunk_count"] == 1
-    assert styled_plan["styles"] == ["cheerful"]
-    assert styled_plan["expression_labels"] == ["微笑"]
+        try:
+            server.voice_tts_reply(server.VoiceTTSReplyRequest(reply_text="测试回复。"), user)
+            raise AssertionError("should fail when voice is disabled")
+        except HTTPException as exc:
+            assert exc.status_code == 400
+
+        try:
+            server.voice_speech_plan(server.VoiceTTSReplyRequest(reply_text="   "), user)
+            raise AssertionError("blank speech plan text should be rejected")
+        except HTTPException as exc:
+            assert exc.status_code == 400
+
+        plan = server.voice_speech_plan(server.VoiceTTSReplyRequest(reply_text="你好。今天怎么样？"), user)
+        assert len(plan["utterances"]) >= 2
+        assert len(plan["tts_params"]) == len(plan["utterances"])
+        assert plan["chunk_count"] == len(plan["utterances"])
+        assert plan["styles"] == []
+        assert plan["expression_labels"] == []
+
+        styled_plan = server.voice_speech_plan(
+            server.VoiceTTSReplyRequest(reply_text="你好。", expression_labels=["微笑"]),
+            user,
+        )
+        assert styled_plan["chunk_count"] == 1
+        assert styled_plan["styles"] == ["cheerful"]
+        assert styled_plan["expression_labels"] == ["微笑"]
+    finally:
+        server.load_voice_config = original_config
+        server.voice_enabled = original_enabled
+        server.tts_health_check = original_health
 
 
 def verify_server_voice_error_detail(user_id: int) -> None:

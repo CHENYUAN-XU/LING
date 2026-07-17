@@ -1403,6 +1403,19 @@ small {
   object-fit: contain;
 }
 
+.companion-visual.live-capture {
+  cursor: default;
+  background: #11151c;
+}
+
+.companion-visual.live-capture video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #11151c;
+}
+
 .companion-visual-empty {
   display: grid;
   place-items: center;
@@ -1601,20 +1614,20 @@ small {
 }
 
 .self-use-shell {
-  grid-template-columns: 72px minmax(0, 1fr);
+  grid-template-columns: 112px minmax(0, 1fr);
 }
 
 .companion-rail {
   grid-template-rows: auto minmax(0, 1fr) auto;
   justify-items: center;
-  gap: 14px;
-  padding: 12px 10px;
+  gap: 16px;
+  padding: 16px 12px;
 }
 
 .rail-brand,
 .rail-action {
-  width: 48px;
-  min-height: 48px;
+  width: 84px;
+  min-height: 60px;
   padding: 0;
   border: 1px solid var(--line);
   background: #ffffff;
@@ -1625,32 +1638,33 @@ small {
   display: grid;
   align-content: center;
   gap: 1px;
-  height: 56px;
+  height: 68px;
 }
 
 .rail-brand strong {
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1;
 }
 
 .rail-brand small {
-  max-width: 42px;
+  max-width: 52px;
   overflow: hidden;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.1;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.rail-actions {
+.companion-rail-actions {
   display: grid;
   align-content: start;
-  gap: 10px;
+  gap: 12px;
 }
 
 .rail-action {
   font-size: 16px;
+  white-space: nowrap;
 }
 
 .rail-action.active {
@@ -1802,7 +1816,8 @@ small {
 }
 
 .self-use-workspace {
-  grid-template-columns: minmax(360px, 44%) minmax(420px, 1fr);
+  /* Navigation + character workspace occupy roughly half of a desktop viewport. */
+  grid-template-columns: max(420px, calc(50vw - 112px)) minmax(0, 1fr);
   gap: 1px;
   background: var(--line);
 }
@@ -1816,16 +1831,20 @@ small {
 }
 
 .self-use-stage-panel {
-  display: grid;
-  grid-template-rows: minmax(0, 1fr);
+  display: block;
+  height: 100%;
+  overflow-y: scroll;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .self-use-stage-panel .companion-stage {
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(260px, 1fr) auto auto;
-  align-content: stretch;
+  grid-template-rows: clamp(260px, 36vh, 420px) auto auto;
+  align-content: start;
   gap: 18px;
-  padding: 24px;
+  padding: 26px;
+  min-height: max-content;
   border-bottom: 0;
 }
 
@@ -1839,11 +1858,18 @@ small {
 
 .self-use-stage-panel .companion-visual {
   width: 100%;
-  max-width: 520px;
+  max-width: 560px;
   height: 100%;
-  min-height: 260px;
+  min-height: 0;
   max-height: none;
   align-self: stretch;
+  justify-self: center;
+}
+
+/* Preview provenance belongs in the surrounding status UI, never on top of the character. */
+.self-use-stage-panel .companion-visual-source,
+.self-use-stage-panel .companion-visual-model {
+  display: none;
 }
 
 .self-use-stage-panel .companion-stage-copy {
@@ -1851,12 +1877,21 @@ small {
 }
 
 .self-use-stage-panel .companion-stage-copy h2 {
-  font-size: 42px;
+  font-size: 40px;
   line-height: 1.05;
 }
 
 .self-use-stage-panel .companion-stage-actions {
-  justify-content: start;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  justify-content: stretch;
+}
+
+.self-use-stage-panel .companion-stage-actions button {
+  min-width: 0;
+  min-height: 44px;
+  padding-inline: 12px;
+  font-size: 16px;
 }
 
 .self-use-stage-actions {
@@ -1864,6 +1899,39 @@ small {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+}
+
+.main-video-session {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.main-video-session-head,
+.main-video-session-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.main-video-session-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.main-video-session video {
+  width: min(100%, 340px);
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #111827;
 }
 
 .companion-stage-action-status {
@@ -1922,8 +1990,8 @@ small {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 72px;
-  padding: 14px 18px;
+  min-height: 64px;
+  padding: 10px 18px;
   border-bottom: 1px solid var(--line);
   background: #ffffff;
 }
@@ -1993,8 +2061,8 @@ small {
 
 .self-use-readiness {
   display: grid;
-  gap: 10px;
-  padding: 12px 18px;
+  gap: 8px;
+  padding: 9px 18px;
   border-bottom: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.74);
 }
@@ -2013,8 +2081,8 @@ small {
 
 .self-use-readiness-list {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 6px;
 }
 
 .self-use-readiness-item {
@@ -2023,7 +2091,7 @@ small {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  padding: 8px;
+  padding: 6px 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #ffffff;
@@ -2668,6 +2736,12 @@ small {
 
 .message-time {
   min-height: 14px;
+  font-size: 11px;
+}
+
+.message-performance {
+  min-height: 14px;
+  color: var(--muted);
   font-size: 11px;
 }
 
@@ -3584,7 +3658,7 @@ small {
     height: 46px;
   }
 
-  .self-use-shell .rail-actions {
+  .self-use-shell .companion-rail-actions {
     display: flex;
     justify-content: center;
     gap: 8px;

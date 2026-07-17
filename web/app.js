@@ -108,17 +108,41 @@ let state = {
   integrationFlagError: null,
   integrationConfigSaving: "",
   integrationConfigFeedback: {},
+  easyVtuberOpening: false,
+  easyVtuberCaptureRequesting: false,
+  easyVtuberCaptureActive: false,
+  easyVtuberFeedback: "",
   privacyPolicy: null,
   cameraPreviewActive: false,
+  videoCompanionUi: {
+    starting: false,
+    cameraActive: false,
+    microphoneActive: false,
+    socket: "idle",
+    externalVisionActive: false,
+    statusText: "未在主界面开启视频会话",
+    latestObservation: "",
+    frameCount: 0,
+  },
 };
 
 let live2dActionQueue = Promise.resolve();
 let live2dExpressionResetTimer = null;
 let activeVoicePlayback = null;
 let voicePlaybackSequence = 0;
+let activeChatStream = null;
+let chatStreamSequence = 0;
 let companionStatusPollTimer = null;
 let companionStatusPollBusy = false;
 let companionLifecycleBound = false;
+let easyVtuberCaptureStream = null;
+let videoCompanionMediaStream = null;
+let videoCompanionSocket = null;
+let videoCompanionFrameTimer = null;
+let videoCompanionLastObservationKey = "";
+let videoCompanionLastObservationSavedAt = 0;
+const VIDEO_LOCAL_FRAME_INTERVAL_MS = 2000;
+const VIDEO_KIMI_VISION_FRAME_INTERVAL_MS = 20000;
 
 function tabSessionMode() {
   try {
@@ -701,6 +725,13 @@ function saveLastActive() {
 function renderShell() {
   normalizeSelfUseUiState();
   saveLastActive();
+  // Most UI actions update a small bit of state and then redraw the shell.  Keep
+  // the reader where they were instead of replacing the chat scroller at 0.
+  // New messages still explicitly call scrollChat() after rendering.
+  const previousChatLog = document.getElementById("chat-log");
+  const previousChatScrollTop = previousChatLog ? previousChatLog.scrollTop : null;
+  const previousStagePanel = document.querySelector(".self-use-stage-panel");
+  const previousStageScrollTop = previousStagePanel ? previousStagePanel.scrollTop : null;
   const restoreSearchFocus = document.activeElement?.classList?.contains("conversation-search");
   app.className = `app-shell view-${state.view || "chat"} ${selfUseMode() ? "self-use-shell" : ""} ${state.activePersona || state.activeGroupConversation ? "has-persona" : "no-persona"}`;
   const children = [renderSidebar(), renderMain()];
@@ -712,6 +743,28 @@ function renderShell() {
   if (state.integrationOpen) children.push(renderSelfUseIntegrationModal());
   if (!selfUseMode() && state.groupCreateOpen) children.push(renderGroupCreateModal());
   app.replaceChildren(...children);
+  if (previousChatScrollTop !== null) {
+    const restoreChatScroll = () => {
+      const chatLog = document.getElementById("chat-log");
+      if (!chatLog) return;
+      const maxScrollTop = Math.max(0, chatLog.scrollHeight - chatLog.clientHeight);
+      chatLog.scrollTop = Math.min(previousChatScrollTop, maxScrollTop);
+    };
+    // Restore synchronously for click-driven redraws, then once more after
+    // layout settles.  The second pass protects against font/image reflow.
+    restoreChatScroll();
+    requestAnimationFrame(restoreChatScroll);
+  }
+  if (previousStageScrollTop !== null) {
+    const restoreStageScroll = () => {
+      const stagePanel = document.querySelector(".self-use-stage-panel");
+      if (!stagePanel) return;
+      const maxScrollTop = Math.max(0, stagePanel.scrollHeight - stagePanel.clientHeight);
+      stagePanel.scrollTop = Math.min(previousStageScrollTop, maxScrollTop);
+    };
+    restoreStageScroll();
+    requestAnimationFrame(restoreStageScroll);
+  }
   if (restoreSearchFocus) {
     requestAnimationFrame(() => {
       const input = document.querySelector(".conversation-search");
@@ -801,15 +854,15 @@ function renderSelfUseRail() {
       h("strong", { text: "LING" }),
       h("small", { text: persona?.name || "Mio" }),
     ]),
-    h("nav", { class: "rail-actions", "aria-label": "LING controls" }, [
-      h("button", { type: "button", class: "rail-action active", title: "在场", "aria-label": "在场", text: "在", onclick: () => renderShell() }),
-      h("button", { type: "button", class: "rail-action", title: "资料", "aria-label": "资料", text: "资", onclick: openPersonaPanel }),
+    h("nav", { class: "companion-rail-actions", "aria-label": "LING controls" }, [
+      h("button", { type: "button", class: "rail-action active", title: "在场", "aria-label": "在场", text: "在场", onclick: () => renderShell() }),
+      h("button", { type: "button", class: "rail-action", title: "资料", "aria-label": "资料", text: "资料", onclick: openPersonaPanel }),
       h("button", {
         type: "button",
         class: "rail-action",
         title: "接入",
         "aria-label": "接入",
-        text: "接",
+        text: "接入",
         onclick: () => {
           state.integrationOpen = true;
           renderShell();
@@ -820,7 +873,7 @@ function renderSelfUseRail() {
         class: "rail-action",
         title: "记录",
         "aria-label": "记录",
-        text: "记",
+        text: "记录",
         onclick: () => {
           state.threadPanelOpen = true;
           state.editingConversationId = null;
@@ -830,9 +883,9 @@ function renderSelfUseRail() {
       h("button", {
         type: "button",
         class: "rail-action",
-        title: "我",
-        "aria-label": "我",
-        text: "我",
+        title: "我的",
+        "aria-label": "我的",
+        text: "我的",
         onclick: () => {
           state.profileOpen = true;
           renderShell();
@@ -845,7 +898,7 @@ function renderSelfUseRail() {
           class: "rail-action rail-admin",
           title: text.adminConsole,
           "aria-label": text.adminConsole,
-          text: "管",
+          text: "管理",
           onclick: () => {
             window.location.href = "/admin";
           },
@@ -2408,7 +2461,7 @@ function renderSelfUseVideoSetupCard() {
         disabled: state.integrationFlagSaving === "video_companion",
         onclick: () => setSelfUseIntegrationFlag("video_companion", !status.enabled),
       }),
-      h("button", { type: "button", class: "ghost compact", text: "打开", onclick: openVideoCompanionPage }),
+      h("button", { type: "button", class: "ghost compact", text: "主界面测试", onclick: () => startVideoCompanion() }),
       h("button", { type: "button", class: "ghost compact", text: "刷新", onclick: async () => {
         await loadAwarenessStatus();
         await loadCompanionStatus();
@@ -2538,7 +2591,7 @@ function readinessActionFor(item) {
         onclick: () => setSelfUseIntegrationFlag("video_companion", true),
       };
     }
-    return { text: video.connected ? "打开" : "接入", onclick: video.connected ? openVideoCompanionPage : openSelfUseIntegration };
+    return { text: video.connected ? "主界面开启" : "接入", onclick: video.connected ? () => startVideoCompanion() : openSelfUseIntegration };
   }
   return { text: "处理", onclick: openSelfUseIntegration };
 }
@@ -2686,7 +2739,7 @@ function personaEmbodimentProfile(persona) {
   const fallbackImageUrl = String(persona?.fallback_image_url || "").trim();
   const avatarUrl = String(persona?.avatar_url || "").trim();
   const visual = [
-    ["live2d_preview_url", live2dPreviewUrl, "Live2D preview", "preview"],
+    ["live2d_preview_url", live2dPreviewUrl, "临时静态形象", "preview"],
     ["fallback_image_url", fallbackImageUrl, "Fallback image", "fallback"],
     ["avatar_url", avatarUrl, "Legacy fallback", "legacy"],
   ].find(([, value]) => value);
@@ -2695,7 +2748,7 @@ function personaEmbodimentProfile(persona) {
     voiceProfile: String(statusEmbodiment.voice_profile || persona?.voice_profile || "").trim(),
     visualUrl: String(statusEmbodiment.visual_url || (visual ? visual[1] : "") || "").trim(),
     visualSource: String(statusEmbodiment.visual_source || (visual ? visual[0] : "none") || "none"),
-    visualLabel: String(statusEmbodiment.visual_label || (visual ? visual[2] : "Live2D pending")),
+    visualLabel: String(statusEmbodiment.visual_label || (visual ? visual[2] : "临时形象待绑定")),
     visualTone: String(statusEmbodiment.visual_tone || (visual ? visual[3] : "missing")),
   };
 }
@@ -2706,24 +2759,34 @@ function personaVisualUrl(persona) {
 
 function renderCompanionVisual(persona, embodiment) {
   const imageUrl = embodiment.visualUrl;
+  const capturedWindow = state.easyVtuberCaptureActive && easyVtuberCaptureStream;
   const currentModel = live2dCurrentModelBinding();
   const live2dLabel = embodiment.live2dModelId
-    ? `Bound ${embodiment.live2dModelId}`
-    : currentModel.label
-      ? `VTS ${currentModel.label}`
-      : "Body pending";
-  return h("button", {
-    type: "button",
-    class: `companion-visual ${embodiment.visualTone}`,
-    title: "编辑形象",
-    "aria-label": "编辑形象",
-    onclick: (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      openPersonaEditor();
-    },
-  }, [
-    imageUrl
+      ? `Bound ${embodiment.live2dModelId}`
+      : currentModel.label
+        ? `VTS ${currentModel.label}`
+      : "EasyVtuber 在外部窗口运行";
+  const attrs = capturedWindow
+    ? {
+      class: "companion-visual live-capture",
+      title: "已绑定 EasyVtuber 实时窗口",
+      "aria-label": "已绑定 EasyVtuber 实时窗口",
+    }
+    : {
+      type: "button",
+      class: `companion-visual ${embodiment.visualTone}`,
+      title: "编辑形象",
+      "aria-label": "编辑形象",
+      onclick: (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openPersonaEditor();
+      },
+    };
+  const visual = h(capturedWindow ? "div" : "button", attrs, [
+    capturedWindow
+      ? h("video", { autoplay: true, muted: true, playsinline: true })
+      : imageUrl
       ? h("img", {
           src: imageUrl,
           alt: persona?.name || "LING companion",
@@ -2735,9 +2798,22 @@ function renderCompanionVisual(persona, embodiment) {
           h("strong", { text: "Live2D" }),
           h("small", { text: "Bind body" }),
         ]),
-    h("span", { class: `companion-visual-source ${embodiment.visualTone}`, text: embodiment.visualLabel }),
+    h("span", {
+      class: `companion-visual-source ${capturedWindow ? "preview" : embodiment.visualTone}`,
+      text: capturedWindow ? "EasyVtuber 实时画面" : embodiment.visualLabel,
+    }),
     h("span", { class: "companion-visual-model", text: live2dLabel }),
   ]);
+  if (capturedWindow) {
+    const video = visual.querySelector("video");
+    if (video) {
+      video.srcObject = easyVtuberCaptureStream;
+      video.muted = true;
+      video.playsInline = true;
+      video.play().catch(() => {});
+    }
+  }
+  return visual;
 }
 
 function renderCompanionStage(persona) {
@@ -2775,6 +2851,7 @@ function renderCompanionStage(persona) {
       ]),
     ]),
     renderCompanionStageActions({ live2dEnabled, live2dConnected: live2dReady }),
+    selfUseMode() ? renderMainVideoCompanionSession() : null,
   ]);
 }
 
@@ -2792,13 +2869,31 @@ function renderCompanionStageActions({ live2dEnabled, live2dConnected }) {
 
   const statusEl = h("small", {
     class: `save-status companion-stage-action-status${state.presenceControlError ? " danger-text" : ""}`,
-    text: state.presenceControlError || "",
+    text: state.easyVtuberFeedback || state.presenceControlError || "",
   });
   const apiState = selfUseApiReadiness();
   const video = state.videoCompanionStatus || {};
-  const videoActive = !!video.status?.session_active;
   const videoCanControl = !!video.enabled && !!video.connected;
+  const videoUi = state.videoCompanionUi;
   const actions = [
+    h("button", {
+      type: "button",
+      class: "ghost compact",
+      text: state.easyVtuberOpening ? "正在打开..." : "打开 EasyVtuber",
+      disabled: state.easyVtuberOpening,
+      onclick: openEasyVtuber,
+    }),
+    h("button", {
+      type: "button",
+      class: state.easyVtuberCaptureActive ? "ghost compact" : "compact",
+      text: state.easyVtuberCaptureRequesting
+        ? "正在请求窗口..."
+        : state.easyVtuberCaptureActive
+          ? "取消窗口绑定"
+          : "绑定 EasyVtuber 窗口",
+      disabled: state.easyVtuberCaptureRequesting,
+      onclick: state.easyVtuberCaptureActive ? stopEasyVtuberWindowCapture : bindEasyVtuberWindow,
+    }),
     h("button", { type: "button", class: "ghost compact", text: "编辑形象", onclick: openPersonaEditor }),
     live2dEnabled
       ? live2dConnected
@@ -2839,13 +2934,89 @@ function renderCompanionStageActions({ live2dEnabled, live2dConnected }) {
         onclick: () => setSelfUseIntegrationFlag("video_companion", true),
       })
       : videoCanControl
-      ? videoActive
-        ? h("button", { type: "button", class: "ghost compact", text: "停止视频", onclick: () => stopVideoCompanion(statusEl) })
-        : h("button", { type: "button", class: "compact", text: "启动视频", onclick: () => startVideoCompanion(statusEl) })
-      : h("button", { type: "button", class: "ghost compact", text: "打开视频", onclick: openVideoCompanionPage }),
+      ? videoUi.cameraActive || videoUi.starting
+        ? h("button", { type: "button", class: "ghost compact", text: videoUi.starting ? "正在开启视频..." : "停止主界面视频", disabled: videoUi.starting, onclick: () => stopVideoCompanion(statusEl) })
+        : h("button", { type: "button", class: "compact", text: "开启主界面视频", onclick: () => startVideoCompanion(statusEl) })
+      : h("button", { type: "button", class: "ghost compact", text: "检查视频服务", onclick: () => loadAwarenessStatus().then(renderShell) }),
     statusEl,
   ].filter(Boolean);
   return h("div", { class: "companion-stage-actions self-use-stage-actions" }, actions);
+}
+
+async function openEasyVtuber() {
+  if (state.easyVtuberOpening) return;
+  state.easyVtuberOpening = true;
+  state.easyVtuberFeedback = "";
+  renderShell();
+  try {
+    const result = await api("/api/easyvtuber/open", { method: "POST" });
+    state.easyVtuberFeedback = result.already_running ? "已在运行" : "已启动";
+  } catch (err) {
+    state.easyVtuberFeedback = err.message || "打开失败";
+  } finally {
+    state.easyVtuberOpening = false;
+    renderShell();
+  }
+}
+
+function stopEasyVtuberWindowCapture() {
+  if (easyVtuberCaptureStream) {
+    easyVtuberCaptureStream.getTracks().forEach((track) => track.stop());
+  }
+  easyVtuberCaptureStream = null;
+  state.easyVtuberCaptureActive = false;
+  state.easyVtuberFeedback = "已取消 EasyVtuber 窗口绑定";
+  renderShell();
+}
+
+async function bindEasyVtuberWindow() {
+  if (state.easyVtuberCaptureRequesting) return;
+  if (!navigator.mediaDevices?.getDisplayMedia) {
+    state.easyVtuberFeedback = "当前浏览器不支持窗口捕获；请使用 Chrome 或 Edge。";
+    renderShell();
+    return;
+  }
+  state.easyVtuberCaptureRequesting = true;
+  state.easyVtuberFeedback = "请选择 EasyVtuber 的 Debug Output 窗口";
+  renderShell();
+  try {
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: {
+        displaySurface: "window",
+        cursor: "never",
+        frameRate: 30,
+      },
+      audio: false,
+      preferCurrentTab: false,
+      selfBrowserSurface: "exclude",
+    });
+    const track = stream.getVideoTracks()[0];
+    if (!track) {
+      stream.getTracks().forEach((item) => item.stop());
+      throw new Error("没有获取到窗口画面");
+    }
+    if (easyVtuberCaptureStream) {
+      easyVtuberCaptureStream.getTracks().forEach((item) => item.stop());
+    }
+    easyVtuberCaptureStream = stream;
+    state.easyVtuberCaptureActive = true;
+    state.easyVtuberFeedback = "EasyVtuber 画面已绑定到 LING";
+    track.addEventListener("ended", () => {
+      if (easyVtuberCaptureStream !== stream) return;
+      easyVtuberCaptureStream = null;
+      state.easyVtuberCaptureActive = false;
+      state.easyVtuberFeedback = "EasyVtuber 窗口共享已结束";
+      renderShell();
+    }, { once: true });
+  } catch (err) {
+    const denied = err?.name === "NotAllowedError" || err?.name === "AbortError";
+    state.easyVtuberFeedback = denied
+      ? "未绑定窗口：请选择 EasyVtuber 的 Debug Output 窗口后确认。"
+      : (err?.message || "窗口绑定失败");
+  } finally {
+    state.easyVtuberCaptureRequesting = false;
+    renderShell();
+  }
 }
 
 function llmConfigured() {
@@ -4294,8 +4465,8 @@ function renderComposer() {
   });
   const button = h("button", {
     type: "submit",
-    text: llmBlocked ? "未连接" : state.sending ? "等待" : text.send,
-    disabled: state.sending || llmBlocked ? "disabled" : null,
+    text: llmBlocked ? "未连接" : state.sending && state.view !== "group" ? "打断并发送" : text.send,
+    disabled: llmBlocked || (state.sending && state.view === "group") ? "disabled" : null,
   });
   const form = h("form", { class: "composer" }, [input, button]);
   input.value = loadDraft();
@@ -4313,7 +4484,7 @@ function renderComposer() {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const content = input.value.trim();
-    if (!content || state.sending || llmBlocked) return;
+    if (!content || llmBlocked || (state.sending && state.view === "group")) return;
     if (state.view === "group" && !state.activeGroupConversationId) return;
     if (state.view !== "group" && !state.activePersona) return;
     input.value = "";
@@ -4395,11 +4566,143 @@ function autoResizeTextarea(input) {
   input.style.height = `${Math.max(44, nextHeight)}px`;
 }
 
+async function apiChatStream(payload, onEvent, { signal } = {}) {
+  const isolated = tabSessionMode();
+  const token = tabSessionToken();
+  const headers = { "Content-Type": "application/json" };
+  if (isolated && token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch("/api/chat/stream", {
+    method: "POST",
+    credentials: isolated ? "omit" : "same-origin",
+    headers,
+    body: JSON.stringify(payload),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(apiErrorMessage(data.detail, `HTTP ${res.status}`));
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let eventName = "message";
+  let dataLines = [];
+  let finalData = null;
+  const dispatch = async () => {
+    if (!dataLines.length) return;
+    const data = JSON.parse(dataLines.join("\n"));
+    await onEvent(eventName, data);
+    if (eventName === "final") finalData = data;
+    if (eventName === "cancelled") throw new DOMException("Chat stream was interrupted.", "AbortError");
+    if (eventName === "error") throw new Error(data.message || "Chat service is temporarily unavailable.");
+    eventName = "message";
+    dataLines = [];
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const lines = buffer.split(/\r?\n/);
+    buffer = done ? "" : lines.pop();
+    for (const line of lines) {
+      if (!line) {
+        await dispatch();
+      } else if (line.startsWith("event:")) {
+        eventName = line.slice(6).trim() || "message";
+      } else if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trimStart());
+      }
+    }
+    if (done) break;
+  }
+  await dispatch();
+  if (!finalData) throw new Error("Chat stream ended without a final reply.");
+  return finalData;
+}
+
+function takeCompletedSpeechSentences(buffer, flush = false) {
+  const source = String(buffer || "");
+  const result = [];
+  let lastEnd = 0;
+  const sentenceRe = /[^。！？!?\n]+[。！？!?]+(?:[””』」])?/g;
+  let match;
+  while ((match = sentenceRe.exec(source))) {
+    const sentence = match[0].trim();
+    if (sentence) result.push(sentence);
+    lastEnd = sentenceRe.lastIndex;
+  }
+  const rest = source.slice(lastEnd);
+  if (flush && rest.trim()) result.push(rest.trim());
+  return { sentences: result, rest: flush ? "" : rest };
+}
+
+function createStreamingVoiceQueue(message, isCurrent = () => true) {
+  if (!voiceAutoPlayEnabled()) return null;
+  let queue = Promise.resolve();
+  let spoken = false;
+  let cancelled = false;
+  return {
+    enqueue(sentence) {
+      const text = String(sentence || "").trim();
+      if (!text || cancelled || !isCurrent()) return;
+      spoken = true;
+      queue = queue.then(async () => {
+        if (cancelled || !isCurrent()) return;
+        const utterance = {
+          role: "assistant",
+          id: message.id,
+          content: text,
+          expressions: [],
+          status: "sent",
+          performance: message.performance || {},
+        };
+        await playMessageVoice(utterance, null);
+        if (cancelled || !isCurrent()) return;
+        message.performance = utterance.performance || message.performance;
+      });
+    },
+    get spoken() { return spoken; },
+    cancel() { cancelled = true; },
+    done() { return queue; },
+  };
+}
+
+function createChatStreamId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `chat-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function cancelActiveChatStream() {
+  const active = activeChatStream;
+  if (!active) return false;
+  active.cancelled = true;
+  active.voiceQueue?.cancel();
+  active.controller.abort();
+  interruptVoicePlayback();
+  void api(`/api/chat/stream/${encodeURIComponent(active.streamId)}/cancel`, {
+    method: "POST",
+    keepalive: true,
+  }).catch(() => null);
+  return true;
+}
+
 async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId = null, clientMessageId = "" } = {}) {
-  if (!content || !state.activePersona || state.sending) return;
+  if (!content || !state.activePersona) return;
+  if (state.sending) cancelActiveChatStream();
   interruptVoicePlayback();
   const requestPersonaId = Number(state.activePersona.id);
   const outgoingClientMessageId = clientMessageId || (retryUserMessageId ? "" : createClientMessageId());
+  const activeRequest = {
+    id: ++chatStreamSequence,
+    streamId: createChatStreamId(),
+    controller: new AbortController(),
+    voiceQueue: null,
+    cancelled: false,
+  };
+  activeChatStream = activeRequest;
+  const isCurrentRequest = () => activeChatStream === activeRequest && !activeRequest.cancelled;
+  const canContinueVoiceQueue = () => !activeRequest.cancelled;
   let appliedReplyExpression = false;
   let autoVoiceMessage = null;
   state.sending = true;
@@ -4420,16 +4723,53 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
   renderShell();
   scrollChat();
   try {
-    const data = await api("/api/chat", {
-      method: "POST",
-      body: JSON.stringify({
-        message: content,
-        persona_id: state.activePersona.id,
-        conversation_id: state.activeConversationId,
-        retry_user_message_id: retryUserMessageId,
-        client_message_id: outgoingClientMessageId || null,
-      }),
-    });
+    const requestStartedAt = performance.now();
+    const streamingMessage = {
+      role: "assistant",
+      id: -Date.now(),
+      content: "",
+      expressions: [],
+      status: "streaming",
+      local_id: `stream-${Date.now()}`,
+      created_at: nowSeconds(),
+      performance: {},
+    };
+    let streamingMessageVisible = false;
+    let pendingSpeechText = "";
+    let voiceQueue = null;
+    let firstSpeechText = "";
+    const data = await apiChatStream({
+      message: content,
+      persona_id: state.activePersona.id,
+      conversation_id: state.activeConversationId,
+      retry_user_message_id: retryUserMessageId,
+      client_message_id: outgoingClientMessageId || null,
+      stream_id: activeRequest.streamId,
+    }, async (eventName, eventData) => {
+      if (!isCurrentRequest()) return;
+      if (eventName !== "delta") return;
+      const delta = String(eventData?.text || "");
+      if (!delta) return;
+      if (!streamingMessageVisible) {
+        state.messages.push(streamingMessage);
+        streamingMessageVisible = true;
+      }
+      streamingMessage.content += delta;
+      pendingSpeechText += delta;
+      const speech = takeCompletedSpeechSentences(pendingSpeechText);
+      pendingSpeechText = speech.rest;
+      if (!firstSpeechText && speech.sentences.length) {
+        firstSpeechText = speech.sentences[0];
+        voiceQueue ||= createStreamingVoiceQueue(streamingMessage, canContinueVoiceQueue);
+        activeRequest.voiceQueue = voiceQueue;
+        voiceQueue?.enqueue(firstSpeechText);
+      }
+      if (!updateStreamingMessageBubble(streamingMessage)) {
+        renderShell();
+      }
+      scrollChat({ force: false });
+    }, { signal: activeRequest.controller.signal });
+    if (!isCurrentRequest()) return;
     const stillViewingConversation = (
       state.view === "chat"
       && Number(state.activePersona?.id) === requestPersonaId
@@ -4448,15 +4788,34 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
           created_at: nowSeconds(),
         });
       } else {
-        autoVoiceMessage = {
-          role: "assistant",
-          content: data.reply,
-          expressions: data.expressions || [],
-          status: "sent",
-          id: data.assistant_message_id,
-          created_at: nowSeconds(),
+        if (!streamingMessageVisible) {
+          state.messages.push(streamingMessage);
+          streamingMessageVisible = true;
+        }
+        const replyForVoice = String(data.reply || streamingMessage.content || "").trim();
+        const remainingSpeechText = firstSpeechText && replyForVoice.startsWith(firstSpeechText)
+          ? replyForVoice.slice(firstSpeechText.length).trim()
+          : replyForVoice;
+        if (remainingSpeechText) {
+          voiceQueue ||= createStreamingVoiceQueue(streamingMessage, canContinueVoiceQueue);
+          activeRequest.voiceQueue = voiceQueue;
+          if (!firstSpeechText || remainingSpeechText !== firstSpeechText) {
+            voiceQueue?.enqueue(remainingSpeechText);
+          }
+        }
+        // The first queued utterance owns the temporary streaming id until it
+        // finishes.  Rewriting state.voicePlaying to the persisted id here
+        // prevents that playback from clearing its own state, which in turn
+        // makes every queued later sentence return early as "already playing".
+        streamingMessage.id = data.assistant_message_id;
+        streamingMessage.content = data.reply;
+        streamingMessage.expressions = data.expressions || [];
+        streamingMessage.status = "sent";
+        streamingMessage.performance = {
+          ...(data.performance && typeof data.performance === "object" ? data.performance : {}),
+          client_total_ms: Math.max(0, Math.round(performance.now() - requestStartedAt)),
         };
-        state.messages.push(autoVoiceMessage);
+        autoVoiceMessage = voiceQueue?.spoken ? null : streamingMessage;
         appliedReplyExpression = await applyMessageExpressionsToLive2d(data.expressions || []);
         await markConversationRead(data.conversation_id);
       }
@@ -4464,6 +4823,7 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
     }
     await loadMainData();
   } catch (err) {
+    if (!isCurrentRequest() || activeRequest.cancelled || err?.name === "AbortError") return;
     if (state.view === "chat" && Number(state.activePersona?.id) === requestPersonaId) {
       state.messages.push({
         role: "notice",
@@ -4478,6 +4838,8 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
     await loadPresenceStatus();
     await applyLive2dRuntimeState("idle");
   }
+  if (!isCurrentRequest()) return;
+  activeChatStream = null;
   state.sending = false;
   await syncCompanionRuntime({ applyLive2d: !appliedReplyExpression });
   renderShell();
@@ -4885,6 +5247,7 @@ function renderDateDivider(value) {
 function renderMessage(message) {
   const isUser = message.role === "user";
   const isNotice = message.role === "notice";
+  const timing = !isUser && !isNotice ? formatMessagePerformance(message.performance) : "";
   const segments = messageSegments(message);
   return h("article", { class: `message ${isUser ? "user" : isNotice ? "notice" : "assistant"}` }, [
     !selfUseMode() && !isUser && !isNotice ? avatar(state.activePersona?.name || "忆", state.activePersona?.avatar_url) : null,
@@ -4908,10 +5271,16 @@ function renderMessage(message) {
             })
           );
         }
-        return h("div", { class: `bubble ${message.status || ""}` }, children);
+        return h("div", {
+          class: `bubble ${message.status || ""}`,
+          ...(message.status === "streaming" && message.local_id
+            ? { "data-streaming-message": message.local_id }
+            : {}),
+        }, children);
       }),
       h("div", { class: "message-meta" }, [
         h("small", { class: "message-time", text: formatMessageTime(message.created_at) }),
+        timing ? h("small", { class: "message-performance", text: timing }) : null,
         h("button", {
           type: "button",
           class: "copy-message",
@@ -5248,31 +5617,379 @@ async function runProactiveTick(statusEl) {
 
 async function startVideoCompanion(statusEl) {
   if (statusEl) statusEl.textContent = "";
+  const ui = state.videoCompanionUi;
+  if (ui.starting || ui.cameraActive) return;
+  ui.starting = true;
+  ui.statusText = "正在申请摄像头和麦克风权限...";
+  renderShell();
   try {
     const personaId = state.activePersona?.id || null;
     const data = await api("/api/video-companion/session/start", {
       method: "POST",
       body: JSON.stringify({ persona_id: personaId }),
     });
-    if (statusEl) statusEl.textContent = data.started ? "视频会话已启动" : "视频会话未启动";
+    if (!data.started) throw new Error("Video Companion 未能启动后台会话");
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error("当前浏览器不支持摄像头和麦克风；请使用 Chrome 或 Edge");
+    }
+    videoCompanionMediaStream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
+      audio: true,
+    });
+    ui.cameraActive = videoCompanionMediaStream.getVideoTracks().some((track) => track.readyState === "live");
+    ui.microphoneActive = videoCompanionMediaStream.getAudioTracks().some((track) => track.readyState === "live");
+    ui.statusText = "主界面已取得本机摄像头和麦克风；正在连接后台帧分析服务...";
     await loadAwarenessStatus();
-    await syncCompanionRuntime({ reload: true, applyLive2d: true });
-    renderShell();
+    connectMainVideoCompanionSocket();
+    attachMainVideoPreview();
+    if (statusEl) statusEl.textContent = "主界面视频已开启";
   } catch (err) {
-    if (statusEl) statusEl.textContent = err.message;
+    stopMainVideoMedia({ keepStatus: true });
+    ui.statusText = `视频未开启：${err.message || "权限或设备不可用"}`;
+    if (statusEl) statusEl.textContent = ui.statusText;
+  } finally {
+    ui.starting = false;
+    renderShell();
+    attachMainVideoPreview();
   }
+}
+
+function mainVideoSocketOpen() {
+  return videoCompanionSocket?.readyState === WebSocket.OPEN;
+}
+
+function connectMainVideoCompanionSocket() {
+  const ui = state.videoCompanionUi;
+  const wsUrl = state.videoCompanionStatus?.config?.ws_url || "ws://127.0.0.1:8782/ws";
+  if (mainVideoSocketOpen() || !wsUrl) return;
+  try {
+    videoCompanionSocket?.close();
+    ui.socket = "connecting";
+    videoCompanionSocket = new WebSocket(wsUrl);
+    videoCompanionSocket.addEventListener("open", () => {
+      ui.socket = "connected";
+      ui.statusText = "主界面视频正在运行；文字回复和 mio 语音继续由澪主对话处理。";
+      sendVideoCompanionMessage({ type: "consent_update", item: "camera", granted: true, reason: "ling_main_ui" });
+      sendVideoCompanionMessage({ type: "consent_update", item: "microphone", granted: true, reason: "ling_main_ui" });
+      sendVideoCompanionMessage({
+        type: "consent_update",
+        item: "external_vision",
+        granted: ui.externalVisionActive,
+        reason: "ling_main_ui",
+      });
+      startMainVideoFrameCapture();
+      renderShell();
+      attachMainVideoPreview();
+    });
+    videoCompanionSocket.addEventListener("message", (event) => handleMainVideoCompanionMessage(event));
+    videoCompanionSocket.addEventListener("error", () => {
+      ui.socket = "error";
+      ui.statusText = "主界面预览已开启，但后台帧分析连接失败。";
+      renderShell();
+      attachMainVideoPreview();
+    });
+    videoCompanionSocket.addEventListener("close", () => {
+      if (!state.videoCompanionUi.cameraActive) return;
+      ui.socket = "disconnected";
+      stopMainVideoFrameCapture();
+      ui.statusText = "主界面预览仍在运行，但后台帧分析已断开。";
+      renderShell();
+      attachMainVideoPreview();
+    });
+  } catch (err) {
+    ui.socket = "error";
+    ui.statusText = `后台帧分析连接失败：${err.message || err}`;
+  }
+}
+
+function sendVideoCompanionMessage(payload) {
+  if (!mainVideoSocketOpen()) return false;
+  videoCompanionSocket.send(JSON.stringify(payload));
+  return true;
+}
+
+function setMainVideoExternalVision(enabled) {
+  const ui = state.videoCompanionUi;
+  if (!ui.cameraActive || !mainVideoSocketOpen()) {
+    ui.statusText = "请先开启主界面视频并等待帧链路连接。";
+    renderShell();
+    return;
+  }
+  if (enabled && !window.confirm(
+    "启用 Kimi 视觉后，LING 会最多每分钟上传 3 张压缩摄像头画面到 Moonshot，仅用于生成澪的画面观察。不会保存原始画面。确定启用吗？"
+  )) return;
+  if (!sendVideoCompanionMessage({
+    type: "consent_update",
+    item: "external_vision",
+    granted: enabled,
+    reason: enabled ? "ling_user_opt_in" : "ling_user_opt_out",
+  })) {
+    ui.statusText = "视觉授权未发送：后台帧链路未连接。";
+    renderShell();
+    return;
+  }
+  ui.externalVisionActive = enabled;
+  // A previous keyframe must never be presented as the current camera scene
+  // after the user changes consent.
+  ui.latestObservation = "";
+  restartMainVideoFrameCapture();
+  ui.statusText = enabled
+    ? "Kimi 视觉已启用：现在先看一帧，之后每 20 秒看一帧；澪仍通过右侧主对话回答。"
+    : "Kimi 视觉已关闭：不会继续上传新的摄像头画面。";
+  renderShell();
+}
+
+function handleMainVideoCompanionMessage(event) {
+  let message;
+  try {
+    message = JSON.parse(event.data);
+  } catch {
+    return;
+  }
+  const ui = state.videoCompanionUi;
+  if (message.type === "observation") {
+    const observation = message.data || message.observation || {};
+    const externalVisionObservation = Boolean(
+      observation.external_analysis
+      || observation.external_description
+      || message.external?.description
+    );
+    const content = summarizeMainVideoObservation(observation);
+    const observationKey = JSON.stringify({
+      content,
+      presence: observation.presence_status || observation.presence?.status || "",
+      face: observation.face_detected ?? observation.face?.detected ?? "",
+      motion: observation.motion || observation.motion_level || "",
+    });
+    // The local detector only proves that the frame pipeline works. It is not
+    // reliable enough to replace a Kimi scene description in LING's dialogue.
+    const shouldPersist = externalVisionObservation && (
+      observationKey !== videoCompanionLastObservationKey
+      || Date.now() - videoCompanionLastObservationSavedAt >= 10000
+    );
+    if (shouldPersist && state.activePersona?.id) {
+      videoCompanionLastObservationKey = observationKey;
+      videoCompanionLastObservationSavedAt = Date.now();
+      void persistMainVideoObservation(observation, content);
+    }
+    // Local frames arrive regularly. Re-rendering the whole page here recreates
+    // the <video> tag and makes the browser preview flash, so update one node.
+    if (externalVisionObservation && content && content !== ui.latestObservation) {
+      ui.latestObservation = content;
+      updateMainVideoObservationNode();
+    }
+    return;
+  }
+  if (message.type === "system_error" || message.type === "error") {
+    ui.statusText = `后台视频服务提示：${message.message || message.detail || "未知错误"}`;
+    renderShell();
+    attachMainVideoPreview();
+  }
+}
+
+function updateMainVideoObservationNode() {
+  const node = document.getElementById("main-video-latest-observation");
+  if (!node) return;
+  const content = state.videoCompanionUi.latestObservation;
+  node.textContent = content ? `Kimi 最新画面：${content}` : "Kimi 最新画面：等待首个关键帧";
+}
+
+function summarizeMainVideoObservation(observation) {
+  const rawDescription = String(
+    observation.content || observation.summary || observation.description || observation.external_description || ""
+  ).replace(/\s+/g, " ").trim();
+  const presence = String(observation.presence_status || observation.presence?.status || "").toLowerCase();
+  const face = observation.face || observation.face_detection || {};
+  const faceDetected = observation.face_detected ?? face.detected;
+  const faceCount = Number(observation.face_count ?? face.count ?? 0);
+  const rawMotion = observation.motion || observation.motion_level || observation.activity || "";
+  const motion = typeof rawMotion === "object" && rawMotion !== null
+    ? String(rawMotion.level || rawMotion.label || rawMotion.state || "").trim()
+    : String(rawMotion).trim();
+  const details = [];
+  if (["present", "detected", "visible", "true"].includes(presence)) {
+    details.push("检测到用户在镜头前");
+  } else if (["absent", "not_present", "missing", "false"].includes(presence)) {
+    details.push("当前没有检测到用户");
+  }
+  if (faceDetected === true || faceCount > 0) {
+    details.push(faceCount > 1 ? `检测到 ${faceCount} 张人脸` : "检测到一张人脸");
+  }
+  if (motion) details.push(`动作强度：${motion}`);
+  if (rawDescription && !/^(已收到|received|frame received|observation received)/i.test(rawDescription)) {
+    details.push(rawDescription.slice(0, 360));
+  }
+  return details.length
+    ? `摄像头本地观察：${details.join("；")}。`
+    : "摄像头画面已接入，但本地检测尚未提供可靠的人像判断。";
+}
+
+async function persistMainVideoObservation(observation, content) {
+  try {
+    await api("/api/video-companion/observation", {
+      method: "POST",
+      body: JSON.stringify({
+        persona_id: state.activePersona?.id,
+        description: content,
+        confidence: Number(observation.presence_confidence ?? observation.face?.confidence ?? 0.5),
+        metadata: {
+          presence_status: observation.presence_status || observation.presence?.status || "unknown",
+          face_detected: observation.face_detected ?? observation.face?.detected ?? null,
+          face_count: observation.face_count ?? observation.face?.count ?? null,
+          motion: typeof (observation.motion || observation.motion_level || observation.activity) === "object"
+            ? (observation.motion || observation.motion_level || observation.activity)?.level || ""
+            : observation.motion || observation.motion_level || observation.activity || "",
+          received_at: new Date().toISOString(),
+        },
+      }),
+    });
+  } catch (err) {
+    console.warn("[Video Companion] observation sync failed", err);
+  }
+}
+
+function attachMainVideoPreview() {
+  const preview = document.getElementById("main-video-companion-preview");
+  if (!preview || !videoCompanionMediaStream) return;
+  if (preview.srcObject !== videoCompanionMediaStream) preview.srcObject = videoCompanionMediaStream;
+  preview.muted = true;
+  preview.playsInline = true;
+  preview.play().catch(() => {});
+}
+
+function startMainVideoFrameCapture() {
+  if (videoCompanionFrameTimer) return;
+  captureMainVideoFrame();
+  videoCompanionFrameTimer = setInterval(() => {
+    captureMainVideoFrame();
+  }, mainVideoFrameIntervalMs());
+}
+
+function mainVideoFrameIntervalMs() {
+  return state.videoCompanionUi.externalVisionActive
+    ? VIDEO_KIMI_VISION_FRAME_INTERVAL_MS
+    : VIDEO_LOCAL_FRAME_INTERVAL_MS;
+}
+
+function restartMainVideoFrameCapture() {
+  stopMainVideoFrameCapture();
+  startMainVideoFrameCapture();
+}
+
+function captureMainVideoFrame() {
+  if (!state.videoCompanionUi.cameraActive || !mainVideoSocketOpen()) return;
+  const preview = document.getElementById("main-video-companion-preview");
+  if (!preview?.videoWidth || !preview?.videoHeight) return;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.min(preview.videoWidth, 640);
+  canvas.height = Math.round(canvas.width * preview.videoHeight / preview.videoWidth);
+  const context = canvas.getContext("2d");
+  context.drawImage(preview, 0, 0, canvas.width, canvas.height);
+  const data = canvas.toDataURL("image/jpeg", 0.7).split(",")[1];
+  if (sendVideoCompanionMessage({ type: "frame", data, width: canvas.width, height: canvas.height, format: "jpeg" })) {
+    state.videoCompanionUi.frameCount += 1;
+  }
+}
+
+function stopMainVideoFrameCapture() {
+  if (!videoCompanionFrameTimer) return;
+  clearInterval(videoCompanionFrameTimer);
+  videoCompanionFrameTimer = null;
+}
+
+function stopMainVideoMedia({ keepStatus = false } = {}) {
+  stopMainVideoFrameCapture();
+  if (videoCompanionSocket) {
+    try { videoCompanionSocket.close(); } catch {}
+    videoCompanionSocket = null;
+  }
+  if (videoCompanionMediaStream) {
+    videoCompanionMediaStream.getTracks().forEach((track) => track.stop());
+    videoCompanionMediaStream = null;
+  }
+  const ui = state.videoCompanionUi;
+  ui.cameraActive = false;
+  ui.microphoneActive = false;
+  ui.socket = "idle";
+  ui.externalVisionActive = false;
+  ui.frameCount = 0;
+  if (!keepStatus) ui.statusText = "主界面视频会话已停止";
+}
+
+function renderMainVideoCompanionSession() {
+  const ui = state.videoCompanionUi;
+  const status = state.videoCompanionStatus || {};
+  const asrProvider = String(status.status?.speech_stats?.asr_provider || status.status?.asr_provider || status.status?.providers?.asr || "").toLowerCase();
+  const analysisHint = ui.externalVisionActive
+    ? "Kimi 视觉正在低频分析压缩关键帧；画面描述会作为事实写入澪现有的 Moonshot 对话。"
+    : asrProvider === "mock"
+      ? "真实视觉当前关闭；仅保留本地预览和基础帧链路。麦克风语音识别仍待单独配置。"
+      : "真实视觉当前关闭；澪的文字对话和 mio 语音仍只在右侧主聊天中运行。";
+  const controls = [
+    ui.cameraActive
+      ? h("button", { type: "button", class: "ghost compact", text: "停止视频", onclick: () => stopVideoCompanion() })
+      : h("button", {
+        type: "button",
+        class: status.enabled && status.connected ? "compact" : "ghost compact",
+        text: ui.starting ? "正在开启..." : "开启摄像头与麦克风",
+        disabled: ui.starting,
+        title: status.enabled && status.connected ? "" : "后台服务当前未连接；点击会尝试启动会话并显示具体错误。",
+        onclick: () => startVideoCompanion(),
+      }),
+  ];
+  if (ui.cameraActive) {
+    controls.push(h("button", {
+      type: "button",
+      class: ui.externalVisionActive ? "ghost compact" : "compact",
+      text: ui.externalVisionActive ? "关闭 Kimi 视觉" : "启用 Kimi 视觉（低频上传）",
+      title: ui.externalVisionActive
+        ? "停止上传新的摄像头关键帧。"
+        : "最多每分钟上传 3 张压缩摄像头画面到 Moonshot；点击后会再次确认。",
+      onclick: () => setMainVideoExternalVision(!ui.externalVisionActive),
+    }));
+  }
+  const children = [
+    h("div", { class: "main-video-session-head" }, [
+      ui.cameraActive ? h("small", {
+        class: `awareness-status ${ui.socket === "connected" ? "ok" : "waiting"}`,
+        text: `帧链路：${ui.socket === "connected" ? "已连接" : "未连接"}${ui.frameCount ? ` · 已发送 ${ui.frameCount} 帧` : ""}`,
+      }) : null,
+      h("strong", { text: "主界面视频会话" }),
+      h("small", { class: `awareness-status ${ui.cameraActive ? "ok" : "waiting"}`, text: ui.cameraActive ? "摄像头已在 LING 内开启" : "未开启" }),
+    ]),
+    ui.cameraActive ? h("video", { id: "main-video-companion-preview", autoplay: true, muted: true, playsinline: true }) : null,
+    h("div", { class: "main-video-session-meta" }, [
+      h("span", { text: `麦克风：${ui.microphoneActive ? "已授权（语音识别待配置）" : "未开启"}` }),
+      h("span", { text: `后台帧链路：${ui.socket === "connected" ? "已连接" : ui.socket === "connecting" ? "连接中" : "未连接"}` }),
+      h("span", { text: `Kimi 视觉：${ui.externalVisionActive ? "已授权（每 20 秒一帧）" : "未授权"}` }),
+      ui.frameCount ? h("span", { text: `已发送 ${ui.frameCount} 帧` }) : null,
+    ]),
+    h("small", { class: "muted", text: ui.statusText }),
+    h("small", { class: "muted", text: analysisHint }),
+    h("small", {
+      id: "main-video-latest-observation",
+      class: "muted",
+      text: ui.latestObservation ? `Kimi 最新画面：${ui.latestObservation}` : "Kimi 最新画面：等待首个关键帧",
+    }),
+    h("div", { class: "awareness-actions" }, controls),
+  ].filter(Boolean);
+  const panel = h("section", { class: "main-video-session" }, children);
+  if (ui.cameraActive) requestAnimationFrame(attachMainVideoPreview);
+  return panel;
 }
 
 async function stopVideoCompanion(statusEl) {
   if (statusEl) statusEl.textContent = "";
+  stopMainVideoMedia();
   try {
     const data = await api("/api/video-companion/session/stop", { method: "POST" });
-    if (statusEl) statusEl.textContent = data.stopped ? "视频会话已停止" : "视频会话未停止";
+    if (statusEl) statusEl.textContent = data.stopped ? "主界面视频会话已停止" : "视频会话未停止";
     await loadAwarenessStatus();
     await syncCompanionRuntime({ reload: true, applyLive2d: true });
     renderShell();
   } catch (err) {
     if (statusEl) statusEl.textContent = err.message;
+    renderShell();
   }
 }
 
@@ -5302,7 +6019,6 @@ function renderVideoCompanionPanel() {
   const status = state.videoCompanionStatus || {};
   const config = status.config || {};
   const stateInfo = videoCompanionState();
-  const sessionActive = !!status.status?.session_active;
   const canControl = !!status.enabled && !!status.connected;
   const statusEl = h("small", { class: "save-status" });
 
@@ -5317,23 +6033,16 @@ function renderVideoCompanionPanel() {
         h("button", {
           type: "button",
           class: "ghost compact",
-          text: "打开视频页",
-          title: config.base_url || "http://127.0.0.1:8782",
-          onclick: openVideoCompanionPage,
-        }),
-        h("button", {
-          type: "button",
-          class: "ghost compact",
-          text: sessionActive ? "会话运行中" : "启动会话",
-          disabled: !canControl || sessionActive,
+          text: state.videoCompanionUi.cameraActive ? "主界面视频运行中" : "在主界面开启",
+          disabled: !canControl || state.videoCompanionUi.starting || state.videoCompanionUi.cameraActive,
           title: canControl ? "" : "需先启动 E:\\视觉\\video-companion 外部服务，并在 config.yaml 开启 video_companion.enabled",
           onclick: () => startVideoCompanion(statusEl),
         }),
         h("button", {
           type: "button",
           class: "ghost compact",
-          text: "停止会话",
-          disabled: !canControl || !sessionActive,
+          text: "停止主界面视频",
+          disabled: !canControl || !state.videoCompanionUi.cameraActive,
           title: canControl ? "" : "外部服务未连接",
           onclick: () => stopVideoCompanion(statusEl),
         }),
@@ -5342,7 +6051,7 @@ function renderVideoCompanionPanel() {
     ]),
     h("small", {
       class: "muted",
-      text: "实时摄像头、麦克风和视频理解由外部项目负责；主项目只做状态检查和会话入口。",
+      text: "摄像头预览、主对话和 mio 播放都在 LING 页面；外部项目只作为后台帧分析服务，不再打开它自己的聊天页面。",
     }),
   ]);
 }
@@ -5382,10 +6091,10 @@ function renderVideoCompanionCameraConsentRow() {
       h("label", { class: "awareness-toggle" }, [
         checkbox,
         h("span", {}, [
-          h("strong", { text: "Video Companion 摄像头授权" }),
+          h("strong", { text: "主界面视频会话授权" }),
           h("small", {
             class: `awareness-status ${checkbox.checked ? "ok" : "waiting"}`,
-            text: checkbox.checked ? "已允许外部视频会话读取授权" : "未授权",
+            text: checkbox.checked ? "已允许主界面发起视频会话" : "未授权",
           }),
         ]),
       ]),
@@ -5393,7 +6102,7 @@ function renderVideoCompanionCameraConsentRow() {
     ]),
     h("small", {
       class: "muted",
-      text: "摄像头采集、预览和连续视觉理解都在外部 Video Companion 中运行。",
+      text: "真正的摄像头和麦克风权限会由“开启主界面视频”按钮在此页面请求；该开关只记录本地授权偏好。",
     }),
   ]);
 }
@@ -5577,7 +6286,6 @@ function bindCompanionLifecycleRefresh() {
   document.addEventListener("visibilitychange", refreshWhenVisible);
   window.addEventListener("pageshow", refreshWhenVisible);
   window.addEventListener("online", refreshWhenVisible);
-  window.addEventListener("focus", refreshWhenVisible);
 }
 
 function stopCompanionStatusPolling() {
@@ -5591,19 +6299,13 @@ function stopCompanionStatusPolling() {
 async function pollCompanionStatus() {
   if (companionStatusPollBusy || !selfUseMode() || document.hidden) return;
   companionStatusPollBusy = true;
-  const before = companionStatusSignature();
   try {
     const loaded = await loadCompanionStatus({ preserveOnError: true });
     if (!loaded) return;
-    const changed = before !== companionStatusSignature();
-    const focusedTag = String(document.activeElement?.tagName || "").toLowerCase();
-    const editing = ["input", "textarea", "select"].includes(focusedTag)
-      || state.profileOpen
-      || state.personaPanelOpen
-      || state.integrationOpen
-      || state.privacyOpen;
-    if (changed && !editing) renderShell();
-    else refreshRuntimeIndicators();
+    // Status polling must never replace the chat tree: doing so loses a
+    // reader's position whenever the browser regains focus or a runtime label
+    // changes.  Explicit user actions still render their own panels.
+    refreshRuntimeIndicators();
   } finally {
     companionStatusPollBusy = false;
   }
@@ -5811,6 +6513,18 @@ function voicePlaybackIsCurrent(playback) {
   return !!playback && activeVoicePlayback === playback && !playback.interrupted;
 }
 
+function sameVoiceMessageId(left, right) {
+  return left !== null && left !== undefined
+    && right !== null && right !== undefined
+    && String(left) === String(right);
+}
+
+function localHttpVoiceStreamingEnabled() {
+  const provider = String(state.voiceConfig?.tts_provider || state.voiceConfig?.provider || "").trim().toLowerCase();
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  return provider === "local_http" && !!AudioContextClass && typeof ReadableStream !== "undefined";
+}
+
 function live2dLipSyncReady() {
   const status = state.live2dStatus || {};
   if (!live2dConnected() || status.lip_sync_enabled === false) return false;
@@ -5924,6 +6638,16 @@ function interruptVoicePlayback() {
       // The browser may reject seeking before media metadata is available.
     }
   }
+  if (playback.streamSources) {
+    for (const source of playback.streamSources) {
+      try { source.stop(); } catch {}
+    }
+    playback.streamSources.clear();
+  }
+  if (playback.streamContext) {
+    try { void playback.streamContext.close(); } catch {}
+    playback.streamContext = null;
+  }
   if (playback.finish) playback.finish();
   state.voicePlaying = null;
   state.voicePlaybackPhase = null;
@@ -5961,6 +6685,261 @@ async function loadVoiceSpeechPlan(text, expressionLabels, messageId, playback =
   }
 }
 
+function incrementalLocalVoiceEnabled(plan) {
+  const provider = String(state.voiceConfig?.tts_provider || state.voiceConfig?.provider || "").trim().toLowerCase();
+  const chunkCount = Number(plan?.chunk_count || plan?.utterances?.length || 0);
+  return provider === "local_http" && chunkCount > 1;
+}
+
+async function fetchVoiceChunkAudio(chunkIndex, text, expressionLabels, playback) {
+  const isolated = tabSessionMode();
+  const token = tabSessionToken();
+  const headers = { "Content-Type": "application/json" };
+  if (isolated && token) headers.Authorization = `Bearer ${token}`;
+  const startedAt = performance.now();
+  const res = await fetch(`/api/voice/tts-chunk/${chunkIndex}`, {
+    method: "POST",
+    credentials: isolated ? "omit" : "same-origin",
+    headers,
+    body: JSON.stringify({
+      reply_text: text,
+      expression_labels: expressionLabels,
+      persona_id: state.activePersona?.id || null,
+    }),
+    signal: playback.controller.signal,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(function() { return {}; });
+    throw new Error(err.detail?.error || err.detail || "语音生成失败");
+  }
+  const blob = await res.blob();
+  if (!blob || blob.size === 0) throw new Error("语音数据为空");
+  const serverMs = Number(res.headers.get("X-LING-TTS-Generation-Ms"));
+  return {
+    blob,
+    clientMs: Math.max(0, Math.round(performance.now() - startedAt)),
+    serverMs: Number.isFinite(serverMs) && serverMs >= 0 ? serverMs : null,
+  };
+}
+
+function appendAudioBytes(left, right) {
+  const combined = new Uint8Array(left.length + right.length);
+  combined.set(left, 0);
+  combined.set(right, left.length);
+  return combined;
+}
+
+function parseStreamingWavHeader(bytes) {
+  if (bytes.length < 44) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const tag = (offset, length) => String.fromCharCode(...bytes.slice(offset, offset + length));
+  if (tag(0, 4) !== "RIFF" || tag(8, 4) !== "WAVE" || tag(36, 4) !== "data") {
+    throw new Error("local streaming TTS returned an invalid WAV header");
+  }
+  const channels = view.getUint16(22, true);
+  const sampleRate = view.getUint32(24, true);
+  const bitsPerSample = view.getUint16(34, true);
+  if (!channels || !sampleRate || bitsPerSample !== 16) {
+    throw new Error("local streaming TTS returned an unsupported WAV format");
+  }
+  return { channels, sampleRate, headerBytes: 44 };
+}
+
+async function playStreamingLocalVoice(message, text, expressionLabels, playback, buttonEl) {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) throw new Error("browser does not support streaming audio playback");
+
+  const isolated = tabSessionMode();
+  const token = tabSessionToken();
+  const headers = { "Content-Type": "application/json" };
+  if (isolated && token) headers.Authorization = `Bearer ${token}`;
+
+  const requestStartedAt = performance.now();
+  const response = await fetch("/api/voice/tts-stream", {
+    method: "POST",
+    credentials: isolated ? "omit" : "same-origin",
+    headers,
+    body: JSON.stringify({
+      reply_text: text,
+      expression_labels: expressionLabels,
+      persona_id: state.activePersona?.id || null,
+    }),
+    signal: playback.controller.signal,
+  });
+  if (!voicePlaybackIsCurrent(playback)) return false;
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || "local streaming TTS failed");
+  }
+  if (!response.body) throw new Error("browser did not expose the streaming audio body");
+
+  const context = new AudioContextClass();
+  playback.streamContext = context;
+  playback.streamSources = new Set();
+  let pendingBytes = new Uint8Array();
+  let wav = null;
+  let nextStartAt = 0;
+  let firstAudioScheduled = false;
+  let endTimer = null;
+
+  const stopScheduledAudio = () => {
+    for (const source of playback.streamSources) {
+      try { source.stop(); } catch {}
+    }
+    playback.streamSources.clear();
+  };
+
+  const waitForScheduledAudio = () => new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (endTimer !== null) window.clearTimeout(endTimer);
+      playback.finish = null;
+      resolve();
+    };
+    playback.finish = finish;
+    const waitMs = Math.max(0, Math.ceil((nextStartAt - context.currentTime) * 1000) + 40);
+    endTimer = window.setTimeout(finish, waitMs);
+  });
+
+  const schedulePcm = (pcmBytes) => {
+    if (!wav || !pcmBytes.length) return;
+    const bytesPerFrame = wav.channels * 2;
+    const usableLength = pcmBytes.length - (pcmBytes.length % bytesPerFrame);
+    if (!usableLength) return;
+    const frames = usableLength / bytesPerFrame;
+    const buffer = context.createBuffer(wav.channels, frames, wav.sampleRate);
+    const view = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, usableLength);
+    for (let channel = 0; channel < wav.channels; channel += 1) {
+      const output = buffer.getChannelData(channel);
+      for (let frame = 0; frame < frames; frame += 1) {
+        output[frame] = view.getInt16((frame * wav.channels + channel) * 2, true) / 32768;
+      }
+    }
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(context.destination);
+    source.onended = () => playback.streamSources.delete(source);
+    const startAt = Math.max(context.currentTime + 0.06, nextStartAt || 0);
+    source.start(startAt);
+    nextStartAt = startAt + buffer.duration;
+    playback.streamSources.add(source);
+    if (!firstAudioScheduled) {
+      firstAudioScheduled = true;
+      message.performance = {
+        ...(message.performance && typeof message.performance === "object" ? message.performance : {}),
+        tts_client_ms: Math.max(0, Math.round(performance.now() - requestStartedAt)),
+        tts_stream_first_audio_ms: Math.max(0, Math.round(performance.now() - requestStartedAt)),
+      };
+      state.voicePlaybackPhase = "playing";
+      renderShell();
+      if (buttonEl) buttonEl.textContent = "播放中...";
+      refreshRuntimeIndicators();
+      void applyLive2dRuntimeState("speaking");
+    }
+  };
+
+  try {
+    if (context.state === "suspended") await context.resume();
+    const reader = response.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!voicePlaybackIsCurrent(playback)) return false;
+      if (value?.length) pendingBytes = appendAudioBytes(pendingBytes, value);
+      if (!wav) {
+        wav = parseStreamingWavHeader(pendingBytes);
+        if (!wav) continue;
+        pendingBytes = pendingBytes.slice(wav.headerBytes);
+      }
+      const bytesPerFrame = wav.channels * 2;
+      const usableLength = pendingBytes.length - (pendingBytes.length % bytesPerFrame);
+      if (usableLength) {
+        schedulePcm(pendingBytes.slice(0, usableLength));
+        pendingBytes = pendingBytes.slice(usableLength);
+      }
+    }
+    if (!voicePlaybackIsCurrent(playback)) return false;
+    if (!firstAudioScheduled) throw new Error("local streaming TTS returned no audio frames");
+    await waitForScheduledAudio();
+    return !playback.interrupted;
+  } finally {
+    if (endTimer !== null) window.clearTimeout(endTimer);
+    stopScheduledAudio();
+    playback.finish = null;
+    playback.streamSources = null;
+    playback.streamContext = null;
+    try { await context.close(); } catch {}
+  }
+}
+
+async function playVoiceAudioBlob(blob, playback, onStarted = null) {
+  const audioUrl = URL.createObjectURL(blob);
+  try {
+    const audio = new Audio(audioUrl);
+    playback.audio = audio;
+    const playbackFinished = new Promise(function(resolve) {
+      let settled = false;
+      const finish = function(value) {
+        if (settled) return;
+        settled = true;
+        playback.finish = null;
+        resolve(value);
+      };
+      playback.finish = function() { finish(); };
+      audio.onended = function() { finish(); };
+      audio.onerror = function() { finish({ error: new Error("浏览器无法播放此音频") }); };
+    });
+    await audio.play();
+    if (!voicePlaybackIsCurrent(playback)) return;
+    playback.lipSync = await startLive2dLipSync(audio, playback);
+    if (!voicePlaybackIsCurrent(playback)) return;
+    if (onStarted) await onStarted();
+    const playbackResult = await playbackFinished;
+    if (playbackResult?.error) throw playbackResult.error;
+  } finally {
+    if (playback.lipSync) {
+      const lipSync = playback.lipSync;
+      playback.lipSync = null;
+      await lipSync.stop();
+    }
+    playback.audio = null;
+    playback.finish = null;
+    URL.revokeObjectURL(audioUrl);
+  }
+}
+
+async function playIncrementalLocalVoice(message, text, expressionLabels, playback, buttonEl) {
+  const totalChunks = Number(state.voicePlan?.chunk_count || state.voicePlan?.utterances?.length || 0);
+  if (totalChunks < 2) return false;
+  let nextAudio = fetchVoiceChunkAudio(0, text, expressionLabels, playback);
+  for (let index = 0; index < totalChunks; index += 1) {
+    const current = await nextAudio;
+    if (!voicePlaybackIsCurrent(playback)) return false;
+    if (index + 1 < totalChunks) {
+      nextAudio = fetchVoiceChunkAudio(index + 1, text, expressionLabels, playback);
+    }
+    if (index === 0) {
+      message.performance = {
+        ...(message.performance && typeof message.performance === "object" ? message.performance : {}),
+        tts_client_ms: current.clientMs,
+        ...(current.serverMs !== null ? { tts_server_ms: current.serverMs } : {}),
+      };
+    }
+    await playVoiceAudioBlob(current.blob, playback, async () => {
+      if (index !== 0) return;
+      state.voicePlaybackPhase = "playing";
+      renderShell();
+      if (buttonEl) buttonEl.textContent = "播放中…";
+      refreshRuntimeIndicators();
+      await applyLive2dRuntimeState("speaking");
+    });
+    if (!voicePlaybackIsCurrent(playback)) return false;
+  }
+  return !playback.interrupted;
+}
+
 async function playMessageVoice(message, buttonEl) {
   if (state.voicePlaying) return;
 
@@ -5987,8 +6966,7 @@ async function playMessageVoice(message, buttonEl) {
   state.voicePlan = null;
   state.voicePlanMessageId = null;
   try {
-    await loadVoiceSpeechPlan(text, expressionLabels, messageId, playback);
-    if (!voicePlaybackIsCurrent(playback)) return;
+    const useLocalStreaming = localHttpVoiceStreamingEnabled();
     await applyLive2dRuntimeState("thinking");
     if (!voicePlaybackIsCurrent(playback)) return;
     renderShell();
@@ -5997,11 +6975,43 @@ async function playMessageVoice(message, buttonEl) {
       buttonEl.disabled = true;
     }
 
+    // The local WAV stream already begins synthesis at the service.  Asking for
+    // a separate speech plan first adds a whole HTTP round trip before the
+    // first spoken sentence, without changing streamed playback.
+    if (useLocalStreaming) {
+      voicePlaybackCompleted = await playStreamingLocalVoice(
+        message,
+        text,
+        expressionLabels,
+        playback,
+        buttonEl,
+      );
+      return;
+    }
+
+    const speechPlan = await loadVoiceSpeechPlan(text, expressionLabels, messageId, playback);
+    if (!voicePlaybackIsCurrent(playback)) return;
+
+    // Local GPT-SoVITS returns complete MP3 files. For a multi-sentence reply,
+    // request the next utterance while the current one is playing instead of
+    // waiting for one long synthesis job to finish.
+    if (incrementalLocalVoiceEnabled(speechPlan)) {
+      voicePlaybackCompleted = await playIncrementalLocalVoice(
+        message,
+        text,
+        expressionLabels,
+        playback,
+        buttonEl,
+      );
+      return;
+    }
+
     const isolated = tabSessionMode();
     const token = tabSessionToken();
     const headers = {};
     if (isolated && token) headers.Authorization = `Bearer ${token}`;
 
+    const voiceRequestStartedAt = performance.now();
     const res = await fetch("/api/voice/tts-reply", {
       method: "POST",
       credentials: isolated ? "omit" : "same-origin",
@@ -6025,6 +7035,13 @@ async function playMessageVoice(message, buttonEl) {
     if (!audioBlob || audioBlob.size === 0) {
       throw new Error("语音数据为空");
     }
+
+    const serverGenerationMs = Number(res.headers.get("X-LING-TTS-Generation-Ms"));
+    message.performance = {
+      ...(message.performance && typeof message.performance === "object" ? message.performance : {}),
+      tts_client_ms: Math.max(0, Math.round(performance.now() - voiceRequestStartedAt)),
+      ...(Number.isFinite(serverGenerationMs) && serverGenerationMs >= 0 ? { tts_server_ms: serverGenerationMs } : {}),
+    };
 
     const audioUrl = URL.createObjectURL(audioBlob);
     try {
@@ -6055,6 +7072,7 @@ async function playMessageVoice(message, buttonEl) {
       playback.lipSync = await startLive2dLipSync(audio, playback);
       if (!voicePlaybackIsCurrent(playback)) return;
       state.voicePlaybackPhase = "playing";
+      renderShell();
       if (buttonEl) buttonEl.textContent = "播放中...";
       refreshRuntimeIndicators();
       await applyLive2dRuntimeState("speaking");
@@ -6083,7 +7101,7 @@ async function playMessageVoice(message, buttonEl) {
     }
   } finally {
     if (activeVoicePlayback === playback) activeVoicePlayback = null;
-    if (Number(state.voicePlaying) === Number(messageId)) {
+    if (sameVoiceMessageId(state.voicePlaying, messageId)) {
       state.voicePlaying = null;
       state.voicePlaybackPhase = null;
     }
@@ -6112,8 +7130,8 @@ async function playMessageVoice(message, buttonEl) {
 function renderVoiceButton(message) {
   if (!voiceAvailable()) return null;
 
-  var isPlaying = Number(state.voicePlaying) === Number(message.id);
-  var hasError = !isPlaying && Number(state.voiceErrorMessageId) === Number(message.id) && !!state.voiceError;
+  var isPlaying = sameVoiceMessageId(state.voicePlaying, message.id);
+  var hasError = !isPlaying && sameVoiceMessageId(state.voiceErrorMessageId, message.id) && !!state.voiceError;
   var label = isPlaying ? "播放中..." : "播放语音";
 
   var btn = h("button", {
@@ -6279,9 +7297,17 @@ function renderLive2dPanel(persona) {
 
 function messageSegments(message) {
   const content = String(message.content || "").trim();
-  if (!content) return [""];
-  if (message.role !== "assistant" || message.status === "error") return [content];
-  return splitAssistantContent(content);
+  // A complete server reply must remain one message bubble.  Splitting it here
+  // only creates several bubbles at the same instant; it is not streaming.
+  return [content];
+}
+
+function updateStreamingMessageBubble(message) {
+  if (!message?.local_id || message.status !== "streaming") return false;
+  const bubble = document.querySelector(`[data-streaming-message="${message.local_id}"]`);
+  if (!bubble) return false;
+  bubble.textContent = String(message.content || "").trim();
+  return true;
 }
 
 function splitAssistantContent(content) {
@@ -6380,6 +7406,25 @@ function formatMessageTime(value) {
   const date = new Date(Number(value) * 1000);
   if (Number.isNaN(date.getTime())) return "";
   return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+function formatMessagePerformance(metrics) {
+  if (!selfUseMode() || !metrics || typeof metrics !== "object") return "";
+  const toMs = (value) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric >= 0 ? numeric : 0;
+  };
+  const total = toMs(metrics.client_total_ms || metrics.total_ms);
+  if (total < 100) return "";
+  const model = toMs(metrics.model_ms);
+  const preparation = toMs(metrics.preparation_ms);
+  const tts = toMs(metrics.tts_client_ms || metrics.tts_server_ms);
+  const formatSeconds = (milliseconds) => `${(milliseconds / 1000).toFixed(milliseconds >= 10000 ? 0 : 1)}s`;
+  const parts = [`响应 ${formatSeconds(total)}`];
+  if (model >= 100) parts.push(`模型 ${formatSeconds(model)}`);
+  if (preparation >= 300) parts.push(`准备 ${formatSeconds(preparation)}`);
+  if (tts >= 100) parts.push(`语音 ${formatSeconds(tts)}`);
+  return parts.join(" · ");
 }
 
 function messageDateKey(value) {
@@ -6491,6 +7536,11 @@ function resetClientState() {
   stopCompanionStatusPolling();
   interruptVoicePlayback();
   clearLive2dExpressionReset();
+  stopMainVideoMedia();
+  if (easyVtuberCaptureStream) {
+    easyVtuberCaptureStream.getTracks().forEach((track) => track.stop());
+    easyVtuberCaptureStream = null;
+  }
   state = {
     user: null,
     profile: null,
@@ -6554,15 +7604,32 @@ function resetClientState() {
     integrationFlagError: null,
     integrationConfigSaving: "",
     integrationConfigFeedback: {},
+    easyVtuberOpening: false,
+    easyVtuberCaptureRequesting: false,
+    easyVtuberCaptureActive: false,
+    easyVtuberFeedback: "",
     privacyPolicy: null,
     cameraPreviewActive: false,
+    videoCompanionUi: {
+      starting: false,
+      cameraActive: false,
+      microphoneActive: false,
+      socket: "idle",
+      statusText: "未在主界面开启视频会话",
+      latestObservation: "",
+      frameCount: 0,
+    },
   };
 }
 
-function scrollChat() {
+function scrollChat({ force = true } = {}) {
+  const currentLog = document.getElementById("chat-log");
+  const nearBottom = !currentLog || (
+    currentLog.scrollHeight - currentLog.scrollTop - currentLog.clientHeight <= 96
+  );
   requestAnimationFrame(() => {
     const log = document.getElementById("chat-log");
-    if (log) log.scrollTop = log.scrollHeight;
+    if (log && (force || nearBottom)) log.scrollTop = log.scrollHeight;
   });
 }
 
