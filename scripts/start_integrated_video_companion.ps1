@@ -130,6 +130,30 @@ legacy_bridge:
   api_key_env: "$BridgeApiKeyEnv"
   timeout: 10
   retries: 2
+
+vision_provider:
+  # Kimi exposes an OpenAI-compatible vision API. Keep it disabled until the
+  # user explicitly opts in from LING's main video panel.
+  provider: "openai"
+  model: "moonshot-v1-8k-vision-preview"
+  api_key_env: "MOONSHOT_API_KEY"
+  api_base: "https://api.moonshot.cn/v1"
+  default_on: false
+  max_frames_per_minute: 3
+  max_cost_per_hour: 0.10
+  max_cost_per_day: 0.50
+  max_resolution: 640
+  fallback_on_limit: "skip"
+
+privacy:
+  defaults:
+    camera: false
+    microphone: false
+    external_vision: false
+    save_summary: false
+    save_observation: false
+  save_raw_media: false
+  log_redact_pii: true
 "@ | Set-Content -LiteralPath $VideoConfig -Encoding UTF8
 
 if ($DryRun) {

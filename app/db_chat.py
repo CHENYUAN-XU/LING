@@ -33,6 +33,7 @@ from .growth_guidance import cancel_guidance_from_chat, maybe_store_chat_guidanc
 from .presence_loop import detect_quiet_mode_request, on_reply_end, on_reply_start, on_user_message, presence_enabled as presence_is_enabled
 from .persona_forge import build_ling_prompt
 from .runtime_state import get_runtime_state
+from .world_state import get_recent_world_observations
 
 
 CHAT_RENDERING_RULES = """聊天输出规则：
@@ -520,6 +521,7 @@ def db_chat(
         "Conversation rolling summary: unavailable.",
     )
     state_context = _best_effort("StatePrompt", lambda: state_prompt(user_id, persona_id), "Current state: unavailable.")
+    video_context = _best_effort("VideoContext", lambda: _fresh_video_context_prompt(user_id), "")
     summary_context = _best_effort("MemorySummaryPrompt", lambda: summary_prompt(user_id, persona_id), "Memory summary: unavailable.")
     layered_context = _best_effort("LayeredPrompt", lambda: layered_memory_prompt(layered), "Layered memory: unavailable.")
     semantic_context = _best_effort("SemanticPrompt", lambda: semantic_memory_prompt(semantic_memories), "Semantic memory: unavailable.")
@@ -544,6 +546,7 @@ def db_chat(
     insight_context = _safe_context(insight_context)
     conversation_context = _safe_context(conversation_context)
     state_context = _safe_context(state_context)
+    video_context = _safe_context(video_context)
     summary_context = _safe_context(summary_context)
     layered_context = _safe_context(layered_context)
     semantic_context = _safe_context(semantic_context)
@@ -557,6 +560,7 @@ def db_chat(
     insight_context = _replace_stale_persona_names(insight_context, str(persona.get("name") or ""), stale_persona_names)
     conversation_context = _replace_stale_persona_names(conversation_context, str(persona.get("name") or ""), stale_persona_names)
     state_context = _replace_stale_persona_names(state_context, str(persona.get("name") or ""), stale_persona_names)
+    video_context = _replace_stale_persona_names(video_context, str(persona.get("name") or ""), stale_persona_names)
     summary_context = _replace_stale_persona_names(summary_context, str(persona.get("name") or ""), stale_persona_names)
     layered_context = _replace_stale_persona_names(layered_context, str(persona.get("name") or ""), stale_persona_names)
     semantic_context = _replace_stale_persona_names(semantic_context, str(persona.get("name") or ""), stale_persona_names)
@@ -589,6 +593,7 @@ def db_chat(
         {"role": "system", "content": insight_context},
         {"role": "system", "content": conversation_context},
         {"role": "system", "content": state_context},
+        {"role": "system", "content": video_context},
         {"role": "system", "content": summary_context},
         {"role": "system", "content": layered_context},
         {"role": "system", "content": semantic_context},
@@ -617,6 +622,7 @@ def db_chat(
             "insight_prompt": insight_context,
             "conversation_summary_prompt": conversation_context,
             "state_prompt": state_context,
+            "video_context": video_context,
             "summary_prompt": summary_context,
             "layered_prompt": layered_context,
             "semantic_memory_prompt": semantic_context,
@@ -889,6 +895,32 @@ def _pending_reply_payload(conversation: dict, persona_id: int, user_message_id:
 
 def _safe_context(text: str) -> str:
     return scrub_identity_text(text)
+
+
+def _fresh_video_context_prompt(user_id: int) -> str:
+    """Return the latest short-lived, grounded browser camera observation."""
+    observations = get_recent_world_observations(
+        user_id,
+        source="video_companion",
+        observation_type="video_observation",
+        limit=1,
+    )
+    if not observations:
+        return ""
+    observation = observations[0]
+    age_seconds = max(0, now_ts() - int(observation.get("created_at") or 0))
+    if age_seconds > 30:
+        return ""
+    content = re.sub(r"\s+", " ", str(observation.get("content") or "")).strip()[:600]
+    if not content:
+        return ""
+    return (
+        "Fresh camera observation from the user's currently permitted browser camera "
+        f"({age_seconds}s old): {content}\n"
+        "Use it only when the user asks about what is visible, their presence, or the live scene. "
+        "Treat it as incomplete local detection, never invent visual details beyond it. "
+        "If it says the detector cannot judge, be transparent instead of claiming to see."
+    )
 
 
 def _final_persona_lock(persona: dict) -> str:

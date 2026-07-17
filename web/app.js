@@ -119,6 +119,7 @@ let state = {
     cameraActive: false,
     microphoneActive: false,
     socket: "idle",
+    externalVisionActive: false,
     statusText: "未在主界面开启视频会话",
     latestObservation: "",
     frameCount: 0,
@@ -138,6 +139,10 @@ let easyVtuberCaptureStream = null;
 let videoCompanionMediaStream = null;
 let videoCompanionSocket = null;
 let videoCompanionFrameTimer = null;
+let videoCompanionLastObservationKey = "";
+let videoCompanionLastObservationSavedAt = 0;
+const VIDEO_LOCAL_FRAME_INTERVAL_MS = 2000;
+const VIDEO_KIMI_VISION_FRAME_INTERVAL_MS = 20000;
 
 function tabSessionMode() {
   try {
@@ -725,6 +730,8 @@ function renderShell() {
   // New messages still explicitly call scrollChat() after rendering.
   const previousChatLog = document.getElementById("chat-log");
   const previousChatScrollTop = previousChatLog ? previousChatLog.scrollTop : null;
+  const previousStagePanel = document.querySelector(".self-use-stage-panel");
+  const previousStageScrollTop = previousStagePanel ? previousStagePanel.scrollTop : null;
   const restoreSearchFocus = document.activeElement?.classList?.contains("conversation-search");
   app.className = `app-shell view-${state.view || "chat"} ${selfUseMode() ? "self-use-shell" : ""} ${state.activePersona || state.activeGroupConversation ? "has-persona" : "no-persona"}`;
   const children = [renderSidebar(), renderMain()];
@@ -747,6 +754,16 @@ function renderShell() {
     // layout settles.  The second pass protects against font/image reflow.
     restoreChatScroll();
     requestAnimationFrame(restoreChatScroll);
+  }
+  if (previousStageScrollTop !== null) {
+    const restoreStageScroll = () => {
+      const stagePanel = document.querySelector(".self-use-stage-panel");
+      if (!stagePanel) return;
+      const maxScrollTop = Math.max(0, stagePanel.scrollHeight - stagePanel.clientHeight);
+      stagePanel.scrollTop = Math.min(previousStageScrollTop, maxScrollTop);
+    };
+    restoreStageScroll();
+    requestAnimationFrame(restoreStageScroll);
   }
   if (restoreSearchFocus) {
     requestAnimationFrame(() => {
@@ -5654,7 +5671,12 @@ function connectMainVideoCompanionSocket() {
       ui.statusText = "主界面视频正在运行；文字回复和 mio 语音继续由澪主对话处理。";
       sendVideoCompanionMessage({ type: "consent_update", item: "camera", granted: true, reason: "ling_main_ui" });
       sendVideoCompanionMessage({ type: "consent_update", item: "microphone", granted: true, reason: "ling_main_ui" });
-      sendVideoCompanionMessage({ type: "consent_update", item: "external_vision", granted: false, reason: "ling_main_ui" });
+      sendVideoCompanionMessage({
+        type: "consent_update",
+        item: "external_vision",
+        granted: ui.externalVisionActive,
+        reason: "ling_main_ui",
+      });
       startMainVideoFrameCapture();
       renderShell();
       attachMainVideoPreview();
@@ -5686,6 +5708,37 @@ function sendVideoCompanionMessage(payload) {
   return true;
 }
 
+function setMainVideoExternalVision(enabled) {
+  const ui = state.videoCompanionUi;
+  if (!ui.cameraActive || !mainVideoSocketOpen()) {
+    ui.statusText = "请先开启主界面视频并等待帧链路连接。";
+    renderShell();
+    return;
+  }
+  if (enabled && !window.confirm(
+    "启用 Kimi 视觉后，LING 会最多每分钟上传 3 张压缩摄像头画面到 Moonshot，仅用于生成澪的画面观察。不会保存原始画面。确定启用吗？"
+  )) return;
+  if (!sendVideoCompanionMessage({
+    type: "consent_update",
+    item: "external_vision",
+    granted: enabled,
+    reason: enabled ? "ling_user_opt_in" : "ling_user_opt_out",
+  })) {
+    ui.statusText = "视觉授权未发送：后台帧链路未连接。";
+    renderShell();
+    return;
+  }
+  ui.externalVisionActive = enabled;
+  // A previous keyframe must never be presented as the current camera scene
+  // after the user changes consent.
+  ui.latestObservation = "";
+  restartMainVideoFrameCapture();
+  ui.statusText = enabled
+    ? "Kimi 视觉已启用：现在先看一帧，之后每 20 秒看一帧；澪仍通过右侧主对话回答。"
+    : "Kimi 视觉已关闭：不会继续上传新的摄像头画面。";
+  renderShell();
+}
+
 function handleMainVideoCompanionMessage(event) {
   let message;
   try {
@@ -5696,11 +5749,34 @@ function handleMainVideoCompanionMessage(event) {
   const ui = state.videoCompanionUi;
   if (message.type === "observation") {
     const observation = message.data || message.observation || {};
-    const content = String(observation.content || observation.summary || observation.description || "已收到画面观察").replace(/\s+/g, " ").trim();
-    if (content && content !== ui.latestObservation) {
+    const externalVisionObservation = Boolean(
+      observation.external_analysis
+      || observation.external_description
+      || message.external?.description
+    );
+    const content = summarizeMainVideoObservation(observation);
+    const observationKey = JSON.stringify({
+      content,
+      presence: observation.presence_status || observation.presence?.status || "",
+      face: observation.face_detected ?? observation.face?.detected ?? "",
+      motion: observation.motion || observation.motion_level || "",
+    });
+    // The local detector only proves that the frame pipeline works. It is not
+    // reliable enough to replace a Kimi scene description in LING's dialogue.
+    const shouldPersist = externalVisionObservation && (
+      observationKey !== videoCompanionLastObservationKey
+      || Date.now() - videoCompanionLastObservationSavedAt >= 10000
+    );
+    if (shouldPersist && state.activePersona?.id) {
+      videoCompanionLastObservationKey = observationKey;
+      videoCompanionLastObservationSavedAt = Date.now();
+      void persistMainVideoObservation(observation, content);
+    }
+    // Local frames arrive regularly. Re-rendering the whole page here recreates
+    // the <video> tag and makes the browser preview flash, so update one node.
+    if (externalVisionObservation && content && content !== ui.latestObservation) {
       ui.latestObservation = content;
-      renderShell();
-      attachMainVideoPreview();
+      updateMainVideoObservationNode();
     }
     return;
   }
@@ -5708,6 +5784,67 @@ function handleMainVideoCompanionMessage(event) {
     ui.statusText = `后台视频服务提示：${message.message || message.detail || "未知错误"}`;
     renderShell();
     attachMainVideoPreview();
+  }
+}
+
+function updateMainVideoObservationNode() {
+  const node = document.getElementById("main-video-latest-observation");
+  if (!node) return;
+  const content = state.videoCompanionUi.latestObservation;
+  node.textContent = content ? `Kimi 最新画面：${content}` : "Kimi 最新画面：等待首个关键帧";
+}
+
+function summarizeMainVideoObservation(observation) {
+  const rawDescription = String(
+    observation.content || observation.summary || observation.description || observation.external_description || ""
+  ).replace(/\s+/g, " ").trim();
+  const presence = String(observation.presence_status || observation.presence?.status || "").toLowerCase();
+  const face = observation.face || observation.face_detection || {};
+  const faceDetected = observation.face_detected ?? face.detected;
+  const faceCount = Number(observation.face_count ?? face.count ?? 0);
+  const rawMotion = observation.motion || observation.motion_level || observation.activity || "";
+  const motion = typeof rawMotion === "object" && rawMotion !== null
+    ? String(rawMotion.level || rawMotion.label || rawMotion.state || "").trim()
+    : String(rawMotion).trim();
+  const details = [];
+  if (["present", "detected", "visible", "true"].includes(presence)) {
+    details.push("检测到用户在镜头前");
+  } else if (["absent", "not_present", "missing", "false"].includes(presence)) {
+    details.push("当前没有检测到用户");
+  }
+  if (faceDetected === true || faceCount > 0) {
+    details.push(faceCount > 1 ? `检测到 ${faceCount} 张人脸` : "检测到一张人脸");
+  }
+  if (motion) details.push(`动作强度：${motion}`);
+  if (rawDescription && !/^(已收到|received|frame received|observation received)/i.test(rawDescription)) {
+    details.push(rawDescription.slice(0, 360));
+  }
+  return details.length
+    ? `摄像头本地观察：${details.join("；")}。`
+    : "摄像头画面已接入，但本地检测尚未提供可靠的人像判断。";
+}
+
+async function persistMainVideoObservation(observation, content) {
+  try {
+    await api("/api/video-companion/observation", {
+      method: "POST",
+      body: JSON.stringify({
+        persona_id: state.activePersona?.id,
+        description: content,
+        confidence: Number(observation.presence_confidence ?? observation.face?.confidence ?? 0.5),
+        metadata: {
+          presence_status: observation.presence_status || observation.presence?.status || "unknown",
+          face_detected: observation.face_detected ?? observation.face?.detected ?? null,
+          face_count: observation.face_count ?? observation.face?.count ?? null,
+          motion: typeof (observation.motion || observation.motion_level || observation.activity) === "object"
+            ? (observation.motion || observation.motion_level || observation.activity)?.level || ""
+            : observation.motion || observation.motion_level || observation.activity || "",
+          received_at: new Date().toISOString(),
+        },
+      }),
+    });
+  } catch (err) {
+    console.warn("[Video Companion] observation sync failed", err);
   }
 }
 
@@ -5722,20 +5859,36 @@ function attachMainVideoPreview() {
 
 function startMainVideoFrameCapture() {
   if (videoCompanionFrameTimer) return;
+  captureMainVideoFrame();
   videoCompanionFrameTimer = setInterval(() => {
-    if (!state.videoCompanionUi.cameraActive || !mainVideoSocketOpen()) return;
-    const preview = document.getElementById("main-video-companion-preview");
-    if (!preview?.videoWidth || !preview?.videoHeight) return;
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.min(preview.videoWidth, 640);
-    canvas.height = Math.round(canvas.width * preview.videoHeight / preview.videoWidth);
-    const context = canvas.getContext("2d");
-    context.drawImage(preview, 0, 0, canvas.width, canvas.height);
-    const data = canvas.toDataURL("image/jpeg", 0.7).split(",")[1];
-    if (sendVideoCompanionMessage({ type: "frame", data, width: canvas.width, height: canvas.height, format: "jpeg" })) {
-      state.videoCompanionUi.frameCount += 1;
-    }
-  }, 2000);
+    captureMainVideoFrame();
+  }, mainVideoFrameIntervalMs());
+}
+
+function mainVideoFrameIntervalMs() {
+  return state.videoCompanionUi.externalVisionActive
+    ? VIDEO_KIMI_VISION_FRAME_INTERVAL_MS
+    : VIDEO_LOCAL_FRAME_INTERVAL_MS;
+}
+
+function restartMainVideoFrameCapture() {
+  stopMainVideoFrameCapture();
+  startMainVideoFrameCapture();
+}
+
+function captureMainVideoFrame() {
+  if (!state.videoCompanionUi.cameraActive || !mainVideoSocketOpen()) return;
+  const preview = document.getElementById("main-video-companion-preview");
+  if (!preview?.videoWidth || !preview?.videoHeight) return;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.min(preview.videoWidth, 640);
+  canvas.height = Math.round(canvas.width * preview.videoHeight / preview.videoWidth);
+  const context = canvas.getContext("2d");
+  context.drawImage(preview, 0, 0, canvas.width, canvas.height);
+  const data = canvas.toDataURL("image/jpeg", 0.7).split(",")[1];
+  if (sendVideoCompanionMessage({ type: "frame", data, width: canvas.width, height: canvas.height, format: "jpeg" })) {
+    state.videoCompanionUi.frameCount += 1;
+  }
 }
 
 function stopMainVideoFrameCapture() {
@@ -5758,6 +5911,7 @@ function stopMainVideoMedia({ keepStatus = false } = {}) {
   ui.cameraActive = false;
   ui.microphoneActive = false;
   ui.socket = "idle";
+  ui.externalVisionActive = false;
   ui.frameCount = 0;
   if (!keepStatus) ui.statusText = "主界面视频会话已停止";
 }
@@ -5765,11 +5919,12 @@ function stopMainVideoMedia({ keepStatus = false } = {}) {
 function renderMainVideoCompanionSession() {
   const ui = state.videoCompanionUi;
   const status = state.videoCompanionStatus || {};
-  const visionProvider = String(status.status?.vision_usage?.provider || status.status?.vision_provider || status.status?.providers?.vision || "").toLowerCase();
   const asrProvider = String(status.status?.speech_stats?.asr_provider || status.status?.asr_provider || status.status?.providers?.asr || "").toLowerCase();
-  const analysisHint = visionProvider === "mock" || asrProvider === "mock"
-    ? "后台服务目前是 mock 模式：可测试授权、预览和帧链路，但不会把讲话识别成文字，也不会产生真实视觉理解。"
-    : "后台帧分析已接入；澪的文字对话和 mio 语音仍只在右侧主聊天中运行。";
+  const analysisHint = ui.externalVisionActive
+    ? "Kimi 视觉正在低频分析压缩关键帧；画面描述会作为事实写入澪现有的 Moonshot 对话。"
+    : asrProvider === "mock"
+      ? "真实视觉当前关闭；仅保留本地预览和基础帧链路。麦克风语音识别仍待单独配置。"
+      : "真实视觉当前关闭；澪的文字对话和 mio 语音仍只在右侧主聊天中运行。";
   const controls = [
     ui.cameraActive
       ? h("button", { type: "button", class: "ghost compact", text: "停止视频", onclick: () => stopVideoCompanion() })
@@ -5782,8 +5937,23 @@ function renderMainVideoCompanionSession() {
         onclick: () => startVideoCompanion(),
       }),
   ];
+  if (ui.cameraActive) {
+    controls.push(h("button", {
+      type: "button",
+      class: ui.externalVisionActive ? "ghost compact" : "compact",
+      text: ui.externalVisionActive ? "关闭 Kimi 视觉" : "启用 Kimi 视觉（低频上传）",
+      title: ui.externalVisionActive
+        ? "停止上传新的摄像头关键帧。"
+        : "最多每分钟上传 3 张压缩摄像头画面到 Moonshot；点击后会再次确认。",
+      onclick: () => setMainVideoExternalVision(!ui.externalVisionActive),
+    }));
+  }
   const children = [
     h("div", { class: "main-video-session-head" }, [
+      ui.cameraActive ? h("small", {
+        class: `awareness-status ${ui.socket === "connected" ? "ok" : "waiting"}`,
+        text: `帧链路：${ui.socket === "connected" ? "已连接" : "未连接"}${ui.frameCount ? ` · 已发送 ${ui.frameCount} 帧` : ""}`,
+      }) : null,
       h("strong", { text: "主界面视频会话" }),
       h("small", { class: `awareness-status ${ui.cameraActive ? "ok" : "waiting"}`, text: ui.cameraActive ? "摄像头已在 LING 内开启" : "未开启" }),
     ]),
@@ -5791,11 +5961,16 @@ function renderMainVideoCompanionSession() {
     h("div", { class: "main-video-session-meta" }, [
       h("span", { text: `麦克风：${ui.microphoneActive ? "已授权（语音识别待配置）" : "未开启"}` }),
       h("span", { text: `后台帧链路：${ui.socket === "connected" ? "已连接" : ui.socket === "connecting" ? "连接中" : "未连接"}` }),
+      h("span", { text: `Kimi 视觉：${ui.externalVisionActive ? "已授权（每 20 秒一帧）" : "未授权"}` }),
       ui.frameCount ? h("span", { text: `已发送 ${ui.frameCount} 帧` }) : null,
     ]),
     h("small", { class: "muted", text: ui.statusText }),
     h("small", { class: "muted", text: analysisHint }),
-    ui.latestObservation ? h("small", { class: "muted", text: `最新画面：${ui.latestObservation}` }) : null,
+    h("small", {
+      id: "main-video-latest-observation",
+      class: "muted",
+      text: ui.latestObservation ? `Kimi 最新画面：${ui.latestObservation}` : "Kimi 最新画面：等待首个关键帧",
+    }),
     h("div", { class: "awareness-actions" }, controls),
   ].filter(Boolean);
   const panel = h("section", { class: "main-video-session" }, children);
