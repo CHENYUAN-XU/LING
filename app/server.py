@@ -2304,6 +2304,13 @@ class VideoCompanionSessionRequest(BaseModel):
     persona_id: int | str | None = None
 
 
+class VideoCompanionObservationRequest(BaseModel):
+    persona_id: int
+    description: str = Field(..., min_length=1, max_length=800)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 @app.get("/api/video-companion/config")
 def video_companion_config(user: dict = Depends(current_user)):
     return {"video_companion": public_video_companion_config()}
@@ -2328,6 +2335,32 @@ def easyvtuber_open(request: Request, user: dict = Depends(current_user)):
 @app.get("/api/video-companion/status")
 def video_companion_status(user: dict = Depends(current_user)):
     return _video_companion_status_for_user(int(user["id"]))
+
+
+@app.post("/api/video-companion/observation")
+def video_companion_observation(req: VideoCompanionObservationRequest, user: dict = Depends(current_user)):
+    """Store a browser-received frame observation for the active LING companion."""
+    persona_id = int(req.persona_id)
+    bound_id = _self_use_bound_persona_id(user) if _self_use_public(user).get("enabled") else None
+    if bound_id is not None and persona_id != bound_id:
+        raise HTTPException(status_code=404, detail="companion not found in LING self-use mode")
+    with get_db() as db:
+        owned = db.execute(
+            "SELECT 1 FROM personas WHERE id = ? AND user_id = ? AND status = 'active'",
+            (persona_id, int(user["id"])),
+        ).fetchone()
+    if not owned:
+        raise HTTPException(status_code=404, detail="active companion not found")
+    return save_video_observation(
+        {
+            "persona_id": persona_id,
+            "description": req.description,
+            "confidence": req.confidence,
+            "evidence_type": "video_observation",
+            "metadata": req.metadata,
+            "origin": "ling_main_ui",
+        }
+    )
 
 
 @app.post("/api/video-companion/session/start")
