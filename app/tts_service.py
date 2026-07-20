@@ -509,6 +509,18 @@ def tts_health_check() -> dict:
             req = urllib.request.Request(f"{base_url}/api/health", method="GET")
             with urllib.request.urlopen(req, timeout=timeout) as response:
                 result["available"] = 200 <= response.status < 300
+                raw_status = response.read().decode("utf-8", errors="replace")
+            try:
+                local_status = json.loads(raw_status)
+            except (TypeError, ValueError):
+                local_status = {}
+            english_tts = local_status.get("english_tts") if isinstance(local_status, dict) else None
+            if isinstance(english_tts, dict):
+                result["english_tts"] = {
+                    "mode": str(english_tts.get("mode") or ""),
+                    "g2p_ready": bool(english_tts.get("g2p_ready")),
+                    "native_active": bool(english_tts.get("native_active")),
+                }
             result["base_url"] = base_url
             if not result["available"]:
                 result["error"] = "local TTS health check failed"

@@ -4672,10 +4672,12 @@ function takeCompletedSpeechSentences(buffer, flush = false) {
   const source = String(buffer || "");
   const result = [];
   let lastEnd = 0;
-  const sentenceRe = /[^。！？!?\n]+[。！？!?]+(?:[””』」])?/g;
+  // A recommendation heading commonly ends with a colon before its first
+  // numbered item. Treat that newline boundary as speakable too.
+  const sentenceRe = /[。！？!?]+(?:[”』」])?|[：:](?=\s*\n)|\n+(?=\s*(?:[-*•]|\d+[.、)）]))/g;
   let match;
   while ((match = sentenceRe.exec(source))) {
-    const sentence = match[0].trim();
+    const sentence = source.slice(lastEnd, sentenceRe.lastIndex).trim();
     if (sentence) result.push(sentence);
     lastEnd = sentenceRe.lastIndex;
   }
