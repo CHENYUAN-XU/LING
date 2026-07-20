@@ -131,6 +131,7 @@ let live2dExpressionResetTimer = null;
 let activeVoicePlayback = null;
 let voicePlaybackSequence = 0;
 let activeChatStream = null;
+let activeStreamingVoiceQueue = null;
 let chatStreamSequence = 0;
 let companionStatusPollTimer = null;
 let companionStatusPollBusy = false;
@@ -732,6 +733,22 @@ function renderShell() {
   const previousChatScrollTop = previousChatLog ? previousChatLog.scrollTop : null;
   const previousStagePanel = document.querySelector(".self-use-stage-panel");
   const previousStageScrollTop = previousStagePanel ? previousStagePanel.scrollTop : null;
+  // When the camera is active, never remove its containing stage from the DOM.
+  // Reparenting a <video> element is enough for Chrome to visibly restart its
+  // preview even if the MediaStream tracks themselves stay live.  Chat sends,
+  // streamed replies and voice playback only need the rail and chat column to
+  // change, so patch those two areas and keep the entire stage in place.
+  if (patchActiveMainVideoWorkspace()) {
+    restoreShellScrollPositions(previousChatScrollTop, null);
+    restoreConversationSearchFocus();
+    return;
+  }
+  // Keep the exact browser <video> element alive across full-shell redraws.
+  // Chat send/stream/playback currently redraws the UI; replacing this node
+  // makes Chrome visibly restart the camera preview even though its stream is
+  // still valid.
+  const previousMainVideoPreview = document.getElementById("main-video-companion-preview");
+  if (previousMainVideoPreview) previousMainVideoPreview.remove();
   const restoreSearchFocus = document.activeElement?.classList?.contains("conversation-search");
   app.className = `app-shell view-${state.view || "chat"} ${selfUseMode() ? "self-use-shell" : ""} ${state.activePersona || state.activeGroupConversation ? "has-persona" : "no-persona"}`;
   const children = [renderSidebar(), renderMain()];
@@ -743,37 +760,67 @@ function renderShell() {
   if (state.integrationOpen) children.push(renderSelfUseIntegrationModal());
   if (!selfUseMode() && state.groupCreateOpen) children.push(renderGroupCreateModal());
   app.replaceChildren(...children);
-  if (previousChatScrollTop !== null) {
+  const replacementMainVideoPreview = document.getElementById("main-video-companion-preview");
+  if (previousMainVideoPreview && replacementMainVideoPreview) {
+    replacementMainVideoPreview.replaceWith(previousMainVideoPreview);
+  }
+  attachMainVideoPreview();
+  restoreShellScrollPositions(previousChatScrollTop, previousStageScrollTop);
+  if (restoreSearchFocus) restoreConversationSearchFocus();
+}
+
+function patchActiveMainVideoWorkspace() {
+  const overlaysOpen = state.profileOpen || state.personaPanelOpen || state.threadPanelOpen
+    || state.deletedPanelOpen || state.privacyOpen || state.integrationOpen || state.groupCreateOpen;
+  if (!selfUseMode() || !state.activePersona || !state.videoCompanionUi.cameraActive || overlaysOpen) return false;
+
+  const currentRail = app.querySelector(".companion-rail");
+  const currentWorkspace = app.querySelector(".self-use-workspace");
+  const currentChatPanel = currentWorkspace?.querySelector(".self-use-chat-panel");
+  if (!currentRail || !currentWorkspace || !currentChatPanel) return false;
+
+  const nextWorkspace = renderSelfUseWorkspace(state.activePersona);
+  const nextChatPanel = nextWorkspace.querySelector(".self-use-chat-panel");
+  if (!nextChatPanel) return false;
+
+  currentRail.replaceWith(renderSelfUseRail());
+  currentChatPanel.replaceWith(nextChatPanel);
+  // The stage, including the live preview, remains in its original DOM tree.
+  attachMainVideoPreview();
+  return true;
+}
+
+function restoreShellScrollPositions(chatScrollTop, stageScrollTop) {
+  if (chatScrollTop !== null) {
     const restoreChatScroll = () => {
       const chatLog = document.getElementById("chat-log");
       if (!chatLog) return;
       const maxScrollTop = Math.max(0, chatLog.scrollHeight - chatLog.clientHeight);
-      chatLog.scrollTop = Math.min(previousChatScrollTop, maxScrollTop);
+      chatLog.scrollTop = Math.min(chatScrollTop, maxScrollTop);
     };
-    // Restore synchronously for click-driven redraws, then once more after
-    // layout settles.  The second pass protects against font/image reflow.
     restoreChatScroll();
     requestAnimationFrame(restoreChatScroll);
   }
-  if (previousStageScrollTop !== null) {
+  if (stageScrollTop !== null) {
     const restoreStageScroll = () => {
       const stagePanel = document.querySelector(".self-use-stage-panel");
       if (!stagePanel) return;
       const maxScrollTop = Math.max(0, stagePanel.scrollHeight - stagePanel.clientHeight);
-      stagePanel.scrollTop = Math.min(previousStageScrollTop, maxScrollTop);
+      stagePanel.scrollTop = Math.min(stageScrollTop, maxScrollTop);
     };
     restoreStageScroll();
     requestAnimationFrame(restoreStageScroll);
   }
-  if (restoreSearchFocus) {
-    requestAnimationFrame(() => {
-      const input = document.querySelector(".conversation-search");
-      if (input) {
-        input.focus();
-        input.setSelectionRange(input.value.length, input.value.length);
-      }
-    });
-  }
+}
+
+function restoreConversationSearchFocus() {
+  requestAnimationFrame(() => {
+    const input = document.querySelector(".conversation-search");
+    if (input) {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+  });
 }
 
 function normalizeSelfUseUiState() {
@@ -4678,6 +4725,7 @@ function cancelActiveChatStream() {
   if (!active) return false;
   active.cancelled = true;
   active.voiceQueue?.cancel();
+  if (activeStreamingVoiceQueue === active.voiceQueue) activeStreamingVoiceQueue = null;
   active.controller.abort();
   interruptVoicePlayback();
   void api(`/api/chat/stream/${encodeURIComponent(active.streamId)}/cancel`, {
@@ -4690,6 +4738,11 @@ function cancelActiveChatStream() {
 async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId = null, clientMessageId = "" } = {}) {
   if (!content || !state.activePersona) return;
   if (state.sending) cancelActiveChatStream();
+  // A reply may have finished generating while its later sentences are still
+  // speaking.  A new user turn must cancel that tail as well, not only the
+  // audio that happens to be audible this instant.
+  activeStreamingVoiceQueue?.cancel();
+  activeStreamingVoiceQueue = null;
   interruptVoicePlayback();
   const requestPersonaId = Number(state.activePersona.id);
   const outgoingClientMessageId = clientMessageId || (retryUserMessageId ? "" : createClientMessageId());
@@ -4737,7 +4790,14 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
     let streamingMessageVisible = false;
     let pendingSpeechText = "";
     let voiceQueue = null;
-    let firstSpeechText = "";
+    const enqueueSpeechSentences = (sentences) => {
+      const ready = (sentences || []).map((sentence) => String(sentence || "").trim()).filter(Boolean);
+      if (!ready.length) return;
+      voiceQueue ||= createStreamingVoiceQueue(streamingMessage, canContinueVoiceQueue);
+      activeRequest.voiceQueue = voiceQueue;
+      activeStreamingVoiceQueue = voiceQueue;
+      for (const sentence of ready) voiceQueue?.enqueue(sentence);
+    };
     const data = await apiChatStream({
       message: content,
       persona_id: state.activePersona.id,
@@ -4758,12 +4818,10 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
       pendingSpeechText += delta;
       const speech = takeCompletedSpeechSentences(pendingSpeechText);
       pendingSpeechText = speech.rest;
-      if (!firstSpeechText && speech.sentences.length) {
-        firstSpeechText = speech.sentences[0];
-        voiceQueue ||= createStreamingVoiceQueue(streamingMessage, canContinueVoiceQueue);
-        activeRequest.voiceQueue = voiceQueue;
-        voiceQueue?.enqueue(firstSpeechText);
-      }
+      // Keep the text UI as one growing reply, but give every completed natural
+      // sentence to TTS immediately.  The queue serializes playback so there
+      // are no overlapping voices or artificial extra chat bubbles.
+      enqueueSpeechSentences(speech.sentences);
       if (!updateStreamingMessageBubble(streamingMessage)) {
         renderShell();
       }
@@ -4793,15 +4851,16 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
           streamingMessageVisible = true;
         }
         const replyForVoice = String(data.reply || streamingMessage.content || "").trim();
-        const remainingSpeechText = firstSpeechText && replyForVoice.startsWith(firstSpeechText)
-          ? replyForVoice.slice(firstSpeechText.length).trim()
-          : replyForVoice;
-        if (remainingSpeechText) {
-          voiceQueue ||= createStreamingVoiceQueue(streamingMessage, canContinueVoiceQueue);
-          activeRequest.voiceQueue = voiceQueue;
-          if (!firstSpeechText || remainingSpeechText !== firstSpeechText) {
-            voiceQueue?.enqueue(remainingSpeechText);
-          }
+        // Flush a final clause without punctuation.  In the unusual case where
+        // the provider emitted no deltas at all, queue the persisted reply once.
+        const finalSpeech = takeCompletedSpeechSentences(pendingSpeechText, true);
+        pendingSpeechText = finalSpeech.rest;
+        enqueueSpeechSentences(finalSpeech.sentences);
+        if (!voiceQueue?.spoken && replyForVoice) {
+          // Some providers may flush a very short answer in one final burst.
+          // That must not turn into one long GPT-SoVITS job: preserve the same
+          // sentence-by-sentence playback fallback even without early deltas.
+          enqueueSpeechSentences(takeCompletedSpeechSentences(replyForVoice, true).sentences);
         }
         // The first queued utterance owns the temporary streaming id until it
         // finishes.  Rewriting state.voicePlaying to the persisted id here
@@ -4816,6 +4875,14 @@ async function sendChatMessage(content, { retryLocalId = "", retryUserMessageId 
           client_total_ms: Math.max(0, Math.round(performance.now() - requestStartedAt)),
         };
         autoVoiceMessage = voiceQueue?.spoken ? null : streamingMessage;
+        if (voiceQueue) {
+          const completedQueue = voiceQueue;
+          // No new sentence is appended after the final event, so this waits
+          // for the actual queue tail before releasing interruption ownership.
+          void completedQueue.done().finally(() => {
+            if (activeStreamingVoiceQueue === completedQueue) activeStreamingVoiceQueue = null;
+          });
+        }
         appliedReplyExpression = await applyMessageExpressionsToLive2d(data.expressions || []);
         await markConversationRead(data.conversation_id);
       }
@@ -5749,6 +5816,19 @@ function handleMainVideoCompanionMessage(event) {
   const ui = state.videoCompanionUi;
   if (message.type === "observation") {
     const observation = message.data || message.observation || {};
+    const externalDescription = String(
+      message.external?.description
+      || message.external?.content
+      || observation.external_description
+      || ""
+    ).replace(/\s+/g, " ").trim();
+    // Video Companion returns the Kimi result both on the observation and as a
+    // sibling `external` payload depending on its version. Normalize both
+    // shapes before the UI and dialogue-memory paths inspect the frame.
+    if (externalDescription) {
+      observation.external_analysis = true;
+      observation.external_description = externalDescription;
+    }
     const externalVisionObservation = Boolean(
       observation.external_analysis
       || observation.external_description
@@ -5795,9 +5875,23 @@ function updateMainVideoObservationNode() {
 }
 
 function summarizeMainVideoObservation(observation) {
-  const rawDescription = String(
-    observation.content || observation.summary || observation.description || observation.external_description || ""
+  const externalDescription = String(
+    observation.external_description || ""
   ).replace(/\s+/g, " ").trim();
+  // Prefer the authorized Kimi description over local detector fields. Local
+  // `content` may contain only a presence guess and must not overwrite vision.
+  if (observation.external_analysis && externalDescription) {
+    return `Kimi 摄像头观察（已授权关键帧）：${externalDescription.slice(0, 520)}`;
+  }
+  const rawDescription = String(
+    observation.content || observation.summary || observation.description || ""
+  ).replace(/\s+/g, " ").trim();
+  // An external description comes from the explicitly authorized Kimi keyframe,
+  // not the unreliable local Haar presence detector. Keep those facts separate
+  // so a false local "absent" result cannot contradict the real scene summary.
+  if (observation.external_analysis && rawDescription) {
+    return `Kimi 摄像头观察（已授权关键帧）：${rawDescription.slice(0, 520)}`;
+  }
   const presence = String(observation.presence_status || observation.presence?.status || "").toLowerCase();
   const face = observation.face || observation.face_detection || {};
   const faceDetected = observation.face_detected ?? face.detected;
@@ -5839,6 +5933,7 @@ async function persistMainVideoObservation(observation, content) {
           motion: typeof (observation.motion || observation.motion_level || observation.activity) === "object"
             ? (observation.motion || observation.motion_level || observation.activity)?.level || ""
             : observation.motion || observation.motion_level || observation.activity || "",
+          vision_source: observation.external_analysis ? "kimi_keyframe" : "local_detector",
           received_at: new Date().toISOString(),
         },
       }),

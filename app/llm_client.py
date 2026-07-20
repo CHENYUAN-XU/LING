@@ -180,7 +180,11 @@ def _call_chat_completions_stream(
 
     fragments: list[str] = []
     try:
-        for raw_line in response.iter_lines(decode_unicode=True):
+        # `requests` defaults to a 512-byte read buffer here.  A short Chinese
+        # reply often fits entirely inside that buffer, which makes an upstream
+        # SSE stream look like one non-streaming final answer.  Keep the buffer
+        # tiny so every completed provider SSE line is forwarded immediately.
+        for raw_line in response.iter_lines(chunk_size=1, decode_unicode=True):
             if should_cancel and should_cancel():
                 raise LLMStreamCancelled("chat stream cancelled")
             line = str(raw_line or "").strip()

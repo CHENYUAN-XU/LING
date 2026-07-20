@@ -29,7 +29,7 @@ llm_routes:
     base_url: https://api.moonshot.cn/v1
     api_key_env: MOONSHOT_API_KEY
     temperature: 0.75
-    max_tokens: 700
+    max_tokens: 220
     timeout: 45
   forge:
     provider: kimi

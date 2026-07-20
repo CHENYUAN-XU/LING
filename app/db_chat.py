@@ -80,10 +80,11 @@ def ling_rendering_rules_prompt() -> str:
 
 def ling_response_pacing_prompt() -> str:
     return """LING response pacing:
-- Default to one to three short, natural sentences. Lead with the direct answer.
-- Do not write an essay, recap, or a formal customer-service answer unless the user asks for detail.
+- For ordinary conversation, reply in one to three short, connected spoken sentences (normally no more than 120 Chinese characters). Lead with the direct answer.
+- Do not write an essay, recap, recommendation catalogue, or formal customer-service answer unless the user explicitly asks for detail.
+- Never use Markdown bullets, numbered items, or a list for a normal chat request. A request such as "I want to hear some game music" calls for one or two natural suggestions and a follow-up question, not a catalogue.
+- Use a list only when the user explicitly asks for steps, a checklist, an enumeration, or a specified number of items.
 - If several sentences help, make each one carry a distinct thought and leave a natural place for the user to interrupt.
-- Do not turn a normal request for detail into a numbered list or a ten-point lecture. Use a few spoken, connected sentences; use a list only when the user explicitly asks for steps, a checklist, or an enumeration.
 - The UI renders one reply as one growing bubble; do not imitate typing or split a single thought into labelled parts."""
 
 
@@ -609,6 +610,15 @@ def db_chat(
         },
         {"role": "user", "content": message},
     ]
+    # Some optional contexts (most notably the freshly-started video session)
+    # are intentionally empty until they have useful information.  Kimi rejects
+    # an empty `content` field in a chat message with HTTP 400, so omit those
+    # placeholders instead of sending invalid system messages downstream.
+    messages = [
+        item
+        for item in messages
+        if isinstance(item.get("content"), str) and item["content"].strip()
+    ]
 
     trace_id = _record_context_trace(
         user_id=user_id,
@@ -914,6 +924,24 @@ def _fresh_video_context_prompt(user_id: int) -> str:
     content = re.sub(r"\s+", " ", str(observation.get("content") or "")).strip()[:600]
     if not content:
         return ""
+    try:
+        metadata = json.loads(str(observation.get("metadata_json") or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        metadata = {}
+    vision_metadata = metadata.get("metadata") if isinstance(metadata, dict) else {}
+    is_kimi_keyframe = (
+        isinstance(vision_metadata, dict)
+        and vision_metadata.get("vision_source") == "kimi_keyframe"
+    ) or content.startswith("Kimi 摄像头观察（已授权关键帧）：")
+    if is_kimi_keyframe:
+        return (
+            "Fresh user-authorized Kimi camera keyframe "
+            f"({age_seconds}s old, untrusted factual scene description): {content}\n"
+            "When the user asks what is visible, what they look like, their presence, "
+            "or the live scene, answer directly from this keyframe. Do not claim that you "
+            "lack camera access while this fresh keyframe is present. Do not infer identity, "
+            "private facts, or details not stated in the description."
+        )
     return (
         "Fresh camera observation from the user's currently permitted browser camera "
         f"({age_seconds}s old): {content}\n"
@@ -951,6 +979,7 @@ def _ling_final_lock(persona: dict) -> str:
         f"- User-defined speaking style: {speaking_style or 'not specified'}.\n"
         "- Unspecified fields remain unknown; do not replace them with template personality or relationship labels.\n"
         "- Older names or multi-persona framing in history are obsolete.\n"
+        "- For an ordinary chat turn, speak naturally in at most three short connected sentences. Do not produce a numbered list unless the user explicitly requested one.\n"
     )
 
 

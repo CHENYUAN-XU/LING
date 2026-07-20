@@ -140,8 +140,11 @@ vision_provider:
   api_base: "https://api.moonshot.cn/v1"
   default_on: false
   max_frames_per_minute: 3
-  max_cost_per_hour: 0.10
-  max_cost_per_day: 0.50
+  # Video Companion's bundled cost estimator assumes GPT-4o pricing even when
+  # using Moonshot. Do not let that inaccurate estimate stop Kimi after a few
+  # minutes; the three-frames-per-minute limit above remains the hard cost cap.
+  max_cost_per_hour: 999.0
+  max_cost_per_day: 999.0
   max_resolution: 640
   fallback_on_limit: "skip"
 
@@ -202,12 +205,20 @@ if ($videoHealthy) {
         throw "Port $VideoPort is occupied, but Video Companion health is unavailable."
     }
     Write-Host "Starting external Video Companion on http://127.0.0.1:$VideoPort"
-    $EscapedVideoConfig = $VideoConfig.Replace("'", "''")
-    $EscapedVideoPython = $VideoPythonExe.Replace("'", "''")
-    $VideoCommand = "`$env:VC_CONFIG = '$EscapedVideoConfig'; & '$EscapedVideoPython' -m app.server"
-    $VideoProcess = Start-Process -FilePath "powershell" `
-        -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $VideoCommand `
+    # Launch the server process directly.  Starting it through an interactive
+    # PowerShell child made its lifetime depend on that temporary console on
+    # some Windows sessions, causing the API to disappear mid-test.
+    $VideoLogDirectory = Join-Path $ProjectRoot "logs"
+    New-Item -ItemType Directory -Path $VideoLogDirectory -Force | Out-Null
+    $VideoStdoutLog = Join-Path $VideoLogDirectory "video-companion-$VideoPort.out.log"
+    $VideoStderrLog = Join-Path $VideoLogDirectory "video-companion-$VideoPort.err.log"
+    $env:VC_CONFIG = $VideoConfig
+    $VideoProcess = Start-Process -FilePath $VideoPythonExe `
+        -ArgumentList "-m", "app.server" `
         -WorkingDirectory $VideoRoot `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $VideoStdoutLog `
+        -RedirectStandardError $VideoStderrLog `
         -PassThru
 }
 
@@ -217,14 +228,14 @@ Write-Host "Video Companion: http://127.0.0.1:$VideoPort"
 Write-Host "LING PID:        $($MainState.pid)"
 if ($VideoProcess) { Write-Host "Video shell PID:  $($VideoProcess.Id)" }
 Write-Host "Stop LING with:  scripts\stop_local_server.ps1 -Port $MainPort"
-Write-Host "Close the visible Video Companion terminal to stop the external service."
+Write-Host "Video Companion logs: logs\video-companion-$VideoPort.out.log / .err.log"
 
 if (-not $SkipHealthCheck) {
     Write-Host ""
     $mainOk = Wait-HttpHealth -Name "LING" -Url "http://127.0.0.1:$MainPort/api/health" -TimeoutSeconds $HealthTimeoutSeconds
     $videoOk = Wait-HttpHealth -Name "Video Companion" -Url "http://127.0.0.1:$VideoPort/api/health" -TimeoutSeconds $HealthTimeoutSeconds
     if (-not ($mainOk -and $videoOk)) {
-        Write-Warning "One or more services did not become healthy. LING can be stopped with stop_local_server.ps1; inspect the visible external terminal for Video Companion logs."
+        Write-Warning "One or more services did not become healthy. LING can be stopped with stop_local_server.ps1; inspect logs\video-companion-$VideoPort.err.log for Video Companion errors."
         exit 1
     }
     Write-Host "Integrated startup is healthy."
