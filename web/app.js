@@ -2166,6 +2166,8 @@ function renderSelfUseApiSetupCard() {
     h("div", { class: "self-use-integration-rows" }, rows.map(([label, value]) => renderSelfUseIntegrationRow(label, value))),
     gateAction || probeAction ? h("div", { class: "self-use-integration-actions" }, [probeAction, gateAction]) : null,
     state.chatGateError ? h("small", { class: "danger-text", text: state.chatGateError }) : null,
+    verification.error ? h("small", { class: "danger-text", text: verification.error }) : null,
+    h("small", { class: "muted", text: "聊天路由在 config.yaml 的 llm_routes.chat 中配置。密钥只放在上方 Key env 指定的 Windows 环境变量中；修改后重启 LING，再检测连接。" }),
     h("small", { class: "muted", text: apiState.ready ? "对话输入会使用当前 chat route。" : "对话入口保持锁定，直到 chat gate 与密钥状态同时就绪。" }),
   ]);
 }
@@ -2339,12 +2341,15 @@ function renderSelfUseVoiceSetupCard() {
   const tone = available ? "ok" : configured ? "waiting" : "off";
   const configKey = "voice";
   const configFeedback = integrationConfigFeedback(configKey);
+  const localProvider = (voice.provider || voice.tts_provider) === "local_http";
   const providerInput = h("select", {}, [
+    h("option", { value: "local_http", text: "本地 mio · GPT-SoVITS" }),
     h("option", { value: "openai_tts", text: "openai_tts" }),
   ]);
   providerInput.value = voice.provider || voice.tts_provider || "openai_tts";
   const modelInput = h("input", { value: voice.model || voice.tts_model || "gpt-4o-mini-tts", placeholder: "gpt-4o-mini-tts" });
   const keyEnvInput = h("input", { value: voice.api_key_env || "OPENAI_API_KEY", placeholder: "OPENAI_API_KEY" });
+  const localUrlInput = h("input", { value: voice.local_base_url || voice.base_url || "http://127.0.0.1:9881", placeholder: "http://127.0.0.1:9881" });
   const voiceIdInput = h("input", { value: voice.voice_id || "alloy", placeholder: "alloy" });
   const formatInput = h("select", {}, [h("option", { value: "mp3", text: "mp3" })]);
   formatInput.value = voice.response_format || "mp3";
@@ -2356,6 +2361,15 @@ function renderSelfUseVoiceSetupCard() {
     placeholder: "Optional speaking instructions",
   });
   const autoPlayInput = h("input", { type: "checkbox", checked: voice.auto_play !== false });
+  const updateProviderFields = () => {
+    const local = providerInput.value === "local_http";
+    modelInput.disabled = local;
+    keyEnvInput.disabled = local;
+    instructionsInput.disabled = local;
+    localUrlInput.disabled = !local;
+  };
+  providerInput.addEventListener("change", updateProviderFields);
+  updateProviderFields();
   const configStatus = h("small", {
     class: "save-status" + (configFeedback.tone === "error" ? " danger-text" : ""),
     text: configFeedback.text,
@@ -2364,7 +2378,7 @@ function renderSelfUseVoiceSetupCard() {
     ["Config", configured ? "enabled" : "disabled"],
     ["Provider", voice.provider || voice.tts_provider || "unset"],
     ["Model", voice.model || voice.tts_model || "unset"],
-    ["Key env", voice.api_key_env || "OPENAI_API_KEY"],
+    ["Key env", localProvider ? "不需要（本地服务）" : (voice.api_key_env || "OPENAI_API_KEY")],
     ["Voice", embodiment.voiceProfile || voice.voice_id || "unbound"],
     ["Auto play", voice.auto_play === false ? "off" : "on"],
     ["Runtime", available ? "available" : (voice.error || "offline")],
@@ -2382,6 +2396,7 @@ function renderSelfUseVoiceSetupCard() {
       h("label", { class: "self-use-integration-field" }, [h("small", { text: "Provider" }), providerInput]),
       h("label", { class: "self-use-integration-field" }, [h("small", { text: "Model" }), modelInput]),
       h("label", { class: "self-use-integration-field" }, [h("small", { text: "Key env" }), keyEnvInput]),
+      h("label", { class: "self-use-integration-field" }, [h("small", { text: "本地语音地址" }), localUrlInput]),
       h("label", { class: "self-use-integration-field" }, [h("small", { text: "Voice id" }), voiceIdInput]),
       h("label", { class: "self-use-integration-field" }, [h("small", { text: "Format" }), formatInput]),
       h("label", { class: "self-use-integration-field" }, [h("small", { text: "Rate" }), rateInput]),
@@ -2400,13 +2415,13 @@ function renderSelfUseVoiceSetupCard() {
         disabled: state.integrationConfigSaving === configKey,
         onclick: () => setSelfUseIntegrationConfig({
           "voice.tts_provider": providerInput.value,
-          "voice.tts_model": modelInput.value,
-          "voice.api_key_env": keyEnvInput.value,
+          ...(providerInput.value === "local_http"
+            ? { "voice.local_base_url": localUrlInput.value }
+            : { "voice.tts_model": modelInput.value, "voice.api_key_env": keyEnvInput.value, "voice.instructions": instructionsInput.value }),
           "voice.voice_id": voiceIdInput.value,
           "voice.response_format": formatInput.value,
           "voice.rate": rateInput.value,
           "voice.max_chunk_length": chunkInput.value,
-          "voice.instructions": instructionsInput.value,
           "voice.auto_play": autoPlayInput.checked,
         }, configStatus, { feedbackKey: configKey }),
       }),
@@ -2429,7 +2444,7 @@ function renderSelfUseVoiceSetupCard() {
       }),
       configStatus,
     ]),
-    h("small", { class: "muted", text: "Edge TTS is disabled. LING speech uses a dedicated high-quality TTS provider such as OpenAI TTS." }),
+    h("small", { class: "muted", text: "本地 mio 使用 GPT-SoVITS 服务，无需 API key；请先启动本地声音服务。OpenAI TTS 使用上方指定的密钥环境变量。" }),
   ]);
 }
 

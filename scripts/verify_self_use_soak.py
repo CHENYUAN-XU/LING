@@ -31,7 +31,9 @@ def main() -> None:
 
         original_load_config = server.load_config
         original_video_status = server.get_video_companion_status
+        original_voice_health = server.tts_health_check
         try:
+            server.tts_health_check = lambda: {"enabled": False, "available": False, "provider": "local_http"}
             server.load_config = lambda: {
                 "self_use": {
                     "enabled": True,
@@ -87,6 +89,7 @@ def main() -> None:
         finally:
             server.load_config = original_load_config
             server.get_video_companion_status = original_video_status
+            server.tts_health_check = original_voice_health
 
     print("LING self-use soak verification passed")
 

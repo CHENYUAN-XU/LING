@@ -976,32 +976,32 @@ def verify_sparse_profile_discovery_policy(mirror, chat, user_id: int) -> None:
     with database.get_db() as db:
         db.execute("UPDATE user_insights SET discovery_dimensions_json = '{}' WHERE user_id = ?", (user_id,))
     prompt = mirror.discovery_prompt(user_id)
-    assert "not a default conversational hook" in prompt
-    assert "profile is currently sparse" in prompt
-    assert "learning a different dimension" in prompt
-    assert '"interests and tastes"' in prompt
-    assert '"daily rhythm"' in prompt
-    assert "Areas not yet clearly learned" in prompt
+    assert "Answer the current message first" in prompt
+    assert "stored memories as context, not a reason to force a familiar topic" in prompt
+    assert "Do not infer broad identity, personality, or relationship needs from one preference" in prompt
+    assert "at most one optional, easy-to-skip question" in prompt
+    # Coverage remains persisted for growth, but is no longer dumped into every
+    # chat prompt after the July latency/over-questioning fix.
+    assert "Areas not yet clearly learned" not in prompt
     with database.get_db() as db:
         persisted_dimensions = json.loads(
             db.execute("SELECT discovery_dimensions_json FROM user_insights WHERE user_id = ?", (user_id,)).fetchone()[0]
         )
     assert "interests" in persisted_dimensions
-    assert "direct or somewhat personal" in prompt and "easy to decline" in prompt
-    assert "Do not push after hesitation or refusal" in prompt
+    assert "never turn a reply into an interview" in prompt
     guarded = mirror.discovery_prompt(
         user_id,
         recent_assistant_messages=["你说喜欢饭团，那晚饭还会想吃饭团吗？"],
         current_user_text="我今天有点累。",
     )
     assert '["饭团"]' in guarded
-    assert "Do not bring these topics back in this reply" in guarded
+    assert "Do not revive these recently repeated topics without a new user cue" in guarded
     relevant = mirror.discovery_prompt(
         user_id,
         recent_assistant_messages=["你说喜欢饭团。"],
         current_user_text="我现在想吃饭团。",
     )
-    assert "Do not bring these topics back in this reply" not in relevant
+    assert "Do not revive these recently repeated topics" not in relevant
     original_mirror_policy = mirror.should_use_llm_for_mirror
     mirror.should_use_llm_for_mirror = lambda *args, **kwargs: False
     try:
@@ -1021,9 +1021,7 @@ def verify_sparse_profile_discovery_policy(mirror, chat, user_id: int) -> None:
     assert {"interests", "daily_rhythm", "values", "comfort_style", "ambitions", "relationship_style"} <= set(dimensions)
     assert dimensions["comfort_style"]["observed_count"] == 1
     expanded = mirror.discovery_prompt(user_id)
-    assert '"daily rhythm"' in expanded and '"comfort style"' in expanded and '"plans and ambitions"' in expanded
-    assert '"boundaries and annoyances"' in expanded
-    assert "Discovery coverage is guidance, not a checklist" in expanded
+    assert expanded == prompt, "coverage growth must not expand the per-turn discovery prompt"
     cautious = mirror.update_interaction_insight(user_id, "别问我这些，我不喜欢被问这些。", [])
     assert cautious["curiosity_feedback"]["status"] == "cautious"
     assert cautious["curiosity_feedback"]["declined_count"] == 1
@@ -1061,7 +1059,7 @@ def verify_sparse_profile_discovery_policy(mirror, chat, user_id: int) -> None:
         "今天有点累。",
         current_time=datetime(2026, 5, 26, 13, 0, tzinfo=timezone.utc),
     )
-    assert "This turn does not explicitly invite profile lookup" in ordinary_turn
+    assert "keep saved personal details in the background unless the user explicitly asks" in ordinary_turn
     assert "birthday" not in ordinary_turn.lower()
 
 

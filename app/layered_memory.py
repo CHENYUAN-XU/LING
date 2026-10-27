@@ -397,13 +397,21 @@ def refresh_memory_summaries(user_id: int, persona_id: int | None = None) -> lis
     refresh_memory_state(user_id, persona_id, facts=facts, relations=relations)
 
     summaries = []
-    user_summary = _build_user_summary(facts, relations)
-    if user_summary:
-        summaries.append(_upsert_summary(user_id, persona_id, None, "user_profile", user_summary, _source_uids(facts, relations), "critical", ts))
-
-    interaction_summary = _build_interaction_summary(facts, relations)
-    if interaction_summary:
-        summaries.append(_upsert_summary(user_id, persona_id, None, "interaction_style", interaction_summary, _source_uids(facts, relations), "high", ts))
+    for summary_type, text, priority in (
+        ("user_profile", _build_user_summary(facts, relations), "critical"),
+        ("interaction_style", _build_interaction_summary(facts, relations), "high"),
+    ):
+        if text:
+            summaries.append(_upsert_summary(user_id, persona_id, None, summary_type, text, _source_uids(facts, relations), priority, ts))
+        else:
+            # Revoking the last fact must also retire its derived summary.
+            with get_db() as db:
+                db.execute(
+                    """UPDATE memory_summaries SET archived = 1, updated_at = ?
+                       WHERE user_id = ? AND persona_id IS ? AND conversation_id IS NULL
+                         AND summary_type = ? AND archived = 0""",
+                    (ts, user_id, persona_id, summary_type),
+                )
 
     return summaries
 
@@ -663,7 +671,7 @@ def _upsert_summary(
             """
             SELECT *
             FROM memory_summaries
-            WHERE user_id = ? AND (persona_id = ? OR persona_id IS NULL)
+            WHERE user_id = ? AND persona_id IS ?
               AND conversation_id IS ? AND summary_type = ? AND archived = 0
             ORDER BY updated_at DESC
             LIMIT 1

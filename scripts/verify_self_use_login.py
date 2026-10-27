@@ -4,6 +4,7 @@ import sys
 import tempfile
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -14,7 +15,14 @@ import app.database as database
 
 
 def main() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
+    test_config = {
+        "self_use": {"enabled": True, "username": "mio_owner", "require_localhost": True,
+                     "seed_default_persona": True, "default_persona_name": "澪", "chat_enabled": False},
+        "live2d": {"enabled": False},
+        "voice": {"enabled": False},
+        "video_companion": {"enabled": False},
+    }
+    with tempfile.TemporaryDirectory() as tmp, patch("app.config.load_config", return_value=test_config):
         database.DB_PATH = Path(tmp) / "self_use.db"
         database.init_db()
 

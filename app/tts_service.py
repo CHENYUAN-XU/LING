@@ -487,7 +487,7 @@ def tts_health_check() -> dict:
         "provider": provider,
         "model": config.get("tts_model") or config.get("model") or "",
         "voice_id": config.get("voice_id", "alloy"),
-        "api_key_env": str(config.get("api_key_env") or "OPENAI_API_KEY"),
+        "api_key_env": "" if provider == "local_http" else str(config.get("api_key_env") or "OPENAI_API_KEY"),
         "response_format": _local_response_format(config.get("response_format"))
         if provider == "local_http"
         else _openai_response_format(config.get("response_format")),
@@ -505,15 +505,22 @@ def tts_health_check() -> dict:
     elif provider == "local_http":
         try:
             base_url = _local_base_url(config)
-            timeout = _bounded_float(config.get("timeout_seconds"), 3.0, 1.0, 30.0)
+            timeout = 3.0  # Health polling must not wait for the synthesis timeout.
             req = urllib.request.Request(f"{base_url}/api/health", method="GET")
             with urllib.request.urlopen(req, timeout=timeout) as response:
-                result["available"] = 200 <= response.status < 300
                 raw_status = response.read().decode("utf-8", errors="replace")
             try:
                 local_status = json.loads(raw_status)
             except (TypeError, ValueError):
                 local_status = {}
+            result["available"] = bool(
+                isinstance(local_status, dict)
+                and local_status.get("service") == "ling-local-voice"
+                and local_status.get("ok") is True
+                and local_status.get("model_loaded") is True
+                and int(local_status.get("configured_voices") or 0) > 0
+                and not local_status.get("voice_config_error")
+            )
             english_tts = local_status.get("english_tts") if isinstance(local_status, dict) else None
             if isinstance(english_tts, dict):
                 result["english_tts"] = {
@@ -523,7 +530,7 @@ def tts_health_check() -> dict:
                 }
             result["base_url"] = base_url
             if not result["available"]:
-                result["error"] = "local TTS health check failed"
+                result["error"] = "local TTS is not ready; check GPU, model loading and voice configuration"
         except Exception as exc:
             result["error"] = f"local TTS unavailable: {exc}"
     elif provider == "openai_tts":

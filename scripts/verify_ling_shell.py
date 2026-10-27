@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 
@@ -9,6 +10,78 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
+
+
+def verify_scroll_restoration(app_js: str) -> None:
+    start = app_js.index("function restoreShellScrollPositions(")
+    end = app_js.index("\nfunction ", start + 1)
+    subprocess.run(["node", "-e", app_js[start:end] + r'''
+const assert = require("node:assert/strict");
+let chat = {scrollTop: 0, scrollHeight: 900, clientHeight: 300};
+let stage = {scrollTop: 0, scrollHeight: 450, clientHeight: 300};
+let frames = [];
+global.document = {getElementById: () => chat, querySelector: () => stage};
+global.requestAnimationFrame = callback => frames.push(callback);
+restoreShellScrollPositions(220, 500);
+assert.equal(chat.scrollTop, 220);
+assert.equal(stage.scrollTop, 150);
+chat.scrollTop = 0;
+stage.scrollHeight = 600;
+frames.splice(0).forEach(callback => callback());
+assert.equal(chat.scrollTop, 220);
+assert.equal(stage.scrollTop, 300);
+restoreShellScrollPositions(null, null);
+assert.equal(frames.length, 0);
+chat = null;
+stage = null;
+restoreShellScrollPositions(220, 500);
+frames.splice(0).forEach(callback => callback());
+'''], check=True, cwd=ROOT)
+
+
+def verify_local_voice_card(app_js: str) -> None:
+    start = app_js.index("function renderSelfUseVoiceSetupCard(")
+    end = app_js.index("\nfunction ", start + 1)
+    subprocess.run(["node", "-e", app_js[start:end] + r'''
+const assert = require("node:assert/strict");
+const controls = [];
+let saved;
+const state = {voiceConfig: {enabled: true, tts_provider: "local_http", voice_id: "mio", api_key_env: "", local_base_url: "http://127.0.0.1:9881"}};
+const personaEmbodimentProfile = () => ({});
+const integrationConfigFeedback = () => ({});
+const integrationFlagButtonText = () => "toggle";
+const renderSelfUseIntegrationRow = () => null;
+const setSelfUseIntegrationConfig = values => {saved = values;};
+function h(tag, props = {}, children = []) {
+  const element = {tag, ...props, children, listeners: {}, addEventListener(event, callback) {this.listeners[event] = callback;}};
+  if (tag === "select") {
+    let value = "";
+    Object.defineProperty(element, "value", {get: () => value, set: v => {value = children.some(c => c.value === v) ? v : "";}});
+  }
+  controls.push(element);
+  return element;
+}
+renderSelfUseVoiceSetupCard();
+const provider = controls.find(c => c.tag === "select");
+const save = controls.find(c => c.text === "Save voice");
+const key = controls.find(c => c.placeholder === "OPENAI_API_KEY");
+const url = controls.find(c => c.placeholder === "http://127.0.0.1:9881");
+assert.equal(provider.value, "local_http");
+assert.equal(key.disabled, true);
+assert.equal(url.disabled, false);
+save.onclick();
+assert.equal(saved["voice.tts_provider"], "local_http");
+assert.equal(saved["voice.voice_id"], "mio");
+assert.equal(saved["voice.local_base_url"], "http://127.0.0.1:9881");
+assert.equal(Object.hasOwn(saved, "voice.api_key_env"), false);
+provider.value = "openai_tts";
+provider.listeners.change();
+assert.equal(key.disabled, false);
+assert.equal(url.disabled, true);
+save.onclick();
+assert.equal(saved["voice.api_key_env"], "OPENAI_API_KEY");
+assert.equal(Object.hasOwn(saved, "voice.local_base_url"), false);
+'''], check=True, cwd=ROOT)
 
 
 def main() -> None:
@@ -51,7 +124,8 @@ def main() -> None:
     assert 'window.addEventListener("online", refreshWhenVisible);' in app_js
     assert 'window.addEventListener("focus", refreshWhenVisible);' not in app_js
     assert 'const previousChatScrollTop = previousChatLog ? previousChatLog.scrollTop : null;' in app_js
-    assert 'chatLog.scrollTop = Math.min(previousChatScrollTop, maxScrollTop);' in app_js
+    verify_scroll_restoration(app_js)
+    verify_local_voice_card(app_js)
     assert 'if (changed && !editing) renderShell();' not in app_js
     assert 'data-streaming-message' in app_js
     assert 'if (!updateStreamingMessageBubble(streamingMessage)) {' in app_js
@@ -65,7 +139,7 @@ def main() -> None:
     assert "refresh_memory_summaries(user_id, persona_id)" not in layered_memory_py[layered_memory_py.index("def summary_prompt"):layered_memory_py.index("def _recall_table")]
     assert "recall_memories(user_id, persona_id, message, limit=6)" in db_chat_py
     assert "recall_layered_memory(user_id, persona_id, message, limit=8)" in db_chat_py
-    assert "Do not turn a normal request for detail into a numbered list" in db_chat_py
+    assert "Do not produce a numbered list unless the user explicitly requested one" in db_chat_py
     assert 'return (\n            "Profile usage: keep saved personal details in the background' in db_chat_py
     assert "live2d.capabilities_stale" in app_js
     assert "video.recent_summary?.id" in app_js
@@ -420,8 +494,11 @@ def main() -> None:
     assert ".local-startup-detail" in style_css
     assert "@media (max-width: 1024px)" in style_css
 
-    versions = set(re.findall(r"[?&]v=([0-9a-zA-Z-]+)", index_html + sw_js))
-    assert len(versions) == 1, f"expected one PWA asset version, found {versions}"
+    # CSS and JS can be released independently; each HTML URL must match the
+    # corresponding precached URL so offline startup loads the same assets.
+    html_assets = set(re.findall(r'(?:href|src)="((?:style\.css|app\.js)\?v=[^"]+)"', index_html))
+    cached_assets = set(re.findall(r'"/((?:style\.css|app\.js)\?v=[^"]+)"', sw_js))
+    assert len(html_assets) == 2 and html_assets == cached_assets, (html_assets, cached_assets)
     cache_match = re.search(r'CACHE_NAME = "([^"]+)"', sw_js)
     assert cache_match, "service worker cache name missing"
     assert "ling-shell-" in cache_match.group(1)
@@ -429,9 +506,9 @@ def main() -> None:
     assert "Starting managed LING" in start_script
     assert "LING PID" in start_script
     assert 'start_local_server.ps1' in start_script
-    assert '.venv\\Scripts\\python.exe' in start_script
+    assert 'python_runtime.ps1' in start_script
     assert 'Stop the existing LING process first' in start_script
-    assert 'Close the visible Video Companion terminal' in start_script
+    assert 'Video Companion logs:' in start_script
 
     assert "personal AI VTB" in roadmap
     assert "embodied workspace" in roadmap

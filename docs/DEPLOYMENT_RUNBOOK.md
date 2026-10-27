@@ -6,15 +6,15 @@ LING 当前面向作者本人使用。默认部署形态是 Windows 本机、单
 
 ```powershell
 cd "E:\澪\project-mnemosyne"
-py scripts\check_environment.py
-py scripts\check_deployment.py --self-use
-py scripts\verify_all.py --video-e2e
+& '.\.venv\Scripts\python.exe' scripts\check_environment.py
+& '.\.venv\Scripts\python.exe' scripts\check_deployment.py --self-use
 ```
 
-若当前机器的 `py` 找不到解释器，使用实际 Python：
+当前主项目使用 `.venv`。运行完整回归前安装测试依赖：
 
 ```powershell
-& 'C:\Users\Yue\AppData\Local\Programs\Python\Python314\python.exe' scripts\check_deployment.py --self-use
+& '.\.venv\Scripts\python.exe' -m pip install -r requirements-dev.txt
+& '.\.venv\Scripts\python.exe' scripts\verify_all.py --video-e2e
 ```
 
 `--self-use` 会确认 localhost 边界、cookie 模式、运行目录写权限和外部 Video Companion 路径。尚未配置的聊天或语音 API key 只会提示，不会把空白自用工作区误判为不可运行。
@@ -22,7 +22,7 @@ py scripts\verify_all.py --video-e2e
 查看当前真实完成度而不触发外部模型调用：
 
 ```powershell
-py scripts\check_acceptance.py
+& '.\.venv\Scripts\python.exe' scripts\check_acceptance.py
 ```
 
 `READY` 表示自动条件成立，`PENDING` 表示尚未配置或未验证，`MANUAL` 表示自动前置已具备但仍需真实设备/日用观察，`OPTIONAL` 不阻塞核心自用。该报告不会把端口在线或脚本全绿当成真机验收完成。
@@ -30,9 +30,9 @@ py scripts\check_acceptance.py
 完成对应真机步骤后再显式记录，例如：
 
 ```powershell
-py scripts\record_acceptance.py accept live2d --note "实际模型授权、重启重连和四个状态动作通过"
-py scripts\record_acceptance.py accept voice --note "真实音频、打断、Talk/Idle 时序通过"
-py scripts\record_acceptance.py accept daily_endurance --note "完成休眠唤醒和长时间 SQLite 观察"
+& '.\.venv\Scripts\python.exe' scripts\record_acceptance.py accept live2d --note "实际模型授权、重启重连和四个状态动作通过"
+& '.\.venv\Scripts\python.exe' scripts\record_acceptance.py accept voice --note "真实音频、打断、Talk/Idle 时序通过"
+& '.\.venv\Scripts\python.exe' scripts\record_acceptance.py accept daily_endurance --note "完成休眠唤醒和长时间 SQLite 观察"
 ```
 
 可记录项为 `chat_model`、`live2d`、`voice`、`video_companion`、`daily_endurance`。若检查仍是 `PENDING`，记录命令会拒绝；更改相关配置后旧凭证会显示为 stale，需重新真机验收。
@@ -56,7 +56,7 @@ scripts\stop_local_server.ps1
 前台调试才直接运行：
 
 ```powershell
-py -m uvicorn app.server:app --host 127.0.0.1 --port 8001
+& '.\.venv\Scripts\python.exe' -m uvicorn app.server:app --host 127.0.0.1 --port 8001
 ```
 
 - LING：`http://127.0.0.1:8001`
@@ -106,7 +106,7 @@ LING 会在启动时进行有界重连。主动点击断开后，本进程不会
 
 ## 5. 普通回复语音
 
-普通文字回复语音由主项目的 OpenAI TTS 适配器负责，默认关闭。启用前设置配置所引用的环境变量，并在澪的形象绑定中填写实际 provider voice ID。
+当前本机使用独立 `ling-local-voice` 的 mio / GPT-SoVITS，地址为 `http://127.0.0.1:9881`。在“接入 → Voice”选择本地服务并绑定 `mio`；该路径无需 OpenAI key。健康检查要求服务身份、GPU、模型加载和声音配置就绪，离线或加载失败会明确显示未就绪。OpenAI TTS 仍可单独选择，并读取相应密钥环境变量。
 
 Edge TTS 不属于 LING 的语音方案。实时麦克风、ASR 和视频会话语音属于外部 Video Companion。
 
@@ -120,7 +120,7 @@ Edge TTS 不属于 LING 的语音方案。实时麦克风、ASR 和视频会话�
 scripts\start_integrated_video_companion.ps1
 ```
 
-该脚本让主项目继承 `LING_VIDEO_COMPANION_*` 环境后通过受管 local runner 启动，并优先选择外部项目 `.venv`。集成启动前必须先关闭已有 LING；外部 Video Companion 保持可见终端，由外部项目负责关闭。
+该脚本让主项目继承 `LING_VIDEO_COMPANION_*` 环境后通过受管 local runner 启动，并分别使用主项目和外部项目的 `.venv`。集成启动前必须先关闭已有 LING；外部 Video Companion 在后台运行，输出位于 `logs/video-companion-8782.out.log` 和 `.err.log`。
 
 “接入”面板应分别显示：
 
@@ -136,9 +136,9 @@ scripts\start_integrated_video_companion.ps1
 本地单进程继续使用 WAL、busy timeout 和 foreign keys。`GET /api/health` 会报告实际 SQLite 状态。
 
 ```powershell
-py scripts\backup_data.py --label before-change
-py scripts\restore_data_backup.py data\backups\ling-backup-YYYYMMDD-HHMMSS.zip --inspect-only
-py scripts\restore_data_backup.py data\backups\ling-backup-YYYYMMDD-HHMMSS.zip --restore-dir data\restore-drill
+& '.\.venv\Scripts\python.exe' scripts\backup_data.py --label before-change
+& '.\.venv\Scripts\python.exe' scripts\restore_data_backup.py data\backups\ling-backup-YYYYMMDD-HHMMSS.zip --inspect-only
+& '.\.venv\Scripts\python.exe' scripts\restore_data_backup.py data\backups\ling-backup-YYYYMMDD-HHMMSS.zip --restore-dir data\restore-drill
 ```
 
 备份包含 SQLite 一致性快照、上传的形象素材及 manifest。恢复只写入新的旁路目录；确认结果后再人工替换运行数据。

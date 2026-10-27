@@ -75,8 +75,14 @@ def load_config() -> dict[str, Any]:
     if not CONFIG_FILE.exists():
         return DEFAULT_CONFIG.copy()
 
-    with CONFIG_FILE.open("r", encoding="utf-8") as f:
-        loaded = yaml.safe_load(f) or {}
+    try:
+        with CONFIG_FILE.open("r", encoding="utf-8") as f:
+            loaded = yaml.safe_load(f) or {}
+    except yaml.YAMLError as exc:
+        mark = getattr(exc, "problem_mark", None)
+        location = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
+        # PyYAML's exception text can echo an entire line containing a pasted key.
+        raise ValueError(f"Invalid config.yaml{location}. Check YAML syntax; keep API keys in environment variables.") from None
 
     if not isinstance(loaded, dict):
         raise ValueError("config.yaml must contain a YAML object")

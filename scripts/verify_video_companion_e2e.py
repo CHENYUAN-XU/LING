@@ -11,6 +11,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from verification_processes import stop_test_process
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -99,6 +100,12 @@ def main() -> None:
     video_path = Path(os.environ.get("VIDEO_COMPANION_PATH") or default_video_path())
     if not video_path.exists():
         raise SystemExit(f"Video Companion path not found: {video_path}")
+    # The external service has its own dependencies (vision, ASR, HTTP clients).
+    # Do not assume LING's lightweight Python environment can run that service.
+    video_python = os.environ.get("VIDEO_COMPANION_PYTHON")
+    if not video_python:
+        external_python = video_path / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        video_python = str(external_python) if external_python.is_file() else sys.executable
 
     main_port = free_port()
     video_port = free_port()
@@ -167,7 +174,7 @@ legacy_bridge:
         video_env["LING_VIDEO_BRIDGE_API_KEY"] = token
         video_log_handle = video_log.open("w", encoding="utf-8", errors="replace")
         video_proc = subprocess.Popen(
-            [sys.executable, "-m", "app.server"],
+            [video_python, "-m", "app.server"],
             cwd=video_path,
             env=video_env,
             stdout=video_log_handle,
@@ -254,12 +261,8 @@ legacy_bridge:
             raise
         finally:
             uvicorn_server.should_exit = True
-            video_proc.terminate()
-            try:
-                video_proc.wait(timeout=8)
-            except subprocess.TimeoutExpired:
-                video_proc.kill()
-                video_proc.wait(timeout=5)
+            stop_test_process(video_proc)
+            main_thread.join(timeout=8)
             video_log_handle.close()
 
 

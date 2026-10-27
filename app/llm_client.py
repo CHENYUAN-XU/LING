@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import hashlib
+import socket
 import threading
 import time
 from typing import Any, Callable
@@ -410,7 +411,7 @@ def probe_llm_runtime(task: str = "chat", timeout: float = 8.0) -> dict[str, Any
             "checked_at": checked_at,
             "status_code": int(status_code) if status_code is not None else None,
             "model_available": None,
-            "error": f"connection check failed with status {status_code or 'unreachable'}",
+            "error": _probe_request_error(exc),
         }
     except (TypeError, ValueError, KeyError) as exc:
         result = {
@@ -426,6 +427,35 @@ def probe_llm_runtime(task: str = "chat", timeout: float = 8.0) -> dict[str, Any
 
     _store_llm_verification(llm_config, provider, model, configured_base_url, api_key_env, result)
     return dict(result)
+
+
+def _probe_request_error(exc: requests.RequestException) -> str:
+    """Keep network failures actionable without exposing raw URLs or headers."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status is not None:
+        hint = "check the API key and account permissions" if status in {401, 403} else "retry later or check the provider status"
+        return f"Model connection check failed: HTTP {status}; {hint}."
+    if isinstance(exc, requests.exceptions.SSLError):
+        return "Model connection check failed: TLS certificate error; check system time, certificates and proxy settings."
+    if isinstance(exc, requests.exceptions.ConnectTimeout):
+        return "Model connection check failed: connection timed out; check the network and configured base URL, then retry."
+    if isinstance(exc, requests.exceptions.ReadTimeout):
+        return "Model connection check failed: response timed out; the provider did not reply in time. Retry."
+    if isinstance(exc, requests.exceptions.Timeout):
+        return "Model connection check failed: request timed out; retry."
+    pending = [exc]
+    seen: set[int] = set()
+    while pending:
+        error = pending.pop()
+        if id(error) in seen:
+            continue
+        seen.add(id(error))
+        if isinstance(error, socket.gaierror) or type(error).__name__ == "NameResolutionError":
+            return "Model connection check failed: DNS lookup failed; check the configured hostname and network."
+        pending.extend(value for value in (error.__cause__, error.__context__, getattr(error, "reason", None), *error.args) if isinstance(value, BaseException))
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return "Model connection check failed: could not connect; check the base URL, network and proxy settings."
+    return "Model connection check failed: invalid network response; retry."
 
 
 def _probe_model_ids(provider: str, payload: Any) -> set[str]:

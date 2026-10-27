@@ -9,6 +9,7 @@ import tempfile
 import time
 import urllib.request
 from pathlib import Path
+from verification_processes import stop_test_process
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -59,7 +60,7 @@ app = FastAPI(lifespan=lifespan)
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "database": "sqlite"}
+    return {"ok": True, "database": "sqlite", "pid": os.getpid()}
 """.strip(),
             encoding="utf-8",
         )
@@ -94,7 +95,7 @@ def health():
             health = _wait_for_health(port, process)
             assert health["ok"] is True
             state = json.loads(state_file.read_text(encoding="utf-8"))
-            assert int(state["pid"]) == process.pid
+            assert int(state["pid"]) == int(health["pid"])
             assert int(state["port"]) == port
 
             stop_file.write_text("stop", encoding="ascii")
@@ -106,8 +107,11 @@ def health():
             assert "Application shutdown complete" in log_file.read_text(encoding="utf-8")
         finally:
             if process.poll() is None:
-                process.terminate()
-                process.wait(timeout=5)
+                stop_file.write_text("stop", encoding="ascii")
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    stop_test_process(process)
 
 
 def verify_powershell_entrypoints() -> None:
@@ -141,6 +145,29 @@ def verify_powershell_entrypoints() -> None:
     assert start.returncode == 0, start.stdout + start.stderr
     assert "dry run passed" in start.stdout
     assert str(port) in start.stdout
+
+    # Run with no -Python override: the daily launcher must discover the
+    # project's environment even when Windows' global python/py is broken.
+    project_python = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+    if project_python.is_file():
+        automatic = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+             str(PROJECT_ROOT / "scripts" / "start_local_server.ps1"),
+             "-Port", str(port), "-SkipPreflight", "-DryRun"],
+            cwd=PROJECT_ROOT, text=True, encoding="utf-8", capture_output=True, timeout=30,
+        )
+        assert automatic.returncode == 0, automatic.stdout + automatic.stderr
+        assert str(project_python).lower() in automatic.stdout.lower()
+
+    invalid = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+         str(PROJECT_ROOT / "scripts" / "start_local_server.ps1"),
+         "-Port", str(port), "-Python", str(PROJECT_ROOT / "missing-python.exe"),
+         "-SkipPreflight", "-DryRun"],
+        cwd=PROJECT_ROOT, text=True, encoding="utf-8", capture_output=True, timeout=30,
+    )
+    assert invalid.returncode != 0, "an explicit broken runtime must not silently fall back"
+    assert "No usable Python" in invalid.stderr
 
     stop = subprocess.run(
         [

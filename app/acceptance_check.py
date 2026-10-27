@@ -96,7 +96,7 @@ def acceptance_report(
     live2d = _live2d_state(cfg, owner, probe_local_ports)
     _add(checks, "live2d", live2d["status"], True, live2d["detail"], evidence=live2d["evidence"])
 
-    voice = _voice_state(cfg, owner, env)
+    voice = _voice_state(cfg, owner, env, probe_local_ports)
     _add(checks, "voice", voice["status"], True, voice["detail"], evidence=voice["evidence"])
 
     video = _video_state(cfg, probe_local_ports)
@@ -334,12 +334,13 @@ def _live2d_state(config: dict[str, Any], owner: dict[str, Any], probe: bool) ->
     }
 
 
-def _voice_state(config: dict[str, Any], owner: dict[str, Any], env: Mapping[str, str]) -> dict[str, Any]:
+def _voice_state(config: dict[str, Any], owner: dict[str, Any], env: Mapping[str, str], probe: bool = True) -> dict[str, Any]:
     voice = _section(config, "voice")
     enabled = bool(voice.get("enabled"))
     provider = str(voice.get("tts_provider") or "").strip().lower()
     voice_profile = str(owner.get("voice_profile") or "").strip()
     api_key_env = str(voice.get("api_key_env") or "").strip()
+    api_key_env = "" if provider == "local_http" else (api_key_env or "OPENAI_API_KEY")
     key_present = bool(not api_key_env or env.get(api_key_env))
     evidence = {
         "enabled": enabled,
@@ -354,6 +355,13 @@ def _voice_state(config: dict[str, Any], owner: dict[str, Any], env: Mapping[str
         return {"status": "pending", "detail": "voice is disabled", "evidence": evidence}
     if not voice_profile:
         return {"status": "pending", "detail": "no actual voice profile is bound to the companion", "evidence": evidence}
+    if provider not in {"local_http", "openai_tts"}:
+        return {"status": "pending", "detail": f"unsupported TTS provider: {provider}", "evidence": evidence}
+    if provider == "local_http":
+        endpoint = str(voice.get("local_base_url") or "http://127.0.0.1:9881")
+        evidence["endpoint"] = endpoint
+        if probe and not _endpoint_reachable(endpoint):
+            return {"status": "pending", "detail": "local voice service is not reachable; start ling-local-voice", "evidence": evidence}
     if not key_present:
         return {"status": "pending", "detail": f"missing voice API key environment variable: {api_key_env}", "evidence": evidence}
     return {
@@ -398,7 +406,10 @@ def _backup_state(directory: Path) -> dict[str, Any]:
 def _endpoint_reachable(url: str, timeout: float = 0.25) -> bool:
     parsed = urlparse(url)
     host = parsed.hostname
-    port = parsed.port
+    try:
+        port = parsed.port or (80 if parsed.scheme in {"http", "ws"} else 443)
+    except ValueError:
+        return False
     if not host or port is None or host not in {"127.0.0.1", "localhost", "::1"}:
         return False
     try:

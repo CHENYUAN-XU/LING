@@ -5,6 +5,7 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
+from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -768,7 +769,7 @@ def verify_server_endpoints(user_id: int) -> None:
 
 
 def main() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory() as tmp, patch("app.live2d.load_config", return_value={}):
         database.DB_PATH = Path(tmp) / "phase5_live2d.db"
         database.init_db()
         user_id = seed_user()

@@ -52,7 +52,7 @@ def _api_key_env_names(config: dict[str, Any]) -> set[str]:
             env_name = value.get("api_key_env")
             section = path[-1] if path else ""
             section_enabled = bool(value.get("enabled", False)) if "enabled" in value else True
-            if section == "voice" and not section_enabled:
+            if section == "voice" and (not section_enabled or value.get("tts_provider") == "local_http"):
                 env_name = ""
             if isinstance(env_name, str) and env_name.strip():
                 names.add(env_name.strip())

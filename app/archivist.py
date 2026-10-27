@@ -10,7 +10,6 @@ from .identity import scrub_identity_text
 from .layered_memory import (
     create_episode_from_event,
     record_user_message_event,
-    refresh_memory_state,
     refresh_memory_summaries,
     store_layered_memories,
 )
@@ -231,8 +230,9 @@ def extract_and_store(
             judgements = []
     else:
         judgements = []
-    if released_topics or released_addresses:
-        refresh_memory_state(user_id, persona_id)
+    # Chat consumes persisted snapshots. Refresh when enrichment writes facts,
+    # not only when a boundary is released; streaming calls run this off-path.
+    if stored or released_topics or released_addresses:
         refresh_memory_summaries(user_id, persona_id)
     return stored + [{"layer": "judge", **item} for item in judgements]
 

@@ -12,37 +12,7 @@ $ErrorActionPreference = "Stop"
 $OutputEncoding = [Console]::OutputEncoding
 $env:PYTHONIOENCODING = "utf-8"
 
-function Resolve-PythonExecutable {
-    param([string]$Requested)
-
-    $candidates = @()
-    if (-not [string]::IsNullOrWhiteSpace($Requested)) {
-        $candidates += $Requested
-    }
-    foreach ($commandName in @("python", "py")) {
-        $command = Get-Command $commandName -ErrorAction SilentlyContinue
-        if ($command) {
-            $candidates += $command.Source
-        }
-    }
-    $candidates += Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA "Programs\Python") `
-        -Filter python.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
-
-    foreach ($candidate in ($candidates | Select-Object -Unique)) {
-        try {
-            $resolved = & $candidate -c "import sys; print(sys.executable)" 2>$null
-            if ($LASTEXITCODE -eq 0 -and $resolved) {
-                $path = [string]($resolved | Select-Object -Last 1)
-                if (Test-Path -LiteralPath $path) {
-                    return (Resolve-Path -LiteralPath $path).Path
-                }
-            }
-        } catch {
-            continue
-        }
-    }
-    throw "No working Python interpreter was found. Pass -Python with an explicit python.exe path."
-}
+. (Join-Path $PSScriptRoot "python_runtime.ps1")
 
 function Get-LingHealth {
     param([int]$HealthPort)
@@ -58,7 +28,7 @@ function Get-LingHealth {
 }
 
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$PythonExe = Resolve-PythonExecutable -Requested $Python
+$PythonExe = Resolve-PythonExecutable -Requested $Python -SearchRoot $ProjectRoot
 $RuntimeDir = Join-Path $ProjectRoot "data\runtime"
 $LogDir = Join-Path $ProjectRoot "logs"
 $StateFile = Join-Path $RuntimeDir "ling-server-$Port.json"

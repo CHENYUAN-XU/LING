@@ -16,44 +16,7 @@ $ErrorActionPreference = "Stop"
 $OutputEncoding = [Console]::OutputEncoding
 $env:PYTHONIOENCODING = "utf-8"
 
-function Resolve-PythonExecutable {
-    param(
-        [string]$Requested,
-        [string]$SearchRoot,
-        [string]$RequireModule = ""
-    )
-
-    $candidates = @()
-    if (-not [string]::IsNullOrWhiteSpace($Requested)) { $candidates += $Requested }
-    if (-not [string]::IsNullOrWhiteSpace($SearchRoot)) {
-        $candidates += (Join-Path $SearchRoot ".venv\Scripts\python.exe")
-    }
-    foreach ($commandName in @("python", "py")) {
-        $command = Get-Command $commandName -ErrorAction SilentlyContinue
-        if ($command) { $candidates += $command.Source }
-    }
-    $candidates += Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA "Programs\Python") `
-        -Filter python.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
-
-    foreach ($candidate in ($candidates | Where-Object { $_ } | Select-Object -Unique)) {
-        try {
-            $resolved = & $candidate -c "import sys; print(sys.executable)" 2>$null
-            if ($LASTEXITCODE -eq 0 -and $resolved) {
-                $path = [string]($resolved | Select-Object -Last 1)
-                if (Test-Path -LiteralPath $path) {
-                    if (-not [string]::IsNullOrWhiteSpace($RequireModule)) {
-                        & $path -c "import importlib.util, sys; raise SystemExit(0 if importlib.util.find_spec('$RequireModule') else 1)" 2>$null
-                        if ($LASTEXITCODE -ne 0) { continue }
-                    }
-                    return (Resolve-Path -LiteralPath $path).Path
-                }
-            }
-        } catch {
-            continue
-        }
-    }
-    throw "No working Python interpreter was found. Pass an explicit Python path."
-}
+. (Join-Path $PSScriptRoot "python_runtime.ps1")
 
 function Wait-HttpHealth {
     param(
@@ -105,7 +68,7 @@ if ([string]::IsNullOrWhiteSpace($VideoPath) -or -not (Test-Path -LiteralPath $V
 
 $VideoRoot = (Resolve-Path -LiteralPath $VideoPath).Path
 $MainPythonExe = Resolve-PythonExecutable -Requested $MainPython -SearchRoot $ProjectRoot
-$VideoPythonExe = Resolve-PythonExecutable -Requested $VideoPython -SearchRoot $VideoRoot -RequireModule "fastapi"
+$VideoPythonExe = Resolve-PythonExecutable -Requested $VideoPython -SearchRoot $VideoRoot -RequiredModules @("fastapi", "uvicorn", "yaml", "httpx", "aiohttp", "websockets")
 $BridgeEnabled = if ($NoBridge) { "false" } else { "true" }
 $BridgeApiKeyEnv = if ($env:LING_VIDEO_BRIDGE_API_KEY) {
     "LING_VIDEO_BRIDGE_API_KEY"

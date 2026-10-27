@@ -12,7 +12,7 @@ LING 是一个面向作者本人使用的 AI VTB / 具身数字陪伴体项目�
 - 澪的基础资料默认空白，不会用系统生成的人设替作者填写。
 - 聊天 API 默认关闭，并要求作者显式检测路由后才能启用。
 - Live2D 默认关闭；启用后应用启动会尝试非阻塞连接 VTube Studio。
-- 普通文字回复 TTS 默认关闭，使用 OpenAI TTS 适配器，不使用 Edge TTS。
+- 普通文字回复支持本地 mio / GPT-SoVITS 流式语音与 OpenAI TTS；当前本机配置使用本地 mio。
 - 实时摄像头、麦克风、ASR、连续视觉理解和视频会话语音由外部 Video Companion 负责。
 - 屏幕感知与主动消息默认关闭，资料页必须分别启用配置并授予授权；启用主动能力不会自动启动 scheduler。
 
@@ -22,7 +22,8 @@ LING 是一个面向作者本人使用的 AI VTB / 具身数字陪伴体项目�
 
 ```powershell
 cd "E:\澪\project-mnemosyne"
-py -m pip install -r requirements.txt
+py -m venv .venv
+& '.\.venv\Scripts\python.exe' -m pip install -r requirements.txt
 scripts\start_local_server.ps1 -OpenBrowser
 ```
 
@@ -32,7 +33,9 @@ scripts\start_local_server.ps1 -OpenBrowser
 scripts\stop_local_server.ps1
 ```
 
-启动脚本会自动寻找可用 Python、运行 localhost 自用预检、拒绝占用 8001 的非 LING 进程，并把 PID/state 写到 `data/runtime/`、日志写到 `logs/`。关闭脚本通过 stop request 让 uvicorn 执行应用 shutdown hook；直接运行 uvicorn 只用于前台调试。
+启动脚本优先使用项目 `.venv\Scripts\python.exe`，检查 Python 3.11+ 与运行依赖，再运行 localhost 自用预检。它拒绝占用 8001 的非 LING 进程，并把 PID/state 写到 `data/runtime/`、日志写到 `logs/`。关闭脚本通过 stop request 让 uvicorn 执行应用 shutdown hook；直接运行 uvicorn 只用于前台调试。
+
+本机已有独立环境时可直接运行启动脚本，无需重新安装，也无需依赖全局 `python`/`py`。运行回归前额外安装 `requirements-dev.txt`。
 
 打开：
 
@@ -99,7 +102,9 @@ Live2D -> live2d_preview_url -> fallback_image_url -> legacy avatar_url
 
 ## 普通回复语音
 
-主项目只负责文字回复的普通 TTS 播放：
+当前本机文字回复使用 `voice.tts_provider: local_http`、`voice.local_base_url: http://127.0.0.1:9881`、`voice.voice_id: mio`。先运行 `ling-local-voice` 的启动脚本或 `LING启动器.exe`；“接入 → Voice”可选择本地 mio 并保存本地服务地址，无需云端语音密钥。流式回复使用 PCM WAV，手动重播保留 MP3。
+
+可选的 OpenAI TTS 配置示例：
 
 ```yaml
 voice:
@@ -148,9 +153,9 @@ E:\视觉\video-companion
 这些运行数据不会进入 Git。完整备份与旁路恢复：
 
 ```powershell
-py scripts\backup_data.py --label before-change
-py scripts\restore_data_backup.py data\backups\ling-backup-YYYYMMDD-HHMMSS.zip --inspect-only
-py scripts\restore_data_backup.py data\backups\ling-backup-YYYYMMDD-HHMMSS.zip --restore-dir data\restore-drill
+& '.\.venv\Scripts\python.exe' scripts\backup_data.py --label before-change
+& '.\.venv\Scripts\python.exe' scripts\restore_data_backup.py data\backups\ling-backup-YYYYMMDD-HHMMSS.zip --inspect-only
+& '.\.venv\Scripts\python.exe' scripts\restore_data_backup.py data\backups\ling-backup-YYYYMMDD-HHMMSS.zip --restore-dir data\restore-drill
 ```
 
 本地长期运行与恢复流程见 `docs/DEPLOYMENT_RUNBOOK.md`。当前 SQLite 方案适合个人单实例；公开多人或多 worker 部署不属于当前产品目标。
@@ -160,7 +165,7 @@ py scripts\restore_data_backup.py data\backups\ling-backup-YYYYMMDD-HHMMSS.zip -
 每次代码改动必须运行：
 
 ```powershell
-py scripts\verify_all.py --video-e2e
+& '.\.venv\Scripts\python.exe' scripts\verify_all.py --video-e2e
 git diff --check
 ```
 
@@ -171,8 +176,8 @@ git diff --check
 部署预检：
 
 ```powershell
-py scripts\check_environment.py
-py scripts\check_deployment.py --self-use
+& '.\.venv\Scripts\python.exe' scripts\check_environment.py
+& '.\.venv\Scripts\python.exe' scripts\check_deployment.py --self-use
 ```
 
 `--production` 只用于未来明确的 HTTPS 公网部署，不是当前 LING 自用完成标准。
@@ -180,8 +185,8 @@ py scripts\check_deployment.py --self-use
 只读日用验收报告（不会调用外部模型 API）：
 
 ```powershell
-py scripts\check_acceptance.py
-py scripts\check_acceptance.py --json
+& '.\.venv\Scripts\python.exe' scripts\check_acceptance.py
+& '.\.venv\Scripts\python.exe' scripts\check_acceptance.py --json
 ```
 
 报告把自动就绪、待配置、真机人工验收和可选能力分开。`--strict` 仅用于需要“所有必需项连同真机验收都完成才返回成功”的场景。
@@ -189,9 +194,9 @@ py scripts\check_acceptance.py --json
 真实设备测试完成后，由作者显式记录本地验收凭证：
 
 ```powershell
-py scripts\record_acceptance.py accept live2d --note "VTS 重启重连、Idle/Listen/Think/Talk 均已实测"
-py scripts\record_acceptance.py list
-py scripts\record_acceptance.py revoke live2d
+& '.\.venv\Scripts\python.exe' scripts\record_acceptance.py accept live2d --note "VTS 重启重连、Idle/Listen/Think/Talk 均已实测"
+& '.\.venv\Scripts\python.exe' scripts\record_acceptance.py list
+& '.\.venv\Scripts\python.exe' scripts\record_acceptance.py revoke live2d
 ```
 
 只有自动前置已达到 `MANUAL` 的检查才能记录。凭证绑定当前配置和 companion 绑定证据；模型、voice ID 或连接配置改变后会标记过期，不会继续冒充已验收。

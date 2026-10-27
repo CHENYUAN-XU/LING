@@ -684,6 +684,7 @@ def self_use_integration_config(req: SelfUseIntegrationConfigRequest, request: R
         "live2d.lip_sync_parameter": ("live2d", "lip_sync_parameter", _validate_voice_name),
         "live2d.lip_sync_gain": ("live2d", "lip_sync_gain", _validate_lip_sync_gain),
         "voice.tts_provider": ("voice", "tts_provider", _validate_voice_provider),
+        "voice.local_base_url": ("voice", "local_base_url", _validate_local_tts_url),
         "voice.tts_model": ("voice", "tts_model", _validate_voice_name),
         "voice.api_key_env": ("voice", "api_key_env", _validate_env_name),
         "voice.voice_id": ("voice", "voice_id", _validate_voice_name),
@@ -696,15 +697,19 @@ def self_use_integration_config(req: SelfUseIntegrationConfigRequest, request: R
         "video_companion.ws_url": ("video_companion", "ws_url", _validate_ws_url),
         "video_companion.project_path": ("video_companion", "project_path", _validate_local_path_text),
     }
-    saved: dict[str, str] = {}
+    saved: dict[str, str | bool] = {}
+    updates = []
     for raw_key, raw_value in (req.values or {}).items():
         key = str(raw_key or "").strip()
         if key not in allowed:
             raise HTTPException(status_code=400, detail=f"unsupported LING integration config: {key}")
         section, config_key, validator = allowed[key]
         value = validator(raw_value, key)
-        set_config_section_value(section, config_key, value)
+        updates.append((section, config_key, value))
         saved[key] = value
+    # An invalid later field must not leave the earlier fields already saved.
+    for section, config_key, value in updates:
+        set_config_section_value(section, config_key, value)
     return {"saved": saved, "companion_status": companion_status(user)}
 
 
@@ -742,9 +747,23 @@ def _validate_live2d_action_name(value: Any, key: str) -> str:
 
 def _validate_voice_provider(value: Any, key: str) -> str:
     provider = str(value or "").strip().lower()
-    if provider != "openai_tts":
-        raise HTTPException(status_code=400, detail=f"{key} must be openai_tts")
+    if provider not in {"openai_tts", "local_http"}:
+        raise HTTPException(status_code=400, detail=f"{key} must be openai_tts or local_http")
     return provider
+
+
+def _validate_local_tts_url(value: Any, key: str) -> str:
+    text = _validate_http_url(value, key)
+    parsed = urlparse(text)
+    try:
+        port = parsed.port
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"{key} has an invalid port") from None
+    if (parsed.scheme != "http" or parsed.hostname not in {"localhost", "127.0.0.1", "::1"}
+            or parsed.username or parsed.password or parsed.query or parsed.fragment
+            or (port is not None and port < 1)):
+        raise HTTPException(status_code=400, detail=f"{key} must be a localhost HTTP service URL")
+    return text
 
 
 def _validate_config_bool(value: Any, key: str) -> bool:

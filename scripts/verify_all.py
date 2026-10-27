@@ -42,6 +42,7 @@ def main() -> None:
     for script in (
         "scripts\\verify_pwa_assets.py",
         "scripts\\verify_ling_shell.py",
+        "scripts\\verify_maintenance.py",
         "scripts\\verify_companion_status.py",
         "scripts\\verify_profile_timezone.py",
         "scripts\\verify_phase1_flows.py",
